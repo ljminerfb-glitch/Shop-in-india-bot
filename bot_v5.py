@@ -52,29 +52,27 @@ def back_dashboard_kb():
 async def levels(bot,uid):
     await bot.send_message(
         uid,
-        "🔷 SHOP IN INDIA\n━━━━━━━━━━━━━━━━━━\n"
-        "🎯 SELECT YOUR SHOP LEVEL\n\n"
-        "Choose the level you want to activate.\n"
-        "After selection, choose your USDT payment network.\n\n"
-        "🔵 Blue buttons = available levels",
-        reply_markup=level_kb())
+        "<b>🔷 SHOP IN INDIA</b>\n━━━━━━━━━━━━━━━━━━\n"
+        "<b>SELECT YOUR SHOP LEVEL</b>\n"
+        "Choose a level to see its price and benefits. Payment is made in USDT.",
+        reply_markup=level_kb(),parse_mode="HTML")
 
 async def start(update,ctx):
     ctx.user_data.clear()
     s=v4.shop_for(update.effective_user.id)
     if not s:
         await update.message.reply_text(
-            "🔷 SHOP IN INDIA\n━━━━━━━━━━━━━━━━━━\n"
-            "Welcome! Build and manage your online shop.\n\n"
-            "Choose an option to continue:",
+            "<b>🔷 SHOP IN INDIA</b>\n━━━━━━━━━━━━━━━━━━\n"
+            "Welcome! Manage your shop, products and orders from one place.\n"
+            "<b>Choose an option to continue:</b>",
             reply_markup=ReplyKeyboardMarkup(
                 [["🏪 Register Shop"],["🔐 Login"],["💬 Support"]],
-                resize_keyboard=True))
+                resize_keyboard=True),parse_mode="HTML")
     elif s["status"]!="approved":
         await update.message.reply_text(
-            "🔷 SHOP IN INDIA\n━━━━━━━━━━━━━━━━━━\n"
-            "⏳ Your shop application is waiting for Admin approval.\n"
-            "You will receive a message when it is approved.")
+            "<b>🟡 APPLICATION PENDING</b>\n━━━━━━━━━━━━━━━━━━\n"
+            "Your shop is waiting for Admin review. You will receive a message when a decision is made.",
+            parse_mode="HTML")
     elif int(s["level"])<1:
         await levels(ctx.bot,update.effective_user.id)
     else:
@@ -135,13 +133,12 @@ async def level_callback(update,ctx):
         [InlineKeyboardButton("⬅️ Back to all levels",callback_data="lvback")]
     ])
     await q.message.reply_text(
-        f"🔷 SHOP IN INDIA — LEVEL {lv}\n━━━━━━━━━━━━━━━━━━\n"
-        f"💰 Activation price: {float(cfg['activation_usdt']):g} USDT\n"
-        f"🇮🇳 INR reference: ₹{float(cfg['activation_usdt'])*v4.usdt_inr_rate():,.2f}\n\n"
-        f"🎁 LEVEL BENEFITS\n{benefits}\n\n"
-        "Note: Profit/margin figures are references, not guaranteed earnings. "
-        "Level activates only after Admin verifies your payment.",
-        reply_markup=kb)
+        f"<b>🔷 SHOP LEVEL {lv}</b>\n━━━━━━━━━━━━━━━━━━\n"
+        f"Activation price: <b>{float(cfg['activation_usdt']):g} USDT</b>\n"
+        f"INR reference: ₹{float(cfg['activation_usdt'])*v4.usdt_inr_rate():,.2f}\n\n"
+        f"<b>LEVEL BENEFITS</b>\n{html.escape(benefits)}\n\n"
+        "<i>Profit figures are references, not guaranteed earnings. Level activates after Admin verifies payment.</i>",
+        reply_markup=kb,parse_mode="HTML")
 
 async def level_pay_callback(update,ctx):
     q=update.callback_query
@@ -190,21 +187,20 @@ async def level_pay_callback(update,ctx):
         InlineKeyboardButton("🔵 USDT BEP20",callback_data=f"net:{rid}:bep")
     ]])
     await q.message.reply_text(
-        f"🔷 LEVEL {lv} PAYMENT\n━━━━━━━━━━━━━━━━━━\n"
-        f"Payment request: #{rid}\n"
-        f"Amount: {amount:g} USDT\n"
-        f"Rate: 1 USDT = INR {rate:,.2f}\n"
-        f"INR reference: ₹{amount*rate:,.2f}\n\n"
-        "Choose your payment network:",
-        reply_markup=kb)
+        f"<b>💳 LEVEL {lv} PAYMENT</b>\n━━━━━━━━━━━━━━━━━━\n"
+        f"Request: <code>#{rid}</code>\n"
+        f"Amount: <b>{amount:g} USDT</b>\n"
+        f"INR reference: ₹{amount*rate:,.2f} (rate ₹{rate:,.2f}/USDT)\n\n"
+        "<b>Choose your payment network:</b>",
+        reply_markup=kb,parse_mode="HTML")
 
 async def level_back_callback(update,ctx):
     q=update.callback_query
     await q.answer()
     await q.message.reply_text(
-        "🔷 SHOP IN INDIA\n━━━━━━━━━━━━━━━━━━\n"
-        "🎯 SELECT YOUR SHOP LEVEL\n\nChoose a level to view its price and benefits.",
-        reply_markup=level_kb())
+        "<b>🔷 SELECT YOUR SHOP LEVEL</b>\n━━━━━━━━━━━━━━━━━━\n"
+        "Choose a level to view its price and benefits.",
+        reply_markup=level_kb(),parse_mode="HTML")
 
 async def network_callback(update,ctx):
     q=update.callback_query

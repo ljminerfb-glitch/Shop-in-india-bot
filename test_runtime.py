@@ -183,7 +183,7 @@ def test_seller_market_screen(listing_id):
     asyncio.run(v5.menu_callback(update, context()))
     require(len(message.replies) >= 2, "Seller Marketplace did not render both resale and legacy screens")
     first = message.replies[0]
-    require("LEVEL 1 USDT RESALE MARKET" in first["text"], "Level 1 resale section missing")
+    require("OTHER LEVEL 1 MERCHANT LISTINGS" in first["text"], "Other Level 1 resale section missing")
     require("Price: 3.3 USDT each" in first["text"], "Seller Marketplace price is wrong")
     buttons = callback_data(first)
     require("rs:buy:%d:1" % listing_id in buttons, "Seller Marketplace Buy 1 button missing")

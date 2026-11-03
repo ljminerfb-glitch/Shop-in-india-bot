@@ -62,8 +62,8 @@ def setup(c=None):
 def balance(c, owner_id):
     row=c.execute("""SELECT
       COALESCE(SUM(CASE WHEN currency='USDT' AND entry_type='deposit_credit' THEN amount ELSE 0 END),0) deposits,
-      COALESCE(SUM(CASE WHEN currency='USDT' AND entry_type='central_purchase_debit' THEN amount ELSE 0 END),0) debits,
-      COALESCE(SUM(CASE WHEN currency='USDT' AND entry_type='central_purchase_refund_credit' THEN amount ELSE 0 END),0) refunds
+      COALESCE(SUM(CASE WHEN currency='USDT' AND entry_type IN ('central_purchase_debit','resale_purchase_debit') THEN amount ELSE 0 END),0) debits,
+      COALESCE(SUM(CASE WHEN currency='USDT' AND entry_type IN ('central_purchase_refund_credit','resale_sale_credit') THEN amount ELSE 0 END),0) refunds
       FROM ledger WHERE owner_id=?""",(owner_id,)).fetchone()
     return round(float(row["deposits"] or 0)-float(row["debits"] or 0)+float(row["refunds"] or 0),6)
 
@@ -398,6 +398,8 @@ async def resale_callback(update,ctx):
     from telegram import InlineKeyboardMarkup, InlineKeyboardButton
     q=update.callback_query; resale_setup()
     parts=q.data.split(":"); action=parts[1]
+    if action=="listmenu":
+        await q.answer(); await list_inventory(update,ctx); return
     if action=="list":
         inv_id=int(parts[2]); c=v4.db()
         try:

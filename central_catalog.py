@@ -1,6 +1,7 @@
 """Shared Level-1 central catalogue paid from owners' USDT wallet."""
 from pathlib import Path
 import logging
+import html
 import bot_v4 as v4
 
 log = logging.getLogger("central_catalog")
@@ -421,14 +422,14 @@ async def list_inventory(update,ctx):
     if update.effective_user.id==v4.ADMIN_ID: return
     shop=v4.shop_for(update.effective_user.id)
     if not shop or shop["status"]!="approved" or int(shop["level"])!=1:
-        await update.effective_message.reply_text("Approved Level 1 shop required.",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back",callback_data="m:dashboard")]])); return
+        await update.effective_message.reply_text("<b>🔒 LEVEL 1 ACCESS REQUIRED</b>\nYour shop must be approved and active at Level 1.",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Dashboard",callback_data="m:dashboard")]]),parse_mode="HTML"); return
     resale_setup(); c=v4.db()
     rows=c.execute("""SELECT i.id,i.catalog_id,i.remaining_quantity,i.unit_cost_usdt,p.title,
       COALESCE((SELECT SUM(l.remaining_quantity) FROM resale_listings l WHERE l.inventory_id=i.id AND l.status='active'),0) listed
       FROM central_inventory i JOIN central_catalog p ON p.id=i.catalog_id
       WHERE i.owner_id=? AND i.remaining_quantity>0 ORDER BY i.id DESC""",(update.effective_user.id,)).fetchall(); c.close()
     if not rows:
-        await update.effective_message.reply_text("No available USDT inventory to list.",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back",callback_data="m:dashboard")]])); return
+        await update.effective_message.reply_text("<b>📦 LIST MY STOCK</b>\nNo available inventory to list right now.",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Dashboard",callback_data="m:dashboard")]]),parse_mode="HTML"); return
     for r in rows:
         free=max(0,int(r["remaining_quantity"])-int(r["listed"]))
         price=round(float(r["unit_cost_usdt"])+0.8,6)
@@ -436,19 +437,22 @@ async def list_inventory(update,ctx):
         profit_each=round(price-unit_cost,6)
         listed_profit=round(profit_each*int(r["listed"]),6)
         free_profit=round(profit_each*free,6)
-        kb=[[InlineKeyboardButton(f"List {free} at {price:g} USDT each",callback_data=f"rs:list:{r['id']}")] if free else []]
-        kb.append([InlineKeyboardButton("⬅️ Back",callback_data="m:products"),InlineKeyboardButton("🏠 Dashboard",callback_data="m:dashboard")])
+        kb=[[InlineKeyboardButton(f"🏷️ List {free} items",callback_data=f"rs:list:{r['id']}")] if free else []]
+        kb.append([InlineKeyboardButton("⬅️ My Products",callback_data="m:products"),InlineKeyboardButton("🏠 Dashboard",callback_data="m:dashboard")])
         details=(
-            f"{r['title']}\n"
-            f"Owned remaining: {r['remaining_quantity']} | Already listed: {r['listed']} | Free to list: {free}\n"
-            f"Your cost: {unit_cost:g} USDT each\n"
-            f"Fixed resale price: {price:g} USDT each\n"
-            f"💰 Expected profit per sold item: +{profit_each:g} USDT\n"
-            f"📈 Potential profit from already-listed stock: +{listed_profit:g} USDT\n"
-            f"📈 Potential extra profit if you list the free stock: +{free_profit:g} USDT\n"
-            "Note: Expected profit is credited only after a sale is completed."
+            f"<b>📦 {html.escape(str(r['title']))}</b>\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            f"Owned: <b>{int(r['remaining_quantity'])}</b>  •  Already listed: <b>{int(r['listed'])}</b>\n"
+            f"Free to list: <b>{free}</b>\n\n"
+            "<b>PRICE & PROFIT</b>\n"
+            f"Your cost: {unit_cost:g} USDT / item\n"
+            f"Resale price: {price:g} USDT / item\n"
+            f"💚 <b>Expected profit: +{profit_each:g} USDT / sold item</b>\n"
+            f"🟢 Listed stock potential: <b>+{listed_profit:g} USDT</b>\n"
+            f"🟢 Free stock potential: <b>+{free_profit:g} USDT</b>\n\n"
+            "<i>Profit is credited after a sale is completed.</i>"
         )
-        await update.effective_message.reply_text(details,reply_markup=InlineKeyboardMarkup([x for x in kb if x]))
+        await update.effective_message.reply_text(details,reply_markup=InlineKeyboardMarkup([x for x in kb if x]),parse_mode="HTML")
 
 async def resale_callback(update,ctx):
     from telegram import InlineKeyboardMarkup, InlineKeyboardButton
@@ -475,7 +479,15 @@ async def resale_callback(update,ctx):
             c.rollback(); log.exception("Resale listing failed"); await q.message.reply_text("Listing failed safely."); return
         finally: c.close()
         await q.answer("Listed")
-        await q.message.reply_text(f"✅ Listed {inv['title']} ×{qty} at {price:g} USDT each. Admin can see your listing.")
+        cost=float(inv["unit_cost_usdt"])
+        expected_profit=round((price-cost)*qty,6)
+        await q.message.reply_text(
+            f"<b>✅ STOCK LISTED</b>\n━━━━━━━━━━━━━━━━━━\n"
+            f"<b>{html.escape(str(inv['title']))}</b> × {qty}\n"
+            f"Cost: {cost:g} USDT / item\nAsking price: {price:g} USDT / item\n"
+            f"💚 Expected profit if all sell: <b>+{expected_profit:g} USDT</b>\n\n"
+            "Your listing is now available in the Level 1 resale market.",
+            parse_mode="HTML")
         try: await ctx.bot.send_message(v4.ADMIN_ID,f"📣 NEW RESALE LISTING #{lid}\n{inv['title']} ×{qty}\nSeller: {q.from_user.id} | Shop #{inv['shop_id']}\nAsking: {price:g} USDT each",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Review / Buy",callback_data=f"rs:review:{lid}")],[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]))
         except Exception: log.exception("Admin listing notification failed")
         return
@@ -491,12 +503,15 @@ async def resale_callback(update,ctx):
         suggested_price=float(r["ask_price_usdt"])
         available_qty=int(r["remaining_quantity"])
         await q.message.reply_text(
-            f"ADMIN RESALE LISTING #{lid}\n{r['title']}\nSeller: {r['shop_name']} | Owner {r['owner_id']}\n"
-            f"Remaining: {available_qty}\nSeller asking: {suggested_price:g} USDT each\n\n"
-            "Send your offer as two numbers: PRICE QUANTITY.\n"
-            f"To buy all remaining stock at the asking price, send: {suggested_price:g} {available_qty}\n"
-            f"Example quantity must not exceed {available_qty}.\nType CANCEL to stop.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]))
+            f"<b>🛒 RESALE LISTING #{lid}</b>\n━━━━━━━━━━━━━━━━━━\n"
+            f"<b>{html.escape(str(r['title']))}</b>\n"
+            f"Seller: {html.escape(str(r['shop_name']))}\n"
+            f"Available: <b>{available_qty}</b> item(s)\n"
+            f"Asking price: <b>{suggested_price:g} USDT / item</b>\n\n"
+            "<b>ADMIN OFFER</b>\nSend: <code>PRICE QUANTITY</code>\n"
+            f"Buy all at asking price: <code>{suggested_price:g} {available_qty}</code>\n"
+            f"<i>Maximum quantity: {available_qty}. Type CANCEL to stop.</i>",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]),parse_mode="HTML")
         return
     if action=="market":
         shop=v4.shop_for(q.from_user.id)
@@ -504,9 +519,18 @@ async def resale_callback(update,ctx):
             await q.answer("Approved Level 1 shop required",show_alert=True); return
         c=v4.db(); rows=c.execute("""SELECT l.id,l.remaining_quantity,l.ask_price_usdt,p.title,s.shop_name FROM resale_listings l JOIN central_catalog p ON p.id=l.catalog_id JOIN shops s ON s.id=l.shop_id WHERE l.status='active' AND l.remaining_quantity>0 AND l.owner_id<>? AND s.status='approved' AND s.level=1 ORDER BY l.id DESC LIMIT 30""",(q.from_user.id,)).fetchall(); c.close()
         await q.answer()
-        if not rows: await q.message.reply_text("No USDT resale listings available.",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Dashboard",callback_data="m:dashboard")]])); return
+        if not rows: await q.message.reply_text("<b>🛍 LEVEL 1 RESALE MARKET</b>\nNo merchant listings available right now.",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Dashboard",callback_data="m:dashboard")]]),parse_mode="HTML"); return
         for r in rows:
-            await q.message.reply_text(f"{r['title']}\nSeller: {r['shop_name']}\nPrice: {r['ask_price_usdt']:g} USDT | Available: {r['remaining_quantity']}",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Buy 1",callback_data=f"rs:buy:{r['id']}:1"),InlineKeyboardButton("Buy 5",callback_data=f"rs:buy:{r['id']}:5")],[InlineKeyboardButton("⬅️ Dashboard",callback_data="m:dashboard")]]))
+            buttons=[[InlineKeyboardButton("Buy 1",callback_data=f"rs:buy:{r['id']}:1")]]
+            if int(r["remaining_quantity"])>=5:
+                buttons[0].append(InlineKeyboardButton("Buy 5",callback_data=f"rs:buy:{r['id']}:5"))
+            buttons.append([InlineKeyboardButton("⬅️ Dashboard",callback_data="m:dashboard")])
+            await q.message.reply_text(
+                f"<b>🛍 {html.escape(str(r['title']))}</b>\n"
+                f"Seller: {html.escape(str(r['shop_name']))}\n"
+                f"Price: <b>{float(r['ask_price_usdt']):g} USDT / item</b>\n"
+                f"Available: <b>{int(r['remaining_quantity'])}</b>",
+                reply_markup=InlineKeyboardMarkup(buttons),parse_mode="HTML")
         return
     if action=="buy":
         shop=v4.shop_for(q.from_user.id)
@@ -540,7 +564,11 @@ async def resale_callback(update,ctx):
             c.rollback(); log.exception("Resale purchase failed"); await q.message.reply_text("Purchase failed safely; no changes committed."); return
         finally: c.close()
         await q.answer("Purchased")
-        await q.message.reply_text(f"✅ Bought {qty} items for {total:g} USDT. Order #{oid}.",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Marketplace",callback_data="rs:market")],[InlineKeyboardButton("🏠 Dashboard",callback_data="m:dashboard")]]))
+        await q.message.reply_text(
+            f"<b>✅ PURCHASE CONFIRMED</b>\n━━━━━━━━━━━━━━━━━━\n"
+            f"Quantity: <b>{qty}</b> item(s)\nTotal paid: <b>{total:g} USDT</b>\nOrder: <code>#{oid}</code>",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Marketplace",callback_data="rs:market")],[InlineKeyboardButton("🏠 Dashboard",callback_data="m:dashboard")]]),
+            parse_mode="HTML")
         try: await ctx.bot.send_message(l["owner_id"],f"🎉 Your resale listing #{lid} sold {qty} item(s). Sale proceeds: {total:g} USDT; recorded profit: {max(0,profit):g} USDT.")
         except Exception: log.exception("Resale seller notification failed")
         return
@@ -588,7 +616,14 @@ async def admin_resale_market(update,ctx):
     if update.effective_user.id!=v4.ADMIN_ID: return
     resale_setup(); c=v4.db()
     rows=c.execute("""SELECT l.id,l.owner_id,l.shop_id,l.remaining_quantity,l.ask_price_usdt,p.title,s.shop_name FROM resale_listings l JOIN central_catalog p ON p.id=l.catalog_id JOIN shops s ON s.id=l.shop_id WHERE l.status='active' AND l.remaining_quantity>0 ORDER BY l.id DESC LIMIT 50""").fetchall(); c.close()
-    await update.effective_message.reply_text("🛒 ADMIN RESALE MARKET\nEvery owner listing appears here. Set your own USDT offer and quantity to buy.",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]))
+    await update.effective_message.reply_text(
+        "<b>🛒 ADMIN RESALE MARKET</b>\n━━━━━━━━━━━━━━━━━━\nReview merchant listings and make a USDT offer.",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]),parse_mode="HTML")
     for r in rows:
-        await update.effective_message.reply_text(f"Listing #{r['id']} — {r['title']}\nSeller: {r['shop_name']} | Owner {r['owner_id']} | Shop #{r['shop_id']}\nQty: {r['remaining_quantity']} | Asking: {r['ask_price_usdt']:g} USDT each",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Set offer / Buy",callback_data=f"rs:review:{r['id']}")],[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]))
-    if not rows: await update.effective_message.reply_text("No active owner resale listings.")
+        await update.effective_message.reply_text(
+            f"<b>#{r['id']} {html.escape(str(r['title']))}</b>\n"
+            f"Seller: {html.escape(str(r['shop_name']))} | Shop #{r['shop_id']}\n"
+            f"Available: <b>{int(r['remaining_quantity'])}</b>\n"
+            f"Asking: <b>{float(r['ask_price_usdt']):g} USDT / item</b>",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Review / Buy",callback_data=f"rs:review:{r['id']}")],[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]),parse_mode="HTML")
+    if not rows: await update.effective_message.reply_text("No active merchant resale listings.")

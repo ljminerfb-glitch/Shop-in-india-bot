@@ -508,8 +508,8 @@ def test_usdt_trc20_withdrawal_flow():
                 "Sale proceeds remaining: <b>4.300000 USDT</b>" in x["text"]
                 for x in paid_message.replies),
             "Admin did not receive the post-payment remaining-balance summary")
-    require(any(x["args"] and x["args"][0]==101 and
-                "POST-WITHDRAWAL WALLET SUMMARY" in x["kwargs"].get("text","")
+    require(any(x["args"] and x["args"][0]==101 and len(x["args"])>1 and
+                "POST-WITHDRAWAL WALLET SUMMARY" in x["args"][1]
                 for x in paid_ctx.bot.sent),
             "Merchant did not receive the post-payment wallet summary")
     c=v4.db()

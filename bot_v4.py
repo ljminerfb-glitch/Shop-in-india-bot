@@ -1,7 +1,7 @@
 """Shop in India V4 add-on. Run migrate_v4.py, then python bot_v4.py.
 Keeps V3 registration, approval, product submission and wallet flows.
 """
-import os, sqlite3, logging
+import os, sqlite3, logging, re
 from datetime import datetime, timezone
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
@@ -465,79 +465,119 @@ async def setshoplevel(update,ctx):
     c.commit(); c.close(); await update.message.reply_text(f"Shop #{sid} level changed L{old} → L{lv}; audit saved.")
 
 async def withdraw(update,ctx):
-    s=shop_for(update.effective_user.id)
-    if not s or s["status"]!="approved": await update.message.reply_text("Approved shop required."); return
-    if len(ctx.args)!=1:
-        await update.message.reply_text("Usage: /withdraw AMOUNT (INR)"); return
-    try: amount=round(float(ctx.args[0]),2); assert amount>0
-    except Exception: await update.message.reply_text("Valid positive amount enter karein."); return
-    c=db(); wallet=c.execute("SELECT * FROM owner_wallets WHERE owner_id=?",(update.effective_user.id,)).fetchone()
-    if not wallet or not wallet["verified"]:
-        c.close(); await update.message.reply_text("Withdrawal ke liye pehle wallet save aur Admin se verify karwayein."); return
-    earned=float(c.execute("SELECT COALESCE(SUM(amount),0) n FROM ledger WHERE owner_id=? AND entry_type='sale_credit'",(update.effective_user.id,)).fetchone()["n"])
-    paid=float(c.execute("SELECT COALESCE(SUM(amount),0) n FROM ledger WHERE owner_id=? AND entry_type='withdrawal_debit'",(update.effective_user.id,)).fetchone()["n"])
-    reserved=float(c.execute("SELECT COALESCE(SUM(amount),0) n FROM withdrawals WHERE owner_id=? AND status='pending'",(update.effective_user.id,)).fetchone()["n"])
-    available=round(earned-paid-reserved,2)
-    if amount>available:
-        c.close(); await update.message.reply_text(f"Insufficient recorded balance. Available: INR {available:.2f}"); return
-    rate=usdt_inr_rate(c)
-    amount_usdt=inr_to_usdt(amount,rate)
-    cur=c.execute("""INSERT INTO withdrawals(owner_id,shop_id,amount,currency,network,wallet_address,status,created_at,amount_inr,exchange_rate)
-      VALUES(?,?,?,'INR',?,?,'pending',?,?,?)""",(update.effective_user.id,s["id"],amount,wallet["network"],wallet["address"],now(),amount,rate))
-    wid=cur.lastrowid; c.commit(); c.close()
-    kb=InlineKeyboardMarkup([[InlineKeyboardButton("Mark PAID",callback_data=f"wd:paid:{wid}"),InlineKeyboardButton("Reject",callback_data=f"wd:reject:{wid}")]])
-    await update.message.reply_text(f"Withdrawal request #{wid} submitted.\nINR amount: ₹{amount:,.2f}\nRate: 1 USDT = ₹{rate:,.2f}\nUSDT equivalent: {amount_usdt:g} USDT\nStatus: pending Admin review.")
-    try: await ctx.bot.send_message(ADMIN_ID,f"WITHDRAWAL #{wid}\nOwner: {update.effective_user.id}\nINR balance debit: ₹{amount:,.2f}\nConversion rate: 1 USDT = ₹{rate:,.2f}\nUSDT payout equivalent: {amount_usdt:g} USDT\nWallet: {wallet['network']} {wallet['address']}\nManually verify and actually send the USDT equivalent before Mark PAID.",reply_markup=kb)
-    except Exception: log.exception("Withdrawal notification failed")
+    """Legacy command compatibility: /withdraw AMOUNT_USDT TRC20_ADDRESS."""
+    shop=shop_for(update.effective_user.id)
+    if not shop or shop["status"]!="approved":
+        await update.message.reply_text("Approved shop required."); return
+    if len(ctx.args)!=2:
+        await update.message.reply_text("Usage: /withdraw AMOUNT_USDT TRC20_ADDRESS"); return
+    try:
+        amount=round(float(ctx.args[0]),6)
+        address=ctx.args[1].strip()
+        if amount<=0 or not re.fullmatch(r"T[1-9A-HJ-NP-Za-km-z]{33}",address):
+            raise ValueError()
+    except (TypeError,ValueError):
+        await update.message.reply_text("Enter a positive USDT amount and a valid USDT TRC20 address."); return
+    c=db()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        earned=float(c.execute(
+            "SELECT COALESCE(SUM(amount),0) FROM ledger WHERE owner_id=? AND currency='USDT' AND entry_type='resale_sale_credit'",
+            (update.effective_user.id,)).fetchone()[0])
+        paid=float(c.execute(
+            "SELECT COALESCE(SUM(amount),0) FROM ledger WHERE owner_id=? AND currency='USDT' AND entry_type='withdrawal_debit'",
+            (update.effective_user.id,)).fetchone()[0])
+        reserved=float(c.execute(
+            "SELECT COALESCE(SUM(amount),0) FROM withdrawals WHERE owner_id=? AND currency='USDT' AND status='pending'",
+            (update.effective_user.id,)).fetchone()[0])
+        available=max(0.0,round(earned-paid-reserved,6))
+        if amount>available+1e-9:
+            c.rollback()
+            await update.message.reply_text(f"Insufficient available sale earnings. Available: {available:.6f} USDT."); return
+        cur=c.execute("""INSERT INTO withdrawals
+            (owner_id,shop_id,amount,currency,network,wallet_address,status,created_at)
+            VALUES(?,?,?,'USDT','USDT TRC20',?,'pending',?)""",
+            (update.effective_user.id,shop["id"],amount,address,now()))
+        wid=cur.lastrowid
+        c.commit()
+    except Exception:
+        c.rollback(); log.exception("USDT withdrawal request failed")
+        await update.message.reply_text("Withdrawal request failed safely; no balance was deducted."); return
+    finally:
+        c.close()
+    kb=InlineKeyboardMarkup([[InlineKeyboardButton("✅ MARK PAID",callback_data=f"wd:paid:{wid}"),
+                              InlineKeyboardButton("❌ REJECT",callback_data=f"wd:reject:{wid}")]])
+    await update.message.reply_text(
+        f"Withdrawal request #{wid} submitted. Amount: {amount:.6f} USDT. Network: USDT TRC20. Status: pending Admin review.")
+    try:
+        await ctx.bot.send_message(ADMIN_ID,
+            f"USDT WITHDRAWAL #{wid}\nOwner: {update.effective_user.id}\nAmount: {amount:.6f} USDT\n"
+            f"Network: USDT TRC20\nTRC20 address: {address}\n"
+            "Send the USDT manually on TRON before marking paid.",reply_markup=kb)
+    except Exception:
+        log.exception("Withdrawal notification failed")
+
 
 async def withdrawal_review(update,ctx):
     q=update.callback_query
-    if not admin(q.from_user.id): await q.answer("Admin only",show_alert=True); return
-    await q.answer(); _,action,wid_text=q.data.split(":"); wid=int(wid_text)
+    if not admin(q.from_user.id):
+        await q.answer("Admin only",show_alert=True); return
+    await q.answer()
+    try:
+        _,action,wid_text=q.data.split(":")
+        wid=int(wid_text)
+        if action not in ("paid","reject"): raise ValueError()
+    except (ValueError,IndexError):
+        await q.message.reply_text("Invalid withdrawal review action."); return
     c=db()
     try:
         c.execute("BEGIN IMMEDIATE")
         r=c.execute("SELECT * FROM withdrawals WHERE id=?",(wid,)).fetchone()
         if not r or r["status"]!="pending":
             c.rollback(); await q.message.reply_text("Withdrawal missing or already reviewed."); return
+        currency=str(r["currency"] or "USDT").upper()
         if action=="paid":
             cur=c.execute("UPDATE withdrawals SET status='paid',reviewed_at=?,admin_note='Marked paid after manual payout verification' WHERE id=? AND status='pending'",(now(),wid))
             if cur.rowcount != 1:
                 c.rollback(); await q.message.reply_text("This withdrawal was already reviewed. Refresh Pending Withdrawals."); return
-            c.execute("INSERT INTO ledger(transaction_id,shop_id,owner_id,entry_type,amount,currency,note,created_at) VALUES(NULL,?,?, 'withdrawal_debit',?,'INR',?,?)",(r["shop_id"],r["owner_id"],r["amount"],f"Withdrawal #{wid} paid",now()))
+            c.execute("""INSERT INTO ledger(transaction_id,shop_id,owner_id,entry_type,amount,currency,note,created_at)
+                         VALUES(NULL,?,?, 'withdrawal_debit',?,?,?,?)""",
+                      (r["shop_id"],r["owner_id"],r["amount"],currency,f"Withdrawal #{wid} paid",now()))
             status="paid"
         else:
             cur=c.execute("UPDATE withdrawals SET status='rejected',reviewed_at=?,admin_note='Rejected by admin' WHERE id=? AND status='pending'",(now(),wid))
             if cur.rowcount != 1:
                 c.rollback(); await q.message.reply_text("This withdrawal was already reviewed. Refresh Pending Withdrawals."); return
             status="rejected"
-        c.execute("INSERT INTO admin_audit(admin_id,owner_id,action,details,created_at) VALUES(?,?,?,?,?)",(ADMIN_ID,r["owner_id"],"withdrawal_"+status,f"Withdrawal #{wid}",now()))
+        c.execute("INSERT INTO admin_audit(admin_id,owner_id,action,details,created_at) VALUES(?,?,?,?,?)",
+                  (ADMIN_ID,r["owner_id"],"withdrawal_"+status,f"Withdrawal #{wid}",now()))
         c.commit()
     except Exception:
-        c.rollback(); log.exception("Withdrawal review failed"); await q.message.reply_text("Withdrawal review failed."); return
-    finally: c.close()
-    rate=float(r['exchange_rate'] or usdt_inr_rate()) if 'exchange_rate' in r.keys() else usdt_inr_rate()
-    usdt_amount=inr_to_usdt(float(r['amount']),rate)
+        c.rollback(); log.exception("Withdrawal review failed")
+        await q.message.reply_text("Withdrawal review failed; no changes were committed."); return
+    finally:
+        c.close()
     result_label="✅ PAID" if status=="paid" else "❌ REJECTED"
+    result_text=(f"<b>WITHDRAWAL {result_label}</b>\n"
+                 f"Amount: <b>{float(r['amount']):.6f} {html.escape(currency)}</b>\n"
+                 f"Network: <b>{html.escape(str(r['network'] or ''))}</b>")
     try:
         old_text=q.message.text or q.message.caption or f"WITHDRAWAL #{wid}"
         clean_text=old_text.split("\n\nREVIEW RESULT:",1)[0]
         await q.message.edit_text(clean_text+f"\n\nREVIEW RESULT: {result_label}",reply_markup=None)
     except Exception:
         try:
-            old_caption=(q.message.caption or f"WITHDRAWAL #{wid}")
+            old_caption=q.message.caption or f"WITHDRAWAL #{wid}"
             clean_caption=old_caption.split("\n\nREVIEW RESULT:",1)[0]
             await q.message.edit_caption(clean_caption+f"\n\nREVIEW RESULT: {result_label}",reply_markup=None)
         except Exception:
             log.exception("Could not update reviewed withdrawal card")
-    result_text=(f"<b>WITHDRAWAL {result_label}</b>\n"
-                 f"INR: ₹{float(r['amount']):,.2f} | Rate: ₹{rate:,.2f} per USDT\n"
-                 f"USDT equivalent: {usdt_amount:g}")
     await q.message.reply_text(result_text,parse_mode="HTML")
     try:
         await ctx.bot.send_message(r["owner_id"],result_text,parse_mode="HTML")
     except Exception:
         log.exception("Withdrawal owner notification failed")
+
 
 async def myproductaudit(update,ctx):
     s=shop_for(update.effective_user.id)

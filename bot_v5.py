@@ -287,11 +287,16 @@ async def menu_callback(update,ctx):
             dep=c.execute("SELECT COALESCE(SUM(amount),0) FROM ledger WHERE owner_id=? AND currency='USDT' AND entry_type='deposit_credit'",(q.from_user.id,)).fetchone()[0]
         finally: c.close()
         await q.message.reply_text(
-            f"👛 USDT WALLET\nBalance: {bal:.6f} USDT\nDeposits: {float(dep):.6f} USDT\n"
-            f"Investment: {float(invested):.6f} USDT\nRecorded profit: {float(profit):.6f} USDT\n\n"
-            f"TRC20 deposit address: {v4.PAY_TRON}\nBEP20 deposit address: {v4.PAY_BSC}\n"
-            "Send only USDT on the selected network and submit payment proof for Admin verification.",
-            reply_markup=back_dashboard_kb())
+            "<b>👛 USDT WALLET</b>\n━━━━━━━━━━━━━━━━━━\n"
+            f"Available balance: <b>{bal:.6f} USDT</b>\n"
+            f"Total deposits: {float(dep):.6f} USDT\n"
+            f"Catalogue investment: {float(invested):.6f} USDT\n"
+            f"💚 <b>Recorded profit: +{float(profit):.6f} USDT</b>\n\n"
+            "<b>DEPOSIT NETWORKS</b>\n"
+            f"TRC20: <code>{html.escape(str(v4.PAY_TRON))}</code>\n"
+            f"BEP20: <code>{html.escape(str(v4.PAY_BSC))}</code>\n\n"
+            "Send USDT only on the selected network and upload payment proof for verification.",
+            reply_markup=back_dashboard_kb(),parse_mode="HTML")
     elif action=="market":
         await central.owner_market(update,ctx,s)
     elif action=="sellermarket":
@@ -315,23 +320,35 @@ async def menu_callback(update,ctx):
                 AND sh.status='approved' AND sh.level=1
               ORDER BY l.id DESC LIMIT 30""",(q.from_user.id,)).fetchall()
         finally: c.close()
-        body="🏬 SELLER MARKETPLACE\n━━━━━━━━━━━━━━━━━━\nMY ACTIVE USDT LISTINGS\n"
+        body="<b>🏬 SELLER MARKETPLACE</b>\n━━━━━━━━━━━━━━━━━━\n<b>MY ACTIVE USDT LISTINGS</b>\n"
         if own_resale:
-            body+="\n\n".join(f"#{r['id']} {r['title']}\nYour remaining listing stock: {r['remaining_quantity']}\nYour asking price: {float(r['ask_price_usdt']):g} USDT each" for r in own_resale)
+            body+="\n\n".join(
+                f"<b>#{r['id']} {html.escape(str(r['title']))}</b>\n"
+                f"Your available stock: <b>{r['remaining_quantity']}</b>\n"
+                f"Asking price: <b>{float(r['ask_price_usdt']):g} USDT / item</b>"
+                for r in own_resale)
         else:
-            body+="You have no active USDT listings yet. Central Catalogue purchases by approved Level 1 shops are listed automatically."
-        body+="\n\nOTHER LEVEL 1 MERCHANT LISTINGS\n"
+            body+="No active USDT listings yet. Approved Level 1 catalogue purchases are listed automatically."
+        body+="\n\n<b>OTHER LEVEL 1 MERCHANT LISTINGS</b>\n"
         if resale:
-            body+="\n\n".join(f"#{r['id']} {r['title']}\nSeller: {r['shop_name']}\nPrice: {float(r['ask_price_usdt']):g} USDT each | Stock: {r['remaining_quantity']}" for r in resale)
+            body+="\n\n".join(
+                f"<b>#{r['id']} {html.escape(str(r['title']))}</b>\n"
+                f"Seller: {html.escape(str(r['shop_name']))}\n"
+                f"Price: <b>{float(r['ask_price_usdt']):g} USDT / item</b> | Stock: {r['remaining_quantity']}"
+                for r in resale)
         else:
             body+="No other Level 1 merchant listings available right now."
         await q.message.reply_text(body[:4000],reply_markup=InlineKeyboardMarkup(
             [[InlineKeyboardButton(f"Buy #{r['id']} ×1",callback_data=f"rs:buy:{r['id']}:1"),
               InlineKeyboardButton("Buy ×5",callback_data=f"rs:buy:{r['id']}:5")] for r in resale]+
-            [[InlineKeyboardButton("⬅️ Dashboard",callback_data="m:dashboard")]]))
-        legacy_body="LEGACY INR SELLER MARKETPLACE (separate from USDT resale)"
-        legacy_body+="\n\n".join(f"#{r['id']} {r['title']}\nShop: {r['shop_name']}\n{r['currency']} {float(r['price']):g} | Stock: {r['stock']}\nBuy: /buy {r['id']} QUANTITY" for r in rows) if rows else "\nNo legacy INR products are published here. Your USDT listings are shown in the section above."
-        await q.message.reply_text(legacy_body[:4000],reply_markup=back_dashboard_kb())
+            [[InlineKeyboardButton("⬅️ Dashboard",callback_data="m:dashboard")]]),parse_mode="HTML")
+        legacy_body="<b>LEGACY INR MARKETPLACE</b>\n<i>Separate from USDT resale listings</i>"
+        legacy_body+="\n\n".join(
+            f"#{r['id']} {html.escape(str(r['title']))}\nShop: {html.escape(str(r['shop_name']))}\n"
+            f"{html.escape(str(r['currency']))} {float(r['price']):g} | Stock: {r['stock']}\n"
+            f"<code>/buy {r['id']} QUANTITY</code>"
+            for r in rows) if rows else "\nNo INR products are published. Your USDT listings appear above."
+        await q.message.reply_text(legacy_body[:4000],reply_markup=back_dashboard_kb(),parse_mode="HTML")
     elif action=="products":
         c=v4.db()
         try:
@@ -340,28 +357,80 @@ async def menu_callback(update,ctx):
                 WHERE i.owner_id=? ORDER BY i.id DESC LIMIT 30""",(q.from_user.id,)).fetchall()
             legacy=c.execute("SELECT id,title,price,currency,stock,active FROM products WHERE shop_id=? ORDER BY id DESC LIMIT 20",(s["id"],)).fetchall()
         finally: c.close()
-        body="📦 MY PRODUCTS — USDT INVENTORY\n━━━━━━━━━━━━━━━━━━\n"
-        body+=("\n".join(f"{r['title']} ×{r['remaining_quantity']} | Cost {float(r['unit_cost_usdt']):g} USDT each | {r['status']}" for r in rows) if rows else "No central purchases yet.")
+        body="<b>📦 MY PRODUCTS & INVENTORY</b>\n━━━━━━━━━━━━━━━━━━\n"
+        if rows:
+            total_remaining=sum(int(r["remaining_quantity"]) for r in rows)
+            body+=f"Available units: <b>{total_remaining}</b> across {len(rows)} inventory record(s).\n"
+            for r in rows:
+                remaining=int(r["remaining_quantity"])
+                cost=float(r["unit_cost_usdt"])
+                state="🟢 IN STOCK" if remaining>0 else "🔴 SOLD OUT"
+                expected=round(remaining*0.8,6) if int(s["level"])==1 else 0
+                margin=(f"💚 Expected margin: <b>+0.8 USDT / item</b> | Potential: <b>+{expected:g} USDT</b>\n"
+                        if int(s["level"])==1 and remaining>0 else "")
+                body+=(
+                    f"\n<b>{html.escape(str(r['title']))}</b>\n"
+                    f"Available quantity: <b>{remaining}</b>\n"
+                    f"Purchase cost: {cost:g} USDT / item\n"
+                    f"{margin}Status: {state}\n"
+                )
+        else:
+            body+="No central catalogue purchases recorded yet."
         if legacy:
-            body+="\n\nLEGACY SELLER LISTINGS (existing currency retained)\n"+"\n".join(f"#{r['id']} {r['title']} — {r['currency']} {r['price']} | stock {r['stock']}" for r in legacy)
-        await q.message.reply_text(body[:4000],reply_markup=back_dashboard_kb())
-        await q.message.reply_text("USDT resale controls:",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏷️ List My Stock",callback_data="rs:listmenu")],[InlineKeyboardButton("🛍 USDT Resale Market",callback_data="rs:market")],[InlineKeyboardButton("⬅️ Dashboard",callback_data="m:dashboard")]]))
+            body+="\n<b>LEGACY INR PRODUCTS</b>\n"+"\n".join(
+                f"#{r['id']} {html.escape(str(r['title']))} — {html.escape(str(r['currency']))} {r['price']} | Stock {r['stock']}"
+                for r in legacy)
+        await q.message.reply_text(body[:4000],reply_markup=back_dashboard_kb(),parse_mode="HTML")
+        await q.message.reply_text(
+            "<b>USDT RESALE</b>\nChoose an action:",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🏷️ List My Stock",callback_data="rs:listmenu")],
+                [InlineKeyboardButton("🛍 USDT Resale Market",callback_data="rs:market")],
+                [InlineKeyboardButton("⬅️ Dashboard",callback_data="m:dashboard")]]),
+            parse_mode="HTML")
     elif action=="orders":
         c=v4.db()
         rows=c.execute("SELECT id,product_id,quantity,total_amount,status FROM v4_orders WHERE buyer_shop_id=? OR seller_shop_id=? ORDER BY id DESC LIMIT 20",(s["id"],s["id"])).fetchall()
         central_rows=c.execute("""SELECT o.id,o.quantity,o.total_usdt,o.status,p.title FROM central_orders o
           JOIN central_catalog p ON p.id=o.catalog_id WHERE o.buyer_shop_id=? ORDER BY o.id DESC LIMIT 20""",(s["id"],)).fetchall()
         c.close()
-        seller_body="\n".join(f"Seller order #{r['id']} — Product #{r['product_id']} ×{r['quantity']} — INR {r['total_amount']:.2f} — {r['status']}" for r in rows)
-        central_body="\n".join(f"Central order #{r['id']} — {r['title']} ×{r['quantity']} — {r['total_usdt']:g} USDT — {r['status']}" for r in central_rows)
-        body="🧾 MY ORDERS\n━━━━━━━━━━━━━━━━━━\nSELLER MARKETPLACE (INR)\n"+(seller_body or "No seller orders.")+"\n\nCENTRAL CATALOGUE (USDT)\n"+(central_body or "No central orders.")
-        await q.message.reply_text(body[:4000],reply_markup=back_dashboard_kb())
+        seller_body="\n".join(
+            f"#{r['id']} • Product #{r['product_id']} ×{r['quantity']} • INR {r['total_amount']:.2f} • "
+            f"{'🟢' if r['status'] in ('delivered','completed') else '🔴' if r['status']=='rejected' else '🟡'} {html.escape(str(r['status']).upper())}"
+            for r in rows)
+        central_body="\n".join(
+            f"#{r['id']} • {html.escape(str(r['title']))} ×{r['quantity']} • {r['total_usdt']:g} USDT • 🟢 {html.escape(str(r['status']).upper())}"
+            for r in central_rows)
+        body="<b>🧾 MY ORDERS</b>\n━━━━━━━━━━━━━━━━━━\n<b>INR SELLER MARKETPLACE</b>\n"+(seller_body or "No INR orders.")+"\n\n<b>USDT CATALOGUE / RESALE</b>\n"+(central_body or "No USDT orders.")
+        await q.message.reply_text(body[:4000],reply_markup=back_dashboard_kb(),parse_mode="HTML")
     elif action=="history":
         c=v4.db()
         rows=c.execute("SELECT entry_type,amount,currency,note,created_at FROM ledger WHERE owner_id=? ORDER BY id DESC LIMIT 20",(q.from_user.id,)).fetchall()
         c.close()
-        body="📊 PROFIT & HISTORY\n━━━━━━━━━━━━━━━━━━\n"+("\n".join(f"{r['entry_type']} — {r['currency']} {r['amount']} — {r['note'] or ''} — {r['created_at']}" for r in rows) if rows else "No history yet.")
-        await q.message.reply_text(body[:4000],reply_markup=back_dashboard_kb())
+        body="<b>📊 PROFIT & TRANSACTION HISTORY</b>\n━━━━━━━━━━━━━━━━━━\n"
+        if rows:
+            items=[]
+            for r in rows:
+                kind=str(r["entry_type"])
+                amount=float(r["amount"])
+                if kind in ("resale_profit_credit","central_sale_profit","sale_credit"):
+                    marker="💚"; label="PROFIT / SALE CREDIT"; signed=f"+{amount:g}"
+                elif "debit" in kind or "withdrawal" in kind:
+                    marker="🔴"; label="PAYMENT / DEBIT"; signed=f"{amount:g}"
+                elif "credit" in kind or "deposit" in kind:
+                    marker="🟢"; label="CREDIT"; signed=f"+{amount:g}"
+                else:
+                    marker="🔹"; label=kind.replace("_"," ").upper(); signed=f"{amount:g}"
+                items.append(
+                    f"{marker} <b>{label}</b>\n"
+                    f"{html.escape(kind.replace('_',' ').title())}: <b>{html.escape(str(r['currency']))} {signed}</b>\n"
+                    f"<i>{html.escape(str(r['note'] or ''))}</i>\n"
+                    f"<code>{html.escape(str(r['created_at']))}</code>"
+                )
+            body+="\n\n".join(items)
+        else:
+            body+="No wallet or order activity has been recorded yet."
+        await q.message.reply_text(body[:4000],reply_markup=back_dashboard_kb(),parse_mode="HTML")
     elif action=="profile":
         c=v4.db()
         w=c.execute("SELECT network,verified FROM owner_wallets WHERE owner_id=?",(q.from_user.id,)).fetchone()

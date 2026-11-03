@@ -76,6 +76,10 @@ def main():
                   VALUES(1,101,'deposit_credit',10,'USDT','test deposit',?)""", (v4.now(),))
     c.commit()
     require(cc.balance(c, 101) == 10.0, "USDT deposit balance calculation failed")
+    c.execute("""INSERT INTO ledger(shop_id,owner_id,entry_type,amount,currency,note,created_at)
+                  VALUES(1,101,'level_activation_wallet_credit',2.5,'USDT','test 50% level cashback',?)""", (v4.now(),))
+    c.commit()
+    require(cc.balance(c, 101) == 12.5, "50% level activation cashback was not included in wallet balance")
     c.close()
 
     replies = run_buy(101, pid, 2)

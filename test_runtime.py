@@ -90,7 +90,7 @@ def main():
     require(abs(cc.balance(c, 101) - 5.0) < 1e-8, "Wallet debit/balance after purchase is incorrect")
     c.close()
 
-    replies = run_buy(101, pid, 2)
+    replies = run_buy(101, pid, 3)
     require(any("Insufficient USDT wallet balance" in x for x in replies),
             "Insufficient-balance purchase was not rejected")
     c = v4.db()

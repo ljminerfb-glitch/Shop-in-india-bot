@@ -40,9 +40,11 @@ async def start(update,ctx):
 async def approved_callback(update,ctx):
     q=update.callback_query
     if q.from_user.id!=ADMIN_ID: await q.answer("Admin only",show_alert=True); return
-    action,sid=q.data.split(":"); c=v4.db(); row=c.execute("SELECT owner_id FROM shops WHERE id=?",(int(sid),)).fetchone(); c.close()
+    action,sid=q.data.split(":"); c=v4.db(); row=c.execute("SELECT owner_id,level FROM shops WHERE id=?",(int(sid),)).fetchone(); c.close()
     await v3.approval(update,ctx)
-    if action=="approve" and row: await levels(ctx.bot,row["owner_id"])
+    if action=="approve" and row:
+        if int(row["level"])<1: await levels(ctx.bot,row["owner_id"])
+        else: await ctx.bot.send_message(row["owner_id"],"🏪 Your shop is approved and level is active. Open /start for your owner panel.",reply_markup=owner_kb())
 
 async def level_callback(update,ctx):
     q=update.callback_query; await q.answer()

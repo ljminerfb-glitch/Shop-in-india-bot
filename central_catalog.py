@@ -90,8 +90,8 @@ async def admin_catalog(update,ctx):
         keyboard += [[InlineKeyboardButton("📦 Manage Central Orders",callback_data="cc:orders")],
                      [InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]
         await update.effective_message.reply_text(
-            "🛠 CENTRAL CATALOGUE ADMIN\nChoose a product to edit its USDT price, shared stock or active status.\nPrices are always USDT; INR conversion is only for deposits/withdrawals.",
-            reply_markup=InlineKeyboardMarkup(keyboard))
+            "<b>🛠 CENTRAL CATALOGUE</b>\n━━━━━━━━━━━━━━━━━━\nChoose a product to manage its USDT price, shared stock or availability.",
+            reply_markup=InlineKeyboardMarkup(keyboard),parse_mode="HTML")
     finally: c.close()
 
 async def set_price(update,ctx):
@@ -229,10 +229,15 @@ async def orders(update,ctx):
     rows=c.execute("""SELECT o.id,o.buyer_owner_id,o.buyer_shop_id,o.quantity,o.total_usdt,o.status,o.created_at,p.title
       FROM central_orders o JOIN central_catalog p ON p.id=o.catalog_id ORDER BY o.id DESC LIMIT 50""").fetchall()
     c.close()
-    await update.effective_message.reply_text("📦 CENTRAL CATALOGUE ORDERS\n"+(
-      "Orders are charged in USDT. Fulfil only after arranging delivery; refund restores wallet and shared stock.\n\n"+
-      "\n\n".join(f"#{r['id']} {r['title']} ×{r['quantity']}\nOwner {r['buyer_owner_id']} | Shop #{r['buyer_shop_id']}\n{r['total_usdt']:g} USDT | {r['status']} | {r['created_at']}" for r in rows)
-      if rows else "No central orders yet."))
+    orders_text="<b>📦 CENTRAL CATALOGUE ORDERS</b>\n━━━━━━━━━━━━━━━━━━\n"
+    orders_text+=("<i>Orders are charged in USDT. Fulfil after arranging delivery; refunds restore the wallet and shared stock.</i>\n\n"+
+      "\n\n".join(
+        f"<b>#{r['id']} {html.escape(str(r['title']))} ×{r['quantity']}</b>\n"
+        f"Owner: <code>{r['buyer_owner_id']}</code> • Shop: #{r['buyer_shop_id']}\n"
+        f"Amount: <b>{r['total_usdt']:g} USDT</b> • {'🟢' if r['status']=='fulfilled' else '🔴' if r['status']=='refunded' else '🟡'} {html.escape(str(r['status']).upper())}\n"
+        f"<code>{html.escape(str(r['created_at']))}</code>" for r in rows)
+      if rows else "No central orders yet.")
+    await update.effective_message.reply_text(orders_text[:3900],parse_mode="HTML")
     for r in rows:
         buttons=[]
         if r["status"]=="paid":
@@ -267,9 +272,11 @@ async def admin_callback(update,ctx):
           [InlineKeyboardButton("⬅️ Catalogue List",callback_data="adm:central"),
            InlineKeyboardButton("🏠 Admin Panel",callback_data="adm:home")]
         ])
+        active_label="🟢 ACTIVE" if row["active"] else "🔴 OFF"
         await q.message.reply_text(
-          f"#{pid} {row['title']}\nPrice: {float(row['price_usdt']):g} USDT\nShared stock: {row['stock']}\nActive: {'Yes' if row['active'] else 'No'}",
-          reply_markup=kb); return
+          f"<b>🛍 {html.escape(str(row['title']))}</b>\n━━━━━━━━━━━━━━━━━━\n"
+          f"Price: <b>{float(row['price_usdt']):g} USDT</b>\nShared stock: <b>{row['stock']}</b>\nStatus: <b>{active_label}</b>",
+          reply_markup=kb,parse_mode="HTML"); return
     if action in ("price","stock"):
         pid=int(parts[2]); ctx.user_data["central_admin_edit"]={"field":action,"product_id":pid}
         prompt="new price in USDT" if action=="price" else "new shared stock quantity"
@@ -283,8 +290,9 @@ async def admin_callback(update,ctx):
         if row and before:
             c.execute("INSERT INTO admin_audit(admin_id,owner_id,action,details,created_at) VALUES(?,?,?,?,?)",(v4.ADMIN_ID,None,"central_active_changed",f"Product #{pid} {row['title']}: {before['active']} -> {row['active']}",v4.now()))
         c.commit(); c.close()
-        await q.message.reply_text(f"{row['title']}: {'ACTIVE' if row['active'] else 'OFF'}",
-          reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Product",callback_data=f"cc:view:{pid}"),InlineKeyboardButton("⬅️ Catalogue",callback_data="adm:central")]])); return
+        await q.message.reply_text(
+          f"<b>{html.escape(str(row['title']))}</b> — {'🟢 ACTIVE' if row['active'] else '🔴 OFF'}",
+          reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Product",callback_data=f"cc:view:{pid}"),InlineKeyboardButton("⬅️ Catalogue",callback_data="adm:central")]]),parse_mode="HTML"); return
     if action in ("fulfill","refund"):
         oid=int(parts[2]); c=v4.db()
         try:
@@ -314,7 +322,8 @@ async def admin_callback(update,ctx):
             c.rollback(); log.exception("Central order action failed")
             await q.message.reply_text("Action failed safely. No refund or status change was committed."); return
         finally: c.close()
-        await q.message.reply_text(f"Central order #{oid}: {label.upper()}.")
+        status_icon="✅" if action=="fulfill" else "↩️"
+        await q.message.reply_text(f"<b>{status_icon} ORDER #{oid} {html.escape(label.upper())}</b>",parse_mode="HTML")
         try:
             await ctx.bot.send_message(order["buyer_owner_id"],
               f"Central order #{oid} is {label.upper()}."+

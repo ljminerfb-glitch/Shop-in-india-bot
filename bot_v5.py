@@ -81,9 +81,15 @@ async def menu_callback(update,ctx):
         if not rows: await q.message.reply_text("Marketplace catalog is empty. Verified product listings must be loaded by Admin first.")
         else:
             for r in rows: await q.message.reply_text(f"🛍 {r['title']}\n{(r['description'] or '')[:500]}\nPrice: {r['currency']} {r['price']} | Stock: {r['stock']}\nProduct ID: #{r['id']} | Buy: /buy {r['id']} 1")
-    elif action=="products": await v4.myproducts(q,ctx)
-    elif action=="orders": await v4.myorders(q,ctx)
-    elif action=="history": await v4.history(q,ctx)
+    elif action=="products":
+        c=v4.db(); rows=c.execute("SELECT id,title,price,currency,stock,active FROM products WHERE shop_id=? ORDER BY id DESC LIMIT 20",(s["id"],)).fetchall(); c.close()
+        await q.message.reply_text("📦 MY PRODUCTS\\n"+("\\n".join(f"#{r['id']} {r['title']} — {r['currency']} {r['price']} | stock {r['stock']} | active {r['active']}" for r in rows) if rows else "No products assigned to your shop."))
+    elif action=="orders":
+        c=v4.db(); rows=c.execute("SELECT id,product_id,quantity,total_amount,status FROM v4_orders WHERE buyer_shop_id=? OR seller_shop_id=? ORDER BY id DESC LIMIT 20",(s["id"],s["id"])).fetchall(); c.close()
+        await q.message.reply_text("🧾 MY ORDERS\\n"+("\\n".join(f"#{r['id']} Product #{r['product_id']} ×{r['quantity']} — ₹{r['total_amount']:.2f} — {r['status']}" for r in rows) if rows else "No orders yet."))
+    elif action=="history":
+        c=v4.db(); rows=c.execute("SELECT entry_type,amount,currency,note,created_at FROM ledger WHERE owner_id=? ORDER BY id DESC LIMIT 20",(q.from_user.id,)).fetchall(); c.close()
+        await q.message.reply_text("📊 PROFIT & HISTORY\\n"+("\\n".join(f"{r['entry_type']} — {r['currency']} {r['amount']} — {r['note'] or ''} — {r['created_at']}" for r in rows) if rows else "No history yet."))
     elif action=="profile":
         c=v4.db(); w=c.execute("SELECT network,verified FROM owner_wallets WHERE owner_id=?",(q.from_user.id,)).fetchone(); c.close()
         await q.message.reply_text(f"👤 {s['shop_name']}\nShop ID: {s['id']}\nLevel: L{s['level']}\nWallet: {w['network']} — {'Verified' if w['verified'] else 'Pending'}" if w else f"👤 {s['shop_name']} | L{s['level']}\nWallet: Not saved")

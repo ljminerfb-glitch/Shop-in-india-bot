@@ -454,7 +454,8 @@ async def admin_panel_callback(update,ctx):
                 await q.message.reply_text(f"No pending { 'deposits' if action=='payments' else 'level payments' }.")
             for r in rows:
                 caption=(f"💳 PAYMENT REQUEST #{r['id']}\nOwner: {r['owner_id']} | Shop: {r['shop_id']}\nType: {r['payment_type']}\nAmount: {r['amount']} {r['currency']}\nNetwork: {r['network'] or 'Not selected'}\nStatus: PENDING")
-                kb=InlineKeyboardMarkup([[InlineKeyboardButton("✅ APPROVE",callback_data=f"pay:approve:{r['id']}"),InlineKeyboardButton("❌ REJECT",callback_data=f"pay:reject:{r['id']}")],[InlineKeyboardButton("⬅️ Deposits",callback_data="adm:payments"),InlineKeyboardButton("🏠 Admin Panel",callback_data="adm:home")]])
+                back_label="⬅️ Deposits" if action=="payments" else "⬅️ Level Payments"
+                kb=InlineKeyboardMarkup([[InlineKeyboardButton("✅ APPROVE",callback_data=f"pay:approve:{r['id']}"),InlineKeyboardButton("❌ REJECT",callback_data=f"pay:reject:{r['id']}")],[InlineKeyboardButton(back_label,callback_data=f"adm:{action}"),InlineKeyboardButton("🏠 Admin Panel",callback_data="adm:home")]])
                 if r['screenshot_file_id']:
                     await ctx.bot.send_photo(q.message.chat_id,r['screenshot_file_id'],caption=caption,reply_markup=kb)
                 else:

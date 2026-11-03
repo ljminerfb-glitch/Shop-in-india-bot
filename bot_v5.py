@@ -567,14 +567,14 @@ async def send_admin_panel(bot, chat_id):
       [InlineKeyboardButton("⚙️ Settings & Commands",callback_data="adm:settings"),InlineKeyboardButton("🔄 Refresh",callback_data="adm:home")]
     ])
     await bot.send_message(chat_id,
-      "🛡️ SHOP IN INDIA — ADMIN CONTROL PANEL\n━━━━━━━━━━━━━━━━━━\n"
-      f"🏪 Shops: {counts['shops']}\n🛍 Products: {counts['products']}\n"
-      f"📦 Orders: {counts['v4_orders']}\n💳 Pending deposits: {pending_deposits}\n"
-      f"🎚 Pending level payments: {pending_levels}\n"
-      f"💸 Withdrawals: {counts['withdrawals']} (Pending: {pending_wd})\n"
+      "<b>🛡️ SHOP IN INDIA — ADMIN CONTROL PANEL</b>\n━━━━━━━━━━━━━━━━━━\n"
+      f"🏪 Shops: <b>{counts['shops']}</b>\n🛍 Products: <b>{counts['products']}</b>\n"
+      f"📦 Orders: <b>{counts['v4_orders']}</b>\n💳 Pending deposits: <b>{pending_deposits}</b>\n"
+      f"🎚 Pending level payments: <b>{pending_levels}</b>\n"
+      f"💸 Withdrawals: <b>{counts['withdrawals']}</b> (Pending: <b>{pending_wd}</b>)\n"
       f"💱 Rate: 1 USDT = INR {v4.usdt_inr_rate():,.2f}\n\n"
-      "Select a control below. All screens are sent as new messages; previous messages remain.",
-      reply_markup=kb)
+      "<b>CONTROL CENTER</b>\nChoose a section below.",
+      reply_markup=kb,parse_mode="HTML")
 
 async def admin_panel_callback(update,ctx):
     q=update.callback_query
@@ -598,40 +598,60 @@ async def admin_panel_callback(update,ctx):
                 (SELECT COUNT(*) FROM v4_orders o WHERE o.buyer_shop_id=s.id) buys,
                 (SELECT COUNT(*) FROM v4_orders o WHERE o.seller_shop_id=s.id) sells
                 FROM shops s ORDER BY s.id DESC LIMIT 40""").fetchall()
-            await q.message.reply_text("👥 OWNER CONTROL PANEL\n\n"+("\n\n".join(
-              f"🏪 {r['shop_name']} | Shop #{r['id']}\nOwner ID: {r['owner_id']}\nStatus: {r['status']} | Level: L{r['level']}\nProducts: {r['products']} | Buys: {r['buys']} | Sells: {r['sells']}\nDetails: /owner {r['owner_id']}"
-              for r in rows) if rows else "No owner shops found."),
-              reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]))
+            owner_body="<b>👥 OWNER CONTROL PANEL</b>\n━━━━━━━━━━━━━━━━━━\n"
+            owner_body+="\n\n".join(
+              f"<b>🏪 {html.escape(str(r['shop_name']))}</b> • Shop #{r['id']}\n"
+              f"Owner: <code>{r['owner_id']}</code>\n"
+              f"Status: {'✅' if r['status']=='approved' else '❌' if r['status']=='rejected' else '🟡'} <b>{html.escape(str(r['status']).upper())}</b> • Level {r['level']}\n"
+              f"Products: {r['products']} • Buys: {r['buys']} • Sells: {r['sells']}\n"
+              f"<code>/owner {r['owner_id']}</code>"
+              for r in rows) if rows else "No owner shops found."
+            await q.message.reply_text(owner_body[:4000],
+              reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]),parse_mode="HTML")
         elif action=="shops":
             rows=c.execute("SELECT id,shop_name,owner_id,status,level FROM shops ORDER BY id DESC LIMIT 40").fetchall()
-            await q.message.reply_text("🏪 SHOPS\n\n"+("\n".join(f"#{r['id']} {r['shop_name']} | Owner {r['owner_id']} | {r['status']} | L{r['level']}" for r in rows) if rows else "No shops."),
-              reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]))
+            shops_body="<b>🏪 ALL SHOPS</b>\n━━━━━━━━━━━━━━━━━━\n"
+            shops_body+="\n".join(
+              f"#{r['id']} <b>{html.escape(str(r['shop_name']))}</b> • Owner <code>{r['owner_id']}</code>\n"
+              f"{'✅' if r['status']=='approved' else '❌' if r['status']=='rejected' else '🟡'} {html.escape(str(r['status']).upper())} • Level {r['level']}"
+              for r in rows) if rows else "No shops registered."
+            await q.message.reply_text(shops_body[:4000],
+              reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]),parse_mode="HTML")
         elif action in ("payments","levelpayments"):
             payment_type="wallet_deposit" if action=="payments" else "level_activation"
             section_title="PENDING DEPOSITS" if action=="payments" else "PENDING LEVEL PAYMENTS"
             rows=c.execute("SELECT id,owner_id,payment_type,amount,currency,network,status,screenshot_file_id,shop_id FROM payment_requests WHERE status='pending' AND payment_type=? ORDER BY id DESC LIMIT 25",(payment_type,)).fetchall()
-            await q.message.reply_text(f"💳 {section_title}\nEach request is reviewed separately. Verify the transaction on the blockchain before approving.")
+            await q.message.reply_text(f"<b>💳 {section_title}</b>\n━━━━━━━━━━━━━━━━━━\nReview every request separately. Verify the transaction before approving.",parse_mode="HTML")
             if not rows:
                 await q.message.reply_text(f"No pending { 'deposits' if action=='payments' else 'level payments' }.")
             for r in rows:
-                caption=(f"💳 PAYMENT REQUEST #{r['id']}\nOwner: {r['owner_id']} | Shop: {r['shop_id']}\nType: {r['payment_type']}\nAmount: {r['amount']} {r['currency']}\nNetwork: {r['network'] or 'Not selected'}\nStatus: PENDING")
+                caption=(f"<b>💳 PAYMENT REQUEST #{r['id']}</b>\n━━━━━━━━━━━━━━━━━━\n"
+                         f"Owner: <code>{r['owner_id']}</code> • Shop: <code>{r['shop_id']}</code>\n"
+                         f"Type: {html.escape(str(r['payment_type']))}\n"
+                         f"Amount: <b>{float(r['amount']):g} {html.escape(str(r['currency']))}</b>\n"
+                         f"Network: {html.escape(str(r['network'] or 'Not selected'))}\n🟡 <b>STATUS: PENDING</b>")
                 back_label="⬅️ Deposits" if action=="payments" else "⬅️ Level Payments"
                 kb=InlineKeyboardMarkup([[InlineKeyboardButton("✅ APPROVE",callback_data=f"pay:approve:{r['id']}"),InlineKeyboardButton("❌ REJECT",callback_data=f"pay:reject:{r['id']}")],[InlineKeyboardButton(back_label,callback_data=f"adm:{action}"),InlineKeyboardButton("🏠 Admin Panel",callback_data="adm:home")]])
                 if r['screenshot_file_id']:
-                    await ctx.bot.send_photo(q.message.chat_id,r['screenshot_file_id'],caption=caption,reply_markup=kb)
+                    await ctx.bot.send_photo(q.message.chat_id,r['screenshot_file_id'],caption=caption,reply_markup=kb,parse_mode="HTML")
                 else:
-                    await q.message.reply_text(caption+"\n⚠️ No screenshot attached.",reply_markup=kb)
+                    await q.message.reply_text(caption+"\n⚠️ No screenshot attached.",reply_markup=kb,parse_mode="HTML")
             await q.message.reply_text("⬅️ Back options:",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]))
         elif action=="withdrawals":
             rows=c.execute("SELECT id,owner_id,amount,currency,network,wallet_address,status,amount_inr,exchange_rate FROM withdrawals WHERE status='pending' ORDER BY id DESC LIMIT 25").fetchall()
-            await q.message.reply_text("💸 WITHDRAWAL REVIEW\nMark PAID only after you have actually sent the payout.")
+            await q.message.reply_text("<b>💸 WITHDRAWAL REVIEW</b>\n━━━━━━━━━━━━━━━━━━\nMark PAID only after the payout has actually been sent.",parse_mode="HTML")
             if not rows:
                 await q.message.reply_text("No pending withdrawals.")
             for r in rows:
                 rate=float(r['exchange_rate'] or 0)
-                caption=(f"💸 WITHDRAWAL #{r['id']}\nOwner: {r['owner_id']}\nAmount: ₹{float(r['amount_inr'] or r['amount']):,.2f}\nNetwork: {r['network']}\nWallet: {r['wallet_address']}\nRate: ₹{rate:,.2f} per USDT\nStatus: PENDING")
+                caption=(f"<b>💸 WITHDRAWAL REQUEST #{r['id']}</b>\n━━━━━━━━━━━━━━━━━━\n"
+                         f"Owner: <code>{r['owner_id']}</code>\n"
+                         f"Amount: <b>₹{float(r['amount_inr'] or r['amount']):,.2f}</b>\n"
+                         f"Network: {html.escape(str(r['network']))}\n"
+                         f"Wallet: <code>{html.escape(str(r['wallet_address']))}</code>\n"
+                         f"Rate: ₹{rate:,.2f} per USDT\n🟡 <b>STATUS: PENDING</b>")
                 kb=InlineKeyboardMarkup([[InlineKeyboardButton("✅ MARK PAID",callback_data=f"wd:paid:{r['id']}"),InlineKeyboardButton("❌ REJECT",callback_data=f"wd:reject:{r['id']}")],[InlineKeyboardButton("⬅️ Withdrawals",callback_data="adm:withdrawals"),InlineKeyboardButton("🏠 Admin Panel",callback_data="adm:home")]])
-                await q.message.reply_text(caption,reply_markup=kb)
+                await q.message.reply_text(caption,reply_markup=kb,parse_mode="HTML")
             await q.message.reply_text("⬅️ Back options:",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]))
         elif action=="products":
             rows=c.execute("""SELECT id,title,price,currency,stock,active,shop_id,
@@ -647,9 +667,9 @@ async def admin_panel_callback(update,ctx):
                 f"Change level: /setproductlevel {r['id']} LEVEL"
                 for r in rows)
             await q.message.reply_text(
-                "🛍 PRODUCTS BY LEVEL\n\n"+(summary or "No products assigned.")+
-                "\n\nLATEST PRODUCTS\n"+(details or "No products."),
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]))
+                "<b>🛍 PRODUCTS BY LEVEL</b>\n━━━━━━━━━━━━━━━━━━\n"+html.escape(summary or "No products assigned.")+
+                "\n\n<b>LATEST PRODUCTS</b>\n"+html.escape(details or "No products."),
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]),parse_mode="HTML")
         elif action=="orders":
             await q.message.reply_text("📦 ORDER MANAGEMENT\nUse /orders to view pending orders and Mark Delivered controls.\nUse /orderdone ORDER_ID or /orderreject ORDER_ID REASON when appropriate.",
               reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]))

@@ -295,15 +295,32 @@ async def menu_callback(update,ctx):
     elif action=="market":
         await central.owner_market(update,ctx,s)
     elif action=="sellermarket":
+        central.resale_setup()
         c=v4.db()
-        rows=c.execute("""SELECT p.id,p.title,p.description,p.price,p.currency,p.stock,s.shop_name
-          FROM products p JOIN shops s ON s.id=p.shop_id
-          WHERE p.active=1 AND p.stock>0 AND s.status='approved' AND p.shop_id<>?
-          ORDER BY p.id DESC LIMIT 30""",(s["id"],)).fetchall()
-        c.close()
-        body="🏬 SELLER MARKETPLACE\n━━━━━━━━━━━━━━━━━━\nExisting shop-owner products remain separate from the central USDT catalogue.\n\n"
-        body += ("\n\n".join(f"#{r['id']} {r['title']}\nShop: {r['shop_name']}\n{r['currency']} {float(r['price']):g} | Stock: {r['stock']}\nBuy: /buy {r['id']} QUANTITY" for r in rows) if rows else "No seller products available right now.")
-        await q.message.reply_text(body[:4000],reply_markup=back_dashboard_kb())
+        try:
+            rows=c.execute("""SELECT p.id,p.title,p.description,p.price,p.currency,p.stock,s.shop_name
+              FROM products p JOIN shops s ON s.id=p.shop_id
+              WHERE p.active=1 AND p.stock>0 AND s.status='approved' AND p.shop_id<>?
+              ORDER BY p.id DESC LIMIT 30""",(s["id"],)).fetchall()
+            resale=c.execute("""SELECT l.id,l.remaining_quantity,l.ask_price_usdt,p.title,sh.shop_name
+              FROM resale_listings l JOIN central_catalog p ON p.id=l.catalog_id
+              JOIN shops sh ON sh.id=l.shop_id
+              WHERE l.status='active' AND l.remaining_quantity>0 AND l.owner_id<>?
+                AND sh.status='approved' AND sh.level=1
+              ORDER BY l.id DESC LIMIT 30""",(q.from_user.id,)).fetchall()
+        finally: c.close()
+        body="🏬 SELLER MARKETPLACE\n━━━━━━━━━━━━━━━━━━\nLEVEL 1 USDT RESALE MARKET\n"
+        if resale:
+            body+="\n\n".join(f"#{r['id']} {r['title']}\nSeller: {r['shop_name']}\nPrice: {float(r['ask_price_usdt']):g} USDT each | Stock: {r['remaining_quantity']}" for r in resale)
+        else:
+            body+="No Level 1 USDT resale listings available right now."
+        await q.message.reply_text(body[:4000],reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton(f"Buy #{r['id']} ×1",callback_data=f"rs:buy:{r['id']}:1"),
+              InlineKeyboardButton("Buy ×5",callback_data=f"rs:buy:{r['id']}:5")] for r in resale]+
+            [[InlineKeyboardButton("⬅️ Dashboard",callback_data="m:dashboard")]]))
+        legacy_body="LEGACY SELLER MARKETPLACE (existing currency)"
+        legacy_body+="\n\n".join(f"#{r['id']} {r['title']}\nShop: {r['shop_name']}\n{r['currency']} {float(r['price']):g} | Stock: {r['stock']}\nBuy: /buy {r['id']} QUANTITY" for r in rows) if rows else "\nNo legacy seller products available."
+        await q.message.reply_text(legacy_body[:4000],reply_markup=back_dashboard_kb())
     elif action=="products":
         c=v4.db()
         try:

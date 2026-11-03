@@ -491,11 +491,16 @@ async def withdrawal_review(update,ctx):
         if not r or r["status"]!="pending":
             c.rollback(); await q.message.reply_text("Withdrawal missing or already reviewed."); return
         if action=="paid":
-            c.execute("UPDATE withdrawals SET status='paid',reviewed_at=?,admin_note='Marked paid after manual payout verification' WHERE id=?",(now(),wid))
+            cur=c.execute("UPDATE withdrawals SET status='paid',reviewed_at=?,admin_note='Marked paid after manual payout verification' WHERE id=? AND status='pending'",(now(),wid))
+            if cur.rowcount != 1:
+                c.rollback(); await q.message.reply_text("This withdrawal was already reviewed. Refresh Pending Withdrawals."); return
             c.execute("INSERT INTO ledger(transaction_id,shop_id,owner_id,entry_type,amount,currency,note,created_at) VALUES(NULL,?,?, 'withdrawal_debit',?,'INR',?,?)",(r["shop_id"],r["owner_id"],r["amount"],f"Withdrawal #{wid} paid",now()))
             status="paid"
         else:
-            c.execute("UPDATE withdrawals SET status='rejected',reviewed_at=?,admin_note='Rejected by admin' WHERE id=?",(now(),wid)); status="rejected"
+            cur=c.execute("UPDATE withdrawals SET status='rejected',reviewed_at=?,admin_note='Rejected by admin' WHERE id=? AND status='pending'",(now(),wid))
+            if cur.rowcount != 1:
+                c.rollback(); await q.message.reply_text("This withdrawal was already reviewed. Refresh Pending Withdrawals."); return
+            status="rejected"
         c.execute("INSERT INTO admin_audit(admin_id,owner_id,action,details,created_at) VALUES(?,?,?,?,?)",(ADMIN_ID,r["owner_id"],"withdrawal_"+status,f"Withdrawal #{wid}",now()))
         c.commit()
     except Exception:
@@ -503,7 +508,15 @@ async def withdrawal_review(update,ctx):
     finally: c.close()
     rate=float(r['exchange_rate'] or usdt_inr_rate()) if 'exchange_rate' in r.keys() else usdt_inr_rate()
     usdt_amount=inr_to_usdt(float(r['amount']),rate)
-    await q.message.reply_text(f"Withdrawal #{wid}: {status.upper()}\nINR: ₹{float(r['amount']):,.2f} | Rate: 1 USDT = ₹{rate:,.2f} | USDT equivalent: {usdt_amount:g}")
+    try:
+        old_text=q.message.text or q.message.caption or f"WITHDRAWAL #{wid}"
+        await q.message.edit_text(old_text.split("\\n\\nREVIEW RESULT:",1)[0]+f"\\n\\nREVIEW RESULT: {status.upper()}",reply_markup=None)
+    except Exception:
+        try:
+            await q.message.edit_caption((q.message.caption or f"WITHDRAWAL #{wid}")+f"\\n\\nREVIEW RESULT: {status.upper()}",reply_markup=None)
+        except Exception:
+            log.exception("Could not update reviewed withdrawal card")
+    await q.message.reply_text(f"Withdrawal #{wid}: {status.upper()}\\nINR: ₹{float(r['amount']):,.2f} | Rate: 1 USDT = ₹{rate:,.2f} | USDT equivalent: {usdt_amount:g}")
     try: await ctx.bot.send_message(r["owner_id"],f"Withdrawal #{wid}: {status.upper()}\nINR: ₹{float(r['amount']):,.2f} | Rate: 1 USDT = ₹{rate:,.2f} | USDT equivalent: {usdt_amount:g}")
     except Exception: pass
 

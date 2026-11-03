@@ -155,7 +155,6 @@ async def buy(update,ctx):
         await update.effective_message.reply_text("Invalid product ID or quantity."); return
     c=v4.db()
     try:
-        setup(c)
         c.execute("BEGIN IMMEDIATE")
         p=c.execute("SELECT * FROM central_catalog WHERE id=? AND active=1 AND level_required=1",(pid,)).fetchone()
         if not p or float(p["price_usdt"])<=0:

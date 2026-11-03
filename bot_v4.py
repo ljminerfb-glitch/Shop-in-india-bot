@@ -342,7 +342,7 @@ async def payment_review(update,ctx):
         c.execute("BEGIN IMMEDIATE")
         r=c.execute("SELECT * FROM payment_requests WHERE id=?",(rid,)).fetchone()
         if not r or r["status"]!="pending" or not r["screenshot_file_id"]:
-            c.rollback(); await q.edit_message_caption(caption="Request missing, proof missing, or already reviewed."); return
+            c.rollback(); await q.message.reply_text("Request missing, proof missing, or already reviewed."); return
         status="approved" if action=="approve" else "rejected"
         c.execute("UPDATE payment_requests SET status=?,reviewed_at=?,admin_note=? WHERE id=? AND status='pending'",(status,now(),"Admin verified manually" if action=="approve" else "Admin rejected proof",rid))
         c.execute("""INSERT INTO payment_history(owner_id,shop_id,payment_type,amount,currency,status,reference,admin_note,actor_id,created_at,reviewed_at)
@@ -361,9 +361,9 @@ async def payment_review(update,ctx):
         c.execute("INSERT INTO admin_audit(admin_id,owner_id,action,details,created_at) VALUES(?,?,?,?,?)",(ADMIN_ID,r["owner_id"],"payment_"+status,f"Payment request #{rid}",now()))
         c.commit()
     except Exception:
-        c.rollback(); log.exception("Payment review failed"); await q.edit_message_caption(caption="Review failed; no changes committed."); return
+        c.rollback(); log.exception("Payment review failed"); await q.message.reply_text("Review failed; no changes committed."); return
     finally: c.close()
-    await q.edit_message_caption(caption=f"Payment request #{rid}: {status.upper()} (manual review).")
+    await q.message.reply_text(f"Payment request #{rid}: {status.upper()} (manual review).")
     try: await ctx.bot.send_message(r["owner_id"],f"Payment request #{rid} {status.upper()}."+(f" Your shop level is now L{r['level']}." if status=="approved" and r["payment_type"]=="level_activation" else ""))
     except Exception: pass
 
@@ -417,7 +417,7 @@ async def withdrawal_review(update,ctx):
         c.execute("BEGIN IMMEDIATE")
         r=c.execute("SELECT * FROM withdrawals WHERE id=?",(wid,)).fetchone()
         if not r or r["status"]!="pending":
-            c.rollback(); await q.edit_message_text("Withdrawal missing or already reviewed."); return
+            c.rollback(); await q.message.reply_text("Withdrawal missing or already reviewed."); return
         if action=="paid":
             c.execute("UPDATE withdrawals SET status='paid',reviewed_at=?,admin_note='Marked paid after manual payout verification' WHERE id=?",(now(),wid))
             c.execute("INSERT INTO ledger(transaction_id,shop_id,owner_id,entry_type,amount,currency,note,created_at) VALUES(NULL,?,?, 'withdrawal_debit',?,'INR',?,?)",(r["shop_id"],r["owner_id"],r["amount"],f"Withdrawal #{wid} paid",now()))
@@ -427,11 +427,11 @@ async def withdrawal_review(update,ctx):
         c.execute("INSERT INTO admin_audit(admin_id,owner_id,action,details,created_at) VALUES(?,?,?,?,?)",(ADMIN_ID,r["owner_id"],"withdrawal_"+status,f"Withdrawal #{wid}",now()))
         c.commit()
     except Exception:
-        c.rollback(); log.exception("Withdrawal review failed"); await q.edit_message_text("Withdrawal review failed."); return
+        c.rollback(); log.exception("Withdrawal review failed"); await q.message.reply_text("Withdrawal review failed."); return
     finally: c.close()
     rate=float(r['exchange_rate'] or usdt_inr_rate()) if 'exchange_rate' in r.keys() else usdt_inr_rate()
     usdt_amount=inr_to_usdt(float(r['amount']),rate)
-    await q.edit_message_text(f"Withdrawal #{wid}: {status.upper()}\nINR: ₹{float(r['amount']):,.2f} | Rate: 1 USDT = ₹{rate:,.2f} | USDT equivalent: {usdt_amount:g}")
+    await q.message.reply_text(f"Withdrawal #{wid}: {status.upper()}\nINR: ₹{float(r['amount']):,.2f} | Rate: 1 USDT = ₹{rate:,.2f} | USDT equivalent: {usdt_amount:g}")
     try: await ctx.bot.send_message(r["owner_id"],f"Withdrawal #{wid}: {status.upper()}\nINR: ₹{float(r['amount']):,.2f} | Rate: 1 USDT = ₹{rate:,.2f} | USDT equivalent: {usdt_amount:g}")
     except Exception: pass
 

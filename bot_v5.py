@@ -337,8 +337,10 @@ async def menu_callback(update,ctx):
         c=v4.db()
         w=c.execute("SELECT network,verified FROM owner_wallets WHERE owner_id=?",(q.from_user.id,)).fetchone()
         c.close()
-        body=(f"👤 {s['shop_name']}\nShop ID: {s['id']}\nLevel: L{s['level']}\nWallet: {w['network']} — {'Verified' if w['verified'] else 'Pending'}"
-              if w else f"👤 {s['shop_name']} | L{s['level']}\nWallet: Not saved")
+        body=(f"👤 MY ACCOUNT\\nShop: {s['shop_name']}\\nShop ID: {s['id']}\\nLevel: L{s['level']}\\n"
+              f"Wallet verification: {w['network']} — {'Verified' if w['verified'] else 'Pending'}\\n\\n"
+              f"USDT deposit addresses\\nTRC20: {v4.PAY_TRON}\\nBEP20: {v4.PAY_BSC}\\n"
+              "Select the matching network when depositing. Send only USDT.")
         await q.message.reply_text(body,reply_markup=back_dashboard_kb())
     elif action=="support":
         await q.message.reply_text("💬 SUPPORT\nFor help with registration, payments, shop approval or account issues, contact the Shop in India administrator.",reply_markup=back_dashboard_kb())

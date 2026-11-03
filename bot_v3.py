@@ -259,11 +259,11 @@ async def save_shop_password(update, context):
     try:
         await context.bot.send_message(
             ADMIN_ID,
-            f"🏪 NEW SHOP APPLICATION\n\n"
-            f"Shop: {name}\nOwner: {user.first_name}\n"
-            f"Username: @{user.username or 'Not set'}\n"
-            f"Telegram ID: {user.id}\nShop ID: {shop_id}",
-            reply_markup=keyboard
+            f"<b>🏪 NEW SHOP APPLICATION</b>\n━━━━━━━━━━━━━━━━━━\n"
+            f"Shop: <b>{html.escape(str(name))}</b>\nOwner: {html.escape(str(user.first_name or ''))}\n"
+            f"Username: @{html.escape(str(user.username or 'Not set'))}\n"
+            f"Telegram ID: <code>{user.id}</code>\nShop ID: <code>{shop_id}</code>\n🟡 <b>STATUS: PENDING</b>",
+            reply_markup=keyboard,parse_mode="HTML"
         )
         admin_sent = True
     except Exception:
@@ -274,8 +274,8 @@ async def save_shop_password(update, context):
         message += "\nPlease contact support: Admin notification could not be delivered."
 
     await update.message.reply_text(
-        f"✅ Registration submitted!\nShop ID: {shop_id}\n{message}",
-        reply_markup=main_keyboard()
+        f"<b>✅ REGISTRATION SUBMITTED</b>\n━━━━━━━━━━━━━━━━━━\nShop ID: <code>{shop_id}</code>\n🟡 <b>STATUS: PENDING REVIEW</b>\n{html.escape(message)}",
+        reply_markup=main_keyboard(),parse_mode="HTML"
     )
 
 async def login_start(update, context):
@@ -286,7 +286,7 @@ async def login_start(update, context):
         return
 
     context.user_data["state"] = "login_password"
-    await update.message.reply_text("Enter your shop password:")
+    await update.message.reply_text("<b>🔐 SHOP LOGIN</b>\nEnter your shop password:",parse_mode="HTML")
 
 async def login_password(update, context):
     password = update.message.text.strip()
@@ -298,13 +298,13 @@ async def login_password(update, context):
         return
 
     if not verify_password(password, shop["password_hash"]):
-        await update.message.reply_text("❌ Incorrect password.")
+        await update.message.reply_text("<b>❌ INCORRECT PASSWORD</b>\nPlease try again.",parse_mode="HTML")
         return
 
     if shop["status"] != "approved":
         await update.message.reply_text(
-            f"⏳ Your shop status is: {shop['status']}.\n"
-            "Admin approval is required before marketplace access."
+            f"<b>🟡 APPLICATION {html.escape(str(shop['status']).upper())}</b>\nAdmin approval is required before marketplace access.",
+            parse_mode="HTML"
         )
         return
 
@@ -312,10 +312,10 @@ async def login_password(update, context):
     context.user_data["shop_id"] = shop["id"]
 
     await update.message.reply_text(
-        f"🔓 Login successful!\n\n"
-        f"Shop: {shop['shop_name']}\n"
-        f"Shop ID: {shop['id']}\nLevel: {shop['level']}",
-        reply_markup=main_keyboard()
+        f"<b>✅ LOGIN SUCCESSFUL</b>\n━━━━━━━━━━━━━━━━━━\n"
+        f"Shop: <b>{html.escape(str(shop['shop_name']))}</b>\n"
+        f"Shop ID: <code>{shop['id']}</code> • Level: <b>{shop['level']}</b>",
+        reply_markup=main_keyboard(),parse_mode="HTML"
     )
 
 async def approval(update, context):

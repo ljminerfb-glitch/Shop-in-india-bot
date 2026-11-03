@@ -616,6 +616,12 @@ def ensure_catalog_schema():
         con.execute(
             "ALTER TABLE products ADD COLUMN stock INTEGER NOT NULL DEFAULT 1"
         )
+        cols.append("stock")
+    # Safe migration: existing products become Level 1 products.
+    if "level_required" not in cols:
+        con.execute(
+            "ALTER TABLE products ADD COLUMN level_required INTEGER NOT NULL DEFAULT 1"
+        )
     con.commit()
     con.close()
 

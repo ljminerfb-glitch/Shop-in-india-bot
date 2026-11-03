@@ -470,9 +470,19 @@ async def resale_callback(update,ctx):
         lid=int(parts[2]); c=v4.db()
         r=c.execute("""SELECT l.*,p.title,s.shop_name FROM resale_listings l JOIN central_catalog p ON p.id=l.catalog_id JOIN shops s ON s.id=l.shop_id WHERE l.id=?""",(lid,)).fetchone(); c.close()
         if not r: await q.answer("Listing not found",show_alert=True); return
+        if r["status"]!="active" or int(r["remaining_quantity"])<1:
+            await q.answer("This listing is no longer available",show_alert=True); return
         ctx.user_data["admin_resale_offer"]={"listing_id":lid}
         await q.answer()
-        await q.message.reply_text(f"ADMIN RESALE LISTING #{lid}\n{r['title']}\nSeller: {r['shop_name']} | Owner {r['owner_id']}\nRemaining: {r['remaining_quantity']}\nSeller asking: {r['ask_price_usdt']:g} USDT each\n\nSend your offer in this format: PRICE QUANTITY\nExample: 2.5 10\nType CANCEL to stop.",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]))
+        suggested_price=float(r["ask_price_usdt"])
+        available_qty=int(r["remaining_quantity"])
+        await q.message.reply_text(
+            f"ADMIN RESALE LISTING #{lid}\n{r['title']}\nSeller: {r['shop_name']} | Owner {r['owner_id']}\n"
+            f"Remaining: {available_qty}\nSeller asking: {suggested_price:g} USDT each\n\n"
+            "Send your offer as two numbers: PRICE QUANTITY.\n"
+            f"To buy all remaining stock at the asking price, send: {suggested_price:g} {available_qty}\n"
+            f"Example quantity must not exceed {available_qty}.\nType CANCEL to stop.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]))
         return
     if action=="market":
         shop=v4.shop_for(q.from_user.id)

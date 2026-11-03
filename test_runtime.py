@@ -217,10 +217,10 @@ def test_seller_market_screen(listing_id):
     own_screen = own_message.replies[0]["text"]
     require("MY ACTIVE USDT LISTINGS" in own_screen, "Seller's own USDT listing section missing")
     require("#%d Oxidised Jhumka Earrings" % listing_id in own_screen, "Seller cannot see their own listed product")
-    require("Your remaining listing stock: 2" in own_screen, "Seller's own remaining listing quantity missing")
+    require("Your available stock: <b>2</b>" in own_screen, "Seller's own remaining listing quantity missing")
     require("3.3 USDT each" in own_screen, "Seller's own asking price missing")
     legacy_screen = own_message.replies[1]["text"]
-    require("USDT listings are shown in the section above" in legacy_screen,
+    require("Your USDT listings appear above" in legacy_screen,
             "Legacy INR section does not explain where USDT stock appears")
     print("PASS: Seller sees own active USDT listing, quantity and asking price")
 

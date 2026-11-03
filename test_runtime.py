@@ -178,6 +178,24 @@ def test_central_purchase_and_auto_listing():
     return pid, listing_id, inventory_id
 
 
+def test_list_stock_profit_screen():
+    update, message, query = callback_update(101, "rs:listmenu")
+    asyncio.run(cc.resale_callback(update, context()))
+    require(len(message.replies) >= 1, "List My Stock screen did not render")
+    screen = message.replies[0]["text"]
+    require("Your cost: 2.5 USDT each" in screen, "List My Stock does not show unit cost")
+    require("Fixed resale price: 3.3 USDT each" in screen, "List My Stock does not show resale price")
+    require("Expected profit per sold item: +0.8 USDT" in screen,
+            "List My Stock does not show expected profit per item")
+    require("Potential profit from already-listed stock: +1.6 USDT" in screen,
+            "List My Stock does not show total potential profit for active listings")
+    require("Potential extra profit if you list the free stock: +0 USDT" in screen,
+            "List My Stock does not show profit available from unlisted stock")
+    require("credited only after a sale is completed" in screen,
+            "Expected profit is not clearly distinguished from realized profit")
+    print("PASS: List My Stock shows cost, price, per-item and total expected profit")
+
+
 def test_seller_market_screen(listing_id):
     update, message, query = callback_update(202, "m:sellermarket")
     asyncio.run(v5.menu_callback(update, context()))
@@ -334,6 +352,7 @@ def test_failed_central_purchases(pid):
 def main():
     fixture()
     pid, listing_id, inventory_id = test_central_purchase_and_auto_listing()
+    test_list_stock_profit_screen()
     test_seller_market_screen(listing_id)
     test_resale_buyer_guards_and_sale(listing_id, inventory_id)
     test_admin_resale_flow(listing_id, inventory_id)

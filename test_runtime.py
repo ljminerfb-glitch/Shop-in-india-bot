@@ -91,7 +91,13 @@ def main():
             "Central order was not recorded")
     require(c.execute("SELECT COUNT(*) FROM central_inventory WHERE owner_id=101 AND remaining_quantity=2").fetchone()[0] == 1,
             "Buyer inventory was not created")
-    require(abs(cc.balance(c, 101) - 5.0) < 1e-8, "Wallet debit/balance after purchase is incorrect")
+    require(abs(cc.balance(c, 101) - 7.5) < 1e-8, "Wallet debit/balance after purchase is incorrect")
+    listing = c.execute("SELECT * FROM resale_listings WHERE owner_id=101 AND status='active'").fetchone()
+    require(listing is not None, "Level 1 purchase did not auto-create a resale listing")
+    require(abs(float(listing["ask_price_usdt"]) - 3.3) < 1e-8,
+            "Level 1 resale listing did not apply the 0.8 USDT margin")
+    require(int(listing["remaining_quantity"]) == 2,
+            "Automatic resale listing quantity does not match purchased stock")
     c.close()
 
     replies = run_buy(101, pid, 3)

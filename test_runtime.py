@@ -394,14 +394,14 @@ def test_usdt_trc20_withdrawal_flow():
     available=v5.available_withdrawal_usdt(101)
     require(abs(available-6.8)<1e-8,"Withdrawable balance must use completed USDT resale proceeds only")
 
+    owner_ctx=context()
     update,menu_message,query=callback_update(101,"m:withdraw")
-    asyncio.run(v5.menu_callback(update,context()))
+    asyncio.run(v5.menu_callback(update,owner_ctx))
     prompt=menu_message.replies[0]["text"]
     require("WITHDRAW USDT" in prompt and "6.800000 USDT" in prompt,
             "Withdrawal screen does not show USDT available amount")
     require("INR" not in prompt,"Withdrawal screen still mentions INR")
 
-    owner_ctx=context()
     amount_update,amount_message=message_update(101,"2.5")
     asyncio.run(v5.text_handler(amount_update,owner_ctx))
     require(owner_ctx.user_data.get("state")=="withdraw_address",

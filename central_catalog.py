@@ -478,7 +478,7 @@ async def resale_callback(update,ctx):
         shop=v4.shop_for(q.from_user.id)
         if not shop or shop["status"]!="approved" or int(shop["level"])!=1:
             await q.answer("Approved Level 1 shop required",show_alert=True); return
-        c=v4.db(); rows=c.execute("""SELECT l.id,l.remaining_quantity,l.ask_price_usdt,p.title,s.shop_name FROM resale_listings l JOIN central_catalog p ON p.id=l.catalog_id JOIN shops s ON s.id=l.shop_id WHERE l.status='active' AND l.remaining_quantity>0 AND l.owner_id<>? ORDER BY l.id DESC LIMIT 30""",(q.from_user.id,)).fetchall(); c.close()
+        c=v4.db(); rows=c.execute("""SELECT l.id,l.remaining_quantity,l.ask_price_usdt,p.title,s.shop_name FROM resale_listings l JOIN central_catalog p ON p.id=l.catalog_id JOIN shops s ON s.id=l.shop_id WHERE l.status='active' AND l.remaining_quantity>0 AND l.owner_id<>? AND s.status='approved' AND s.level=1 ORDER BY l.id DESC LIMIT 30""",(q.from_user.id,)).fetchall(); c.close()
         await q.answer()
         if not rows: await q.message.reply_text("No USDT resale listings available.",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Dashboard",callback_data="m:dashboard")]])); return
         for r in rows:
@@ -493,6 +493,9 @@ async def resale_callback(update,ctx):
             c.execute("BEGIN IMMEDIATE")
             l=c.execute("SELECT * FROM resale_listings WHERE id=? AND status='active'",(lid,)).fetchone()
             if not l or int(l["owner_id"])==q.from_user.id or qty<1 or qty>int(l["remaining_quantity"]): c.rollback(); await q.answer("Listing/quantity unavailable",show_alert=True); return
+            seller_shop=c.execute("SELECT status,level FROM shops WHERE id=?",(l["shop_id"],)).fetchone()
+            if not seller_shop or seller_shop["status"]!="approved" or int(seller_shop["level"])!=1:
+                c.rollback(); await q.answer("Only approved Level 1 seller listings are available",show_alert=True); return
             total=round(float(l["ask_price_usdt"])*qty,6); bal=balance(c,q.from_user.id)
             if bal+1e-9<total: c.rollback(); await q.answer("Insufficient USDT balance",show_alert=True); return
             changed=c.execute("UPDATE resale_listings SET remaining_quantity=remaining_quantity-?,status=CASE WHEN remaining_quantity-?=0 THEN 'sold' ELSE status END WHERE id=? AND status='active' AND remaining_quantity>=?",(qty,qty,lid,qty))

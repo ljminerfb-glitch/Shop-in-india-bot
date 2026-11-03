@@ -183,16 +183,18 @@ def test_list_stock_profit_screen():
     asyncio.run(cc.resale_callback(update, context()))
     require(len(message.replies) >= 1, "List My Stock screen did not render")
     screen = message.replies[0]["text"]
-    require("Your cost: 2.5 USDT each" in screen, "List My Stock does not show unit cost")
-    require("Fixed resale price: 3.3 USDT each" in screen, "List My Stock does not show resale price")
-    require("Expected profit per sold item: +0.8 USDT" in screen,
+    require("Your cost: 2.5 USDT / item" in screen, "List My Stock does not show unit cost")
+    require("Resale price: 3.3 USDT / item" in screen, "List My Stock does not show resale price")
+    require("Expected profit: +0.8 USDT / sold item" in screen,
             "List My Stock does not show expected profit per item")
-    require("Potential profit from already-listed stock: +1.6 USDT" in screen,
+    require("Listed stock potential: <b>+1.6 USDT</b>" in screen,
             "List My Stock does not show total potential profit for active listings")
-    require("Potential extra profit if you list the free stock: +0 USDT" in screen,
+    require("Free stock potential: <b>+0 USDT</b>" in screen,
             "List My Stock does not show profit available from unlisted stock")
-    require("credited only after a sale is completed" in screen,
+    require("Profit is credited after a sale is completed" in screen,
             "Expected profit is not clearly distinguished from realized profit")
+    require(message.replies[0]["kwargs"].get("parse_mode") == "HTML",
+            "List My Stock is not using Telegram HTML formatting")
     print("PASS: List My Stock shows cost, price, per-item and total expected profit")
 
 
@@ -202,7 +204,8 @@ def test_seller_market_screen(listing_id):
     require(len(message.replies) >= 2, "Seller Marketplace did not render both resale and legacy screens")
     first = message.replies[0]
     require("OTHER LEVEL 1 MERCHANT LISTINGS" in first["text"], "Other Level 1 resale section missing")
-    require("Price: 3.3 USDT each" in first["text"], "Seller Marketplace price is wrong")
+    require("Price: <b>3.3 USDT / item</b>" in first["text"], "Seller Marketplace price is wrong")
+    require(first["kwargs"].get("parse_mode") == "HTML", "Seller Marketplace is not using Telegram HTML")
     buttons = callback_data(first)
     require("rs:buy:%d:1" % listing_id in buttons, "Seller Marketplace Buy 1 button missing")
     require("m:dashboard" in buttons, "Seller Marketplace back-to-dashboard button missing")
@@ -236,8 +239,10 @@ def test_resale_buyer_guards_and_sale(listing_id, inventory_id):
     update, message, query = callback_update(202, "rs:buy:%d:1" % listing_id)
     asyncio.run(cc.resale_callback(update, context()))
     require(query.answers[-1]["args"][0] == "Purchased", "Level 1 resale purchase callback failed")
-    require(any("Bought 1 items for 3.3 USDT" in x["text"] for x in message.replies),
+    require(any("PURCHASE CONFIRMED" in x["text"] and "Total paid: <b>3.3 USDT</b>" in x["text"] for x in message.replies),
             "Buyer success confirmation missing")
+    require(message.replies[-1]["kwargs"].get("parse_mode") == "HTML",
+            "Resale purchase confirmation is not using Telegram HTML")
 
     c = v4.db()
     listing = c.execute("SELECT * FROM resale_listings WHERE id=?", (listing_id,)).fetchone()
@@ -288,9 +293,12 @@ def test_admin_resale_flow(listing_id, inventory_id):
     require(admin_ctx.user_data.get("admin_resale_offer", {}).get("listing_id") == listing_id,
             "Admin review callback did not select listing")
     prompt = review_message.replies[-1]["text"]
-    require("send: 3.3 1" in prompt, "Admin review prompt does not provide exact valid price and quantity")
-    require("Example quantity must not exceed 1" in prompt,
+    require("Buy all at asking price: <code>3.3 1</code>" in prompt,
+            "Admin review prompt does not provide exact valid price and quantity")
+    require("Maximum quantity: 1" in prompt,
             "Admin review prompt does not state current available quantity")
+    require(review_message.replies[-1]["kwargs"].get("parse_mode") == "HTML",
+            "Admin review prompt is not using Telegram HTML")
 
     # Verify common input mistakes get an actionable reply without changing stock.
     bad_update, bad_message = message_update(999999, "3.5")

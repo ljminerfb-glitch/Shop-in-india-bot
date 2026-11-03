@@ -51,8 +51,10 @@ async def dashboard(update,ctx):
         await update.message.reply_text(
           "🛡️ ADMIN V4 DASHBOARD\n"
           f"Shops: {counts['shops']} | Products: {counts['products']}\n"
-          f"Orders: {counts['v4_orders']} | Payments: {counts['payment_history']} | Withdrawals: {counts['withdrawals']}\n\n"
+          f"Orders: {counts['v4_orders']} | Payments: {counts['payment_history']} | Withdrawals: {counts['withdrawals']}\n"
+          f"USDT conversion rate: 1 USDT = INR {usdt_inr_rate():,.2f}\n\n"
           "Commands:\n/levels — edit level settings\n/setlevel LEVEL ACTIVATION_USDT PRODUCT_TARGET PROFIT_MIN PROFIT_MAX\n"
+          "/setfx INR_PER_USDT — change deposit/withdrawal conversion rate from Admin dashboard\n"
           "/products — latest products\n/setprice PRODUCT_ID INR_PRICE\n/setstock PRODUCT_ID QTY\n/setproductlevel PRODUCT_ID LEVEL\n"
           "/orders — pending orders\n/orderdone ORDER_ID — mark delivered/completed\n/orderreject ORDER_ID REASON\n"
           "/audit PRODUCT_ID — product audit\n/shopaudit SHOP_ID — shop audit\n/owner OWNER_ID — owner audit summary")

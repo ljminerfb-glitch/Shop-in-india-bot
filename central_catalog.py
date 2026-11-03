@@ -399,6 +399,10 @@ def resale_setup(c=None):
           quantity INTEGER NOT NULL, remaining_quantity INTEGER NOT NULL,
           unit_cost_usdt REAL NOT NULL, created_at TEXT NOT NULL)""")
         if own:
+            # Normalize existing active Level 1 listings to the fixed 0.8 USDT/item margin.
+            conn.execute("""UPDATE resale_listings SET ask_price_usdt=ROUND(unit_cost_usdt+0.8,6)
+              WHERE status='active' AND remaining_quantity>0
+                AND shop_id IN (SELECT id FROM shops WHERE status='approved' AND level=1)""")
             # Idempotently publish remaining stock bought by every approved Level 1 merchant.
             conn.execute("""INSERT INTO resale_listings
               (inventory_id,owner_id,shop_id,catalog_id,quantity,remaining_quantity,unit_cost_usdt,ask_price_usdt,status,created_at)

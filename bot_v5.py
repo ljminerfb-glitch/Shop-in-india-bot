@@ -30,6 +30,7 @@ def owner_kb():
       [InlineKeyboardButton("🛍 Level 1 Central Catalogue",callback_data="m:market")],
       [InlineKeyboardButton("🏬 Seller Marketplace",callback_data="m:sellermarket"),InlineKeyboardButton("💳 Deposit",callback_data="m:deposit")],
       [InlineKeyboardButton("💸 Withdraw",callback_data="m:withdraw"),InlineKeyboardButton("👛 Wallet",callback_data="m:wallet")],
+      [InlineKeyboardButton("🔐 Withdraw Setup",callback_data="m:withdrawsetup")],
       [InlineKeyboardButton("📦 My Products",callback_data="m:products"),InlineKeyboardButton("🧾 My Orders",callback_data="m:orders")],
       [InlineKeyboardButton("📊 Profit & History",callback_data="m:history"),InlineKeyboardButton("👤 My Account",callback_data="m:profile")],
       [InlineKeyboardButton("💬 Support",callback_data="m:support")],
@@ -268,12 +269,62 @@ async def menu_callback(update,ctx):
             "<i>Minimum amount must be greater than zero.</i>\n\n"
             "Choose a network on the next screen, then upload your payment proof for Admin review.",
             reply_markup=back_dashboard_kb(),parse_mode="HTML")
+    elif action=="withdrawsetup":
+        c=v4.db()
+        try:
+            wallet=c.execute("SELECT network,address,updated_at FROM owner_wallets WHERE owner_id=?",
+                             (q.from_user.id,)).fetchone()
+        finally:
+            c.close()
+        configured=bool(wallet and wallet["network"]=="USDT TRC20" and
+                        re.fullmatch(r"T[1-9A-HJ-NP-Za-km-z]{33}",str(wallet["address"] or "")))
+        if configured:
+            body=("<b>🔐 WITHDRAW SETUP</b>\n━━━━━━━━━━━━━━━━━━\n"
+                  "🟢 <b>USDT TRC20 address saved</b>\n"
+                  f"<code>{html.escape(str(wallet['address']))}</code>\n"
+                  f"<i>Last updated: {html.escape(str(wallet['updated_at'] or ''))}</i>\n\n"
+                  "Withdrawal requests will use this saved address. You can update it anytime.")
+            rows=[[InlineKeyboardButton("📋 COPY MY ADDRESS",copy_text=CopyTextButton(text=str(wallet["address"])))],
+                  [InlineKeyboardButton("✏️ UPDATE ADDRESS",callback_data="m:withdrawsetupedit")],
+                  [InlineKeyboardButton("⬅️ Dashboard",callback_data="m:dashboard")]]
+        else:
+            body=("<b>🔐 WITHDRAW SETUP</b>\n━━━━━━━━━━━━━━━━━━\n"
+                  "🟡 <b>No payout address saved</b>\n\n"
+                  "Save your USDT TRC20 address once before requesting a withdrawal. "
+                  "Only TRON/TRC20 addresses are accepted.")
+            rows=[[InlineKeyboardButton("➕ SET TRC20 ADDRESS",callback_data="m:withdrawsetupedit")],
+                  [InlineKeyboardButton("⬅️ Dashboard",callback_data="m:dashboard")]]
+        await q.message.reply_text(body,reply_markup=InlineKeyboardMarkup(rows),parse_mode="HTML")
+    elif action=="withdrawsetupedit":
+        ctx.user_data["state"]="withdraw_setup_address"
+        await q.message.reply_text(
+            "<b>🔐 SET USDT TRC20 ADDRESS</b>\n━━━━━━━━━━━━━━━━━━\n"
+            "Send your USDT TRC20 (TRON) wallet address.\n"
+            "<i>Address must begin with T. BEP20/ERC20 addresses are not accepted.</i>",
+            reply_markup=back_dashboard_kb(),parse_mode="HTML")
     elif action=="withdraw":
+        c=v4.db()
+        try:
+            wallet=c.execute("SELECT network,address FROM owner_wallets WHERE owner_id=?",
+                             (q.from_user.id,)).fetchone()
+        finally:
+            c.close()
+        address=str(wallet["address"] or "") if wallet and wallet["network"]=="USDT TRC20" else ""
+        if not re.fullmatch(r"T[1-9A-HJ-NP-Za-km-z]{33}",address):
+            await q.message.reply_text(
+                "<b>🔐 WITHDRAW SETUP REQUIRED</b>\n━━━━━━━━━━━━━━━━━━\n"
+                "Save your USDT TRC20 payout address before requesting a withdrawal.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("➕ OPEN WITHDRAW SETUP",callback_data="m:withdrawsetup")],
+                    [InlineKeyboardButton("⬅️ Dashboard",callback_data="m:dashboard")]]),
+                parse_mode="HTML")
+            return
         available=available_withdrawal_usdt(q.from_user.id)
         ctx.user_data["state"]="withdraw_amount"
         await q.message.reply_text(
             "<b>💸 WITHDRAW USDT</b>\n━━━━━━━━━━━━━━━━━━\n"
-            f"Available sale earnings: <b>{available:.6f} USDT</b>\n\n"
+            f"Available sale earnings: <b>{available:.6f} USDT</b>\n"
+            f"Payout address: <code>{html.escape(address)}</code>\n"
             "Enter the amount you want to withdraw in <b>USDT</b>.\n"
             "<i>Only completed USDT resale sale proceeds are withdrawable. Payout is TRC20 only.</i>",
             reply_markup=back_dashboard_kb(),parse_mode="HTML")
@@ -494,6 +545,62 @@ async def text_handler(update,ctx):
         await central.admin_catalog(update,ctx)
         return
     state=ctx.user_data.get("state")
+    if state=="withdraw_setup_address":
+        address=(update.message.text or "").strip()
+        if not re.fullmatch(r"T[1-9A-HJ-NP-Za-km-z]{33}",address):
+            await edit_screen(ctx,update,
+                "❌ Invalid TRC20 address. Enter a valid USDT TRC20 address beginning with T.",
+                reply_markup=back_dashboard_kb())
+            return
+        shop=v4.shop_for(update.effective_user.id)
+        if not shop or shop["status"]!="approved":
+            ctx.user_data.pop("state",None)
+            await edit_screen(ctx,update,"Approved shop required to save a payout address.",
+                              reply_markup=back_dashboard_kb())
+            return
+        c=v4.db()
+        try:
+            c.execute("""INSERT INTO owner_wallets(owner_id,network,address,updated_at,verified)
+                VALUES(?,'USDT TRC20',?,?,0)
+                ON CONFLICT(owner_id) DO UPDATE SET
+                  network='USDT TRC20',address=excluded.address,
+                  updated_at=excluded.updated_at,verified=0""",
+                (update.effective_user.id,address,v4.now()))
+            c.execute("""INSERT INTO admin_audit(admin_id,owner_id,action,details,created_at)
+                VALUES(?,?,?,?,?)""",
+                (ADMIN_ID,update.effective_user.id,"withdrawal_wallet_saved",
+                 f"Merchant saved/updated USDT TRC20 withdrawal address for shop #{shop['id']}",v4.now()))
+            c.commit()
+        except Exception:
+            c.rollback()
+            log.exception("Saving merchant withdrawal address failed")
+            await edit_screen(ctx,update,"Address could not be saved. Please try again.",
+                              reply_markup=back_dashboard_kb())
+            return
+        finally:
+            c.close()
+        ctx.user_data.pop("state",None)
+        await edit_screen(ctx,update,
+            "<b>✅ WITHDRAW SETUP SAVED</b>\n━━━━━━━━━━━━━━━━━━\n"
+            "Network: <b>USDT TRC20</b>\n"
+            f"Address: <code>{html.escape(address)}</code>\n\n"
+            "Future withdrawal requests will automatically use this saved address.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("💸 WITHDRAW NOW",callback_data="m:withdraw")],
+                [InlineKeyboardButton("⬅️ Dashboard",callback_data="m:dashboard")]]))
+        try:
+            await ctx.bot.send_message(ADMIN_ID,
+                f"<b>🔐 MERCHANT WITHDRAWAL ADDRESS SAVED</b>\n"
+                f"Merchant: <code>{update.effective_user.id}</code>\n"
+                f"Shop: <b>{html.escape(str(shop['shop_name']))}</b> • #{shop['id']}\n"
+                f"Network: <b>USDT TRC20</b>\nAddress: <code>{html.escape(address)}</code>",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📋 COPY ADDRESS",copy_text=CopyTextButton(text=address))],
+                    [InlineKeyboardButton("🔐 All Merchant Wallets",callback_data="adm:withdrawwallets")]]),
+                parse_mode="HTML")
+        except Exception:
+            log.exception("Admin merchant withdrawal wallet notification failed")
+        return
     if state=="deposit_amount":
         try:
             amount=round(float(update.message.text),6)
@@ -530,38 +637,26 @@ async def text_handler(update,ctx):
         except (TypeError,ValueError):
             await edit_screen(ctx,update,"Please enter a valid positive USDT amount.",reply_markup=back_dashboard_kb())
             return
-        available=available_withdrawal_usdt(update.effective_user.id)
-        if amount>available+1e-9:
-            await edit_screen(ctx,update,
-                f"Insufficient available sale earnings. Available: {available:.6f} USDT.",
-                reply_markup=back_dashboard_kb())
-            return
-        ctx.user_data["withdraw_amount_usdt"]=amount
-        ctx.user_data["state"]="withdraw_address"
-        await edit_screen(ctx,update,
-            "<b>🔐 USDT TRC20 PAYOUT ADDRESS</b>\n━━━━━━━━━━━━━━━━━━\n"
-            f"Withdrawal amount: <b>{amount:.6f} USDT</b>\n"
-            "Now enter your <b>USDT TRC20 (TRON) address</b>.\n"
-            "<i>Only a valid TRC20 address is accepted. BEP20/ERC20 addresses are not accepted.</i>",
-            reply_markup=back_dashboard_kb(),)
-    elif state=="withdraw_address":
-        address=(update.message.text or "").strip()
-        if not re.fullmatch(r"T[1-9A-HJ-NP-Za-km-z]{33}",address):
-            await edit_screen(ctx,update,
-                "❌ Invalid TRC20 address format. Enter a valid USDT TRC20 address beginning with T.",
-                reply_markup=back_dashboard_kb())
-            return
-        amount=float(ctx.user_data.get("withdraw_amount_usdt") or 0)
         shop=v4.shop_for(update.effective_user.id)
-        if not shop or shop["status"]!="approved" or amount<=0:
-            ctx.user_data.pop("withdraw_amount_usdt",None)
+        if not shop or shop["status"]!="approved":
             ctx.user_data.pop("state",None)
-            await edit_screen(ctx,update,"Approved shop and a valid withdrawal amount are required.",
-                              reply_markup=back_dashboard_kb())
+            await edit_screen(ctx,update,"Approved shop required.",reply_markup=back_dashboard_kb())
             return
         c=v4.db()
         try:
             c.execute("BEGIN IMMEDIATE")
+            wallet=c.execute("SELECT network,address FROM owner_wallets WHERE owner_id=?",
+                             (update.effective_user.id,)).fetchone()
+            address=str(wallet["address"] or "") if wallet and wallet["network"]=="USDT TRC20" else ""
+            if not re.fullmatch(r"T[1-9A-HJ-NP-Za-km-z]{33}",address):
+                c.rollback()
+                ctx.user_data.pop("state",None)
+                await edit_screen(ctx,update,
+                    "Withdrawal address is not set. Open Withdraw Setup and save your USDT TRC20 address first.",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🔐 OPEN WITHDRAW SETUP",callback_data="m:withdrawsetup")],
+                        [InlineKeyboardButton("⬅️ Dashboard",callback_data="m:dashboard")]]))
+                return
             earned=float(c.execute(
                 "SELECT COALESCE(SUM(amount),0) FROM ledger WHERE owner_id=? AND currency='USDT' AND entry_type='resale_sale_credit'",
                 (update.effective_user.id,)).fetchone()[0])
@@ -577,7 +672,6 @@ async def text_handler(update,ctx):
                 await edit_screen(ctx,update,
                     f"Your available sale earnings changed. Current available amount: {max(0,available):.6f} USDT.",
                     reply_markup=back_dashboard_kb())
-                ctx.user_data.pop("withdraw_amount_usdt",None)
                 ctx.user_data.pop("state",None)
                 return
             cur=c.execute("""INSERT INTO withdrawals
@@ -588,7 +682,7 @@ async def text_handler(update,ctx):
             c.execute("""INSERT INTO admin_audit(admin_id,owner_id,action,details,created_at)
                 VALUES(?,?,?,?,?)""",
                 (ADMIN_ID,update.effective_user.id,"withdrawal_requested",
-                 f"Withdrawal #{wid}: {amount:g} USDT to TRC20 address {address}",v4.now()))
+                 f"Withdrawal #{wid}: {amount:g} USDT to saved TRC20 address",v4.now()))
             c.commit()
         except Exception:
             c.rollback()
@@ -601,7 +695,9 @@ async def text_handler(update,ctx):
         await edit_screen(ctx,update,
             f"<b>🟡 WITHDRAWAL REQUEST SUBMITTED</b>\n━━━━━━━━━━━━━━━━━━\n"
             f"Request: <code>#{wid}</code>\nAmount: <b>{amount:.6f} USDT</b>\n"
-            "Network: <b>USDT TRC20</b>\nStatus: <b>PENDING ADMIN REVIEW</b>",
+            "Network: <b>USDT TRC20</b>\n"
+            f"Payout address: <code>{html.escape(address)}</code>\n"
+            "Status: <b>PENDING ADMIN REVIEW</b>",
             reply_markup=back_dashboard_kb())
         wd_kb=InlineKeyboardMarkup([
             [InlineKeyboardButton("📋 COPY TRC20 ADDRESS",copy_text=CopyTextButton(text=address))],
@@ -618,7 +714,6 @@ async def text_handler(update,ctx):
             f"Address: <code>{html.escape(address)}</code>\n\n"
             "<i>Manually send the exact USDT amount on TRON, then tap MARK PAID. Reject only when declining the request.</i>",
             reply_markup=wd_kb,parse_mode="HTML")
-        ctx.user_data.pop("withdraw_amount_usdt",None)
         ctx.user_data.pop("state",None)
     else:
         was_registering=state=="shop_password"
@@ -655,6 +750,7 @@ async def send_admin_panel(bot, chat_id):
       [InlineKeyboardButton(f"💳 Pending Deposits ({pending_deposits})",callback_data="adm:payments")],
       [InlineKeyboardButton(f"🎚 Pending Level Payments ({pending_levels})",callback_data="adm:levelpayments")],
       [InlineKeyboardButton(f"💸 Pending Withdrawals ({pending_wd})",callback_data="adm:withdrawals")],
+      [InlineKeyboardButton("🔐 Merchant Withdrawal Wallets",callback_data="adm:withdrawwallets")],
       [InlineKeyboardButton(f"📦 Orders ({counts['v4_orders']})",callback_data="adm:orders"),InlineKeyboardButton("🎚 Levels",callback_data="adm:levels")],
       [InlineKeyboardButton("⚙️ Settings & Commands",callback_data="adm:settings"),InlineKeyboardButton("🔄 Refresh",callback_data="adm:home")]
     ])
@@ -729,6 +825,34 @@ async def admin_panel_callback(update,ctx):
                 else:
                     await q.message.reply_text(caption+"\n⚠️ No screenshot attached.",reply_markup=kb,parse_mode="HTML")
             await q.message.reply_text("⬅️ Back options:",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]))
+        elif action=="withdrawwallets":
+            rows=c.execute("""SELECT w.owner_id,w.network,w.address,w.updated_at,
+                s.id AS shop_id,s.shop_name
+                FROM owner_wallets w
+                LEFT JOIN shops s ON s.id=(SELECT id FROM shops WHERE owner_id=w.owner_id ORDER BY id DESC LIMIT 1)
+                WHERE w.network='USDT TRC20'
+                ORDER BY w.updated_at DESC LIMIT 50""").fetchall()
+            await q.message.reply_text(
+                "<b>🔐 MERCHANT WITHDRAWAL WALLETS</b>\n━━━━━━━━━━━━━━━━━━\n"
+                "Saved USDT TRC20 payout addresses. Copy carefully before sending funds.",
+                parse_mode="HTML")
+            if not rows:
+                await q.message.reply_text("No merchants have saved a TRC20 payout address yet.",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]))
+            for r in rows:
+                address=str(r["address"] or "")
+                caption=(f"<b>🏪 {html.escape(str(r['shop_name'] or 'Shop not found'))}</b>\n"
+                         f"Shop: <code>{r['shop_id'] if r['shop_id'] is not None else 'N/A'}</code>\n"
+                         f"Merchant ID: <code>{r['owner_id']}</code>\n"
+                         f"Network: <b>USDT TRC20</b>\n"
+                         f"Withdrawal address:\n<code>{html.escape(address)}</code>\n"
+                         f"<i>Saved: {html.escape(str(r['updated_at'] or ''))}</i>")
+                kb=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📋 COPY TRC20 ADDRESS",copy_text=CopyTextButton(text=address))],
+                    [InlineKeyboardButton("⬅️ Merchant Wallets",callback_data="adm:withdrawwallets"),
+                     InlineKeyboardButton("🏠 Admin Panel",callback_data="adm:home")]
+                ])
+                await q.message.reply_text(caption,reply_markup=kb,parse_mode="HTML")
         elif action=="withdrawals":
             rows=c.execute("SELECT id,owner_id,amount,currency,network,wallet_address,status FROM withdrawals WHERE status='pending' ORDER BY id DESC LIMIT 25").fetchall()
             await q.message.reply_text("<b>💸 USDT WITHDRAWAL REVIEW</b>\n━━━━━━━━━━━━━━━━━━\n"
@@ -981,8 +1105,8 @@ def main():
     app.add_handler(CallbackQueryHandler(level_pay_callback,pattern=r"^lvpay:[1-5]$"))
     app.add_handler(CallbackQueryHandler(level_back_callback,pattern=r"^lvback$"))
     app.add_handler(CallbackQueryHandler(network_callback,pattern=r"^net:[0-9]+:(trc|bep)$"))
-    app.add_handler(CallbackQueryHandler(menu_callback,pattern=r"^m:(market|sellermarket|deposit|withdraw|wallet|products|orders|history|profile|dashboard|support)$"))
-    app.add_handler(CallbackQueryHandler(admin_panel_callback,pattern=r"^adm:(home|owners|shops|payments|levelpayments|withdrawals|products|orders|levels|settings|central|resale|audit|back)$"))
+    app.add_handler(CallbackQueryHandler(menu_callback,pattern=r"^m:(market|sellermarket|deposit|withdraw|withdrawsetup|withdrawsetupedit|wallet|products|orders|history|profile|dashboard|support)$"))
+    app.add_handler(CallbackQueryHandler(admin_panel_callback,pattern=r"^adm:(home|owners|shops|payments|levelpayments|withdrawals|withdrawwallets|products|orders|levels|settings|central|resale|audit|back)$"))
     app.add_handler(CallbackQueryHandler(central.resale_callback,pattern=r"^rs:(list:[0-9]+|listmenu|market|review:[0-9]+|buy:[0-9]+:[0-9]+)$"))
     app.add_handler(CallbackQueryHandler(audit_callback,pattern=r"^audit:(all|payments|levels|wallet|orders|products):[0-9]+$"))
     app.add_handler(CallbackQueryHandler(delivered_callback,pattern=r"^order:delivered:[0-9]+$"))

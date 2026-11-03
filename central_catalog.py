@@ -41,6 +41,16 @@ def setup(c=None):
           quantity INTEGER NOT NULL, unit_price_usdt REAL NOT NULL,
           total_usdt REAL NOT NULL, status TEXT NOT NULL DEFAULT 'paid',
           created_at TEXT NOT NULL, FOREIGN KEY(catalog_id) REFERENCES central_catalog(id))""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS central_inventory (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, owner_id INTEGER NOT NULL,
+          shop_id INTEGER NOT NULL, catalog_id INTEGER NOT NULL,
+          order_id INTEGER NOT NULL, quantity INTEGER NOT NULL,
+          remaining_quantity INTEGER NOT NULL, unit_cost_usdt REAL NOT NULL,
+          status TEXT NOT NULL DEFAULT 'owned', created_at TEXT NOT NULL,
+          UNIQUE(order_id))""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS catalogue_visits (
+          owner_id INTEGER PRIMARY KEY, visits INTEGER NOT NULL DEFAULT 0,
+          last_seen TEXT NOT NULL)""")
         for key,title,desc,img in PRODUCTS:
             conn.execute("""INSERT OR IGNORE INTO central_catalog
               (product_key,title,description,price_usdt,stock,image_path,active,level_required,created_at,updated_at)
@@ -162,6 +172,9 @@ async def buy(update,ctx):
         cur=c.execute("""INSERT INTO central_orders(catalog_id,buyer_shop_id,buyer_owner_id,quantity,unit_price_usdt,total_usdt,status,created_at)
           VALUES(?,?,?,?,?,?,'paid',?)""",(pid,shop["id"],update.effective_user.id,qty,p["price_usdt"],total,v4.now()))
         oid=cur.lastrowid
+        c.execute("""INSERT INTO central_inventory(owner_id,shop_id,catalog_id,order_id,quantity,remaining_quantity,unit_cost_usdt,status,created_at)
+          VALUES(?,?,?,?,?,?,?,'owned',?)""",
+          (update.effective_user.id,shop["id"],pid,oid,qty,qty,float(p["price_usdt"]),v4.now()))
         remaining_stock=int(p['stock'])-qty
         c.execute("""INSERT INTO ledger(transaction_id,shop_id,owner_id,entry_type,amount,currency,note,created_at)
           VALUES(?,?,?,'central_purchase_debit',?,'USDT',?,?)""",(oid,shop["id"],update.effective_user.id,total,f"Central catalogue order #{oid}",v4.now()))
@@ -282,32 +295,57 @@ async def admin_callback(update,ctx):
 
 
 async def owner_market(update,ctx,shop):
+    from telegram import InlineKeyboardMarkup, InlineKeyboardButton
     if not shop or shop["status"] != "approved" or int(shop["level"]) != 1:
         await update.callback_query.message.reply_text(
             "This central catalogue is available only to approved Level 1 shops.",
-            reply_markup=__import__("telegram").InlineKeyboardMarkup([[
-                __import__("telegram").InlineKeyboardButton("⬅️ Back to Dashboard",callback_data="m:dashboard")
-            ]]))
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back",callback_data="m:dashboard")]]))
         return
     setup()
     c=v4.db()
-    rows=c.execute("SELECT * FROM central_catalog WHERE active=1 AND stock>0 AND price_usdt>0 ORDER BY id").fetchall()
-    c.close()
-    if not rows:
-        await update.callback_query.message.reply_text("🛍 CENTRAL LEVEL 1 CATALOGUE\nNo products are currently available. Please check again later.")
-        return
-    await update.callback_query.message.reply_text("🛍 CENTRAL LEVEL 1 CATALOGUE\nOnly approved Level 1 shop owners can buy here. All Level 1 owners share the same central stock. Prices are in USDT.")
-    root=Path(__file__).resolve().parent
+    try:
+        c.execute("""INSERT INTO catalogue_visits(owner_id,visits,last_seen) VALUES(?,1,?)
+          ON CONFLICT(owner_id) DO UPDATE SET visits=visits+1,last_seen=excluded.last_seen""",
+          (update.effective_user.id,v4.now()))
+        total_visitors=c.execute("SELECT COUNT(*) FROM catalogue_visits").fetchone()[0]
+        rows=c.execute("SELECT * FROM central_catalog WHERE active=1 AND level_required=1 ORDER BY id").fetchall()
+        c.commit()
+    finally: c.close()
+    await update.callback_query.message.reply_text(
+        f"🛍 CENTRAL LEVEL 1 CATALOGUE\n12 products | Unique visitors: {total_visitors}\n"
+        "Potential resale margin reference: 1.5–2 USDT per item; this is not guaranteed income. "
+        "Actual profit is recorded only after a completed sale.")
     for p in rows:
-        caption=f"#{p['id']} {p['title']}\n{p['description'] or ''}\nPrice: {float(p['price_usdt']):g} USDT\nCentral stock: {p['stock']}\nBuy: /centralbuy {p['id']} QUANTITY"
-        image_path=root / (p['image_path'] or "")
+        price=float(p["price_usdt"] or 0); stock=int(p["stock"] or 0)
+        caption=(f"#{p['id']} {p['title']}\n{p['description'] or ''}\n"
+                 f"Price: {price:g} USDT\nPotential margin: 1.5–2 USDT (reference only)\n"
+                 f"Available stock: {stock}\n"+
+                 ("Select quantity below to buy." if price>0 and stock>0 else "Currently unavailable — Admin must set price and stock."))
+        buttons=[]
+        if price>0 and stock>0:
+            buttons=[[InlineKeyboardButton(f"🛒 Buy × {n}",callback_data=f"ccbuy:{p['id']}:{n}")
+                      for n in (1,2,5) if n<=stock]]
+        buttons.append([InlineKeyboardButton("⬅️ Back to Dashboard",callback_data="m:dashboard")])
+        kb=InlineKeyboardMarkup(buttons)
+        image_path=Path(__file__).resolve().parent/(p["image_path"] or "")
         try:
             if image_path.is_file():
                 with image_path.open("rb") as photo:
-                    await ctx.bot.send_photo(update.effective_chat.id,photo=photo,caption=caption[:1024])
+                    await ctx.bot.send_photo(update.effective_chat.id,photo=photo,caption=caption[:1024],reply_markup=kb)
             else:
-                await ctx.bot.send_message(update.effective_chat.id,caption+"\n⚠️ Product photo file missing on bot server.")
+                await ctx.bot.send_message(update.effective_chat.id,caption+"\n⚠️ Product photo unavailable.",reply_markup=kb)
         except Exception:
-            log.exception("Could not send central catalogue item")
-            await ctx.bot.send_message(update.effective_chat.id,caption)
-    await update.callback_query.message.reply_text("⬅️ Back to Dashboard",reply_markup=__import__("telegram").InlineKeyboardMarkup([[__import__("telegram").InlineKeyboardButton("⬅️ Back to Dashboard",callback_data="m:dashboard")]]))
+            log.exception("Could not send catalogue item")
+            await ctx.bot.send_message(update.effective_chat.id,caption,reply_markup=kb)
+
+
+async def owner_buy_callback(update,ctx):
+    q=update.callback_query
+    await q.answer()
+    try:
+        _,pid_s,qty_s=q.data.split(":")
+        ctx.args=[pid_s,qty_s]
+        await buy(update,ctx)
+    except Exception:
+        log.exception("Catalogue button purchase failed")
+        await q.message.reply_text("Purchase could not be completed. Please retry with /centralbuy PRODUCT_ID QUANTITY.")

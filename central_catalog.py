@@ -579,7 +579,7 @@ async def admin_resale_text(update,ctx):
     finally: c.close()
     ctx.user_data.pop("admin_resale_offer",None)
     await update.message.reply_text(f"✅ ADMIN PURCHASE COMPLETE\nOrder #{oid}\nQuantity: {qty}\nOffer: {price:g} USDT each\nSeller paid: {total:g} USDT\nSeller profit: {profit:g} USDT (negative means sold below cost).")
-    try: await ctx.bot.send_message(l["owner_id"],f"✅ Admin purchased your listing #{lid}: {qty} item(s) at {price:g} USDT each. Total credited: {total:g} USDT. Margin vs your recorded cost: {profit:g} USDT.")
+    try: await ctx.bot.send_message(l["owner_id"],f"✅ Customer purchased your listing #{lid}: {qty} item(s) at {price:g} USDT each. Total credited: {total:g} USDT. Margin vs your recorded cost: {profit:g} USDT.")
     except Exception: log.exception("Admin resale seller notification failed")
     return True
 

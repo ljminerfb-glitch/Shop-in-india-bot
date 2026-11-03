@@ -460,7 +460,7 @@ async def resale_callback(update,ctx):
             c.execute("""INSERT INTO ledger(transaction_id,shop_id,owner_id,entry_type,amount,currency,note,created_at) VALUES(?,?,?,'resale_purchase_debit',?,'USDT',?,?)""",(oid,shop["id"],q.from_user.id,total,f"Resale purchase listing #{lid}",v4.now()))
             profit=round((float(l["ask_price_usdt"])-float(l["unit_cost_usdt"]))*qty,6)
             c.execute("""INSERT INTO ledger(transaction_id,shop_id,owner_id,entry_type,amount,currency,note,created_at) VALUES(?,?,?,'resale_sale_credit',?,'USDT',?,?)""",(oid,l["shop_id"],l["owner_id"],total,f"Resale sale listing #{lid}",v4.now()))
-            if profit>0: c.execute("""INSERT INTO ledger(transaction_id,shop_id,owner_id,entry_type,amount,currency,note,created_at) VALUES(?,?,?,'resale_profit_credit',?,'USDT',?,?)""",(oid,l["shop_id"],l["owner_id"],profit,f"Profit on resale listing #{lid}",v4.now()))
+            if profit!=0: c.execute("""INSERT INTO ledger(transaction_id,shop_id,owner_id,entry_type,amount,currency,note,created_at) VALUES(?,?,?,'resale_profit_credit',?,'USDT',?,?)""",(oid,l["shop_id"],l["owner_id"],profit,f"Profit on resale listing #{lid}",v4.now()))
             c.execute("INSERT INTO admin_audit(admin_id,owner_id,action,details,created_at) VALUES(?,?,?,?,?)",(v4.ADMIN_ID,q.from_user.id,"resale_bought",f"Listing #{lid}; qty {qty}; total {total} USDT",v4.now()))
             c.commit()
         except Exception:

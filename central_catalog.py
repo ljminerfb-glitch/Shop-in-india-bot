@@ -195,6 +195,7 @@ async def orders(update,ctx):
             reply_markup=InlineKeyboardMarkup(buttons))
 
 async def admin_callback(update,ctx):
+    from telegram import InlineKeyboardMarkup, InlineKeyboardButton
     q=update.callback_query
     if q.from_user.id != v4.ADMIN_ID:
         await q.answer("Admin only",show_alert=True); return

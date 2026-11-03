@@ -1,5 +1,6 @@
 """Read-only unified admin audit timeline for Shop in India."""
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+import html
 import bot_v4 as v4
 
 PAGE_SIZE = 12
@@ -51,9 +52,14 @@ async def show(update, category="all", page=0):
     start=page*PAGE_SIZE
     chunk=rows[start:start+PAGE_SIZE]
     labels={"all":"ALL ACTIVITY","payments":"PAYMENTS & WITHDRAWALS","levels":"LEVEL / SHOP CHANGES","wallet":"WALLET LEDGER","orders":"ORDERS","products":"PRODUCT CHANGES"}
-    body=f"🧾 AUDIT LOG — {labels.get(category,'ALL ACTIVITY')}\n━━━━━━━━━━━━━━━━━━\nRecords: {total} | Page {page+1}\n\n"
+    body=f"<b>🧾 AUDIT LOG — {html.escape(labels.get(category,'ALL ACTIVITY'))}</b>\n━━━━━━━━━━━━━━━━━━\nRecords: <b>{total}</b> • Page <b>{page+1}</b>\n\n"
     if chunk:
-        body += "\n\n".join(f"🕒 {t}\n{a}\n{d[:260]}\nActor: {actor}" for t,a,d,actor in chunk)
+        body += "\n\n".join(
+            f"🕒 <code>{html.escape(str(t))}</code>\n"
+            f"<b>{html.escape(str(a))}</b>\n"
+            f"{html.escape(str(d[:260]))}\n"
+            f"Actor: <code>{html.escape(str(actor))}</code>"
+            for t,a,d,actor in chunk)
     else:
         body += "No records found in this category."
     nav=[]
@@ -64,4 +70,4 @@ async def show(update, category="all", page=0):
     if start+PAGE_SIZE<total: pages.append(InlineKeyboardButton("Next ➡️",callback_data=f"audit:{category}:{page+1}"))
     if pages: nav.append(pages)
     nav.append([InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")])
-    await update.effective_message.reply_text(body[:3900],reply_markup=InlineKeyboardMarkup(nav))
+    await update.effective_message.reply_text(body[:3900],reply_markup=InlineKeyboardMarkup(nav),parse_mode="HTML")

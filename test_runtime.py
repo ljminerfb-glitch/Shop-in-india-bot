@@ -188,7 +188,20 @@ def test_seller_market_screen(listing_id):
     buttons = callback_data(first)
     require("rs:buy:%d:1" % listing_id in buttons, "Seller Marketplace Buy 1 button missing")
     require("m:dashboard" in buttons, "Seller Marketplace back-to-dashboard button missing")
-    print("PASS: V5 Seller Marketplace displays listing, price, Buy and Back buttons")
+    print("PASS: V5 Seller Marketplace displays other merchant listing, price, Buy and Back buttons")
+
+    # Seller must also see their own listing in a separate management/info section.
+    own_update, own_message, own_query = callback_update(101, "m:sellermarket")
+    asyncio.run(v5.menu_callback(own_update, context()))
+    own_screen = own_message.replies[0]["text"]
+    require("MY ACTIVE USDT LISTINGS" in own_screen, "Seller's own USDT listing section missing")
+    require("#%d Printed T-Shirts" % listing_id in own_screen, "Seller cannot see their own listed product")
+    require("Your remaining listing stock: 2" in own_screen, "Seller's own remaining listing quantity missing")
+    require("3.3 USDT each" in own_screen, "Seller's own asking price missing")
+    legacy_screen = own_message.replies[1]["text"]
+    require("USDT listings are shown in the section above" in legacy_screen,
+            "Legacy INR section does not explain where USDT stock appears")
+    print("PASS: Seller sees own active USDT listing, quantity and asking price")
 
 
 def test_resale_buyer_guards_and_sale(listing_id, inventory_id):
@@ -256,6 +269,20 @@ def test_admin_resale_flow(listing_id, inventory_id):
     asyncio.run(cc.resale_callback(update, admin_ctx))
     require(admin_ctx.user_data.get("admin_resale_offer", {}).get("listing_id") == listing_id,
             "Admin review callback did not select listing")
+    prompt = review_message.replies[-1]["text"]
+    require("send: 3.3 1" in prompt, "Admin review prompt does not provide exact valid price and quantity")
+    require("Example quantity must not exceed 1" in prompt,
+            "Admin review prompt does not state current available quantity")
+
+    # Verify common input mistakes get an actionable reply without changing stock.
+    bad_update, bad_message = message_update(999999, "3.5")
+    asyncio.run(v5.text_handler(bad_update, admin_ctx))
+    require("Format: PRICE QUANTITY" in bad_message.replies[-1]["text"],
+            "Single-number admin offer did not explain required format")
+    too_many_update, too_many_message = message_update(999999, "3.5 10")
+    asyncio.run(v5.text_handler(too_many_update, admin_ctx))
+    require("Listing no longer available in that quantity" in too_many_message.replies[-1]["text"],
+            "Admin offer above remaining stock was not rejected clearly")
 
     offer_update, offer_message = message_update(999999, "3.5 1")
     asyncio.run(v5.text_handler(offer_update, admin_ctx))

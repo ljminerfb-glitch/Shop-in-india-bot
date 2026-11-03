@@ -291,8 +291,8 @@ async def menu_callback(update,ctx):
           WHERE p.active=1 AND p.stock>0 AND s.status='approved' AND p.shop_id<>?
           ORDER BY p.id DESC LIMIT 30""",(s["id"],)).fetchall()
         c.close()
-        body="🏬 SELLER MARKETPLACE\\n━━━━━━━━━━━━━━━━━━\\nExisting shop-owner products remain separate from the central USDT catalogue.\\n\\n"
-        body += ("\\n\\n".join(f"#{r['id']} {r['title']}\\nShop: {r['shop_name']}\\n{r['currency']} {float(r['price']):g} | Stock: {r['stock']}\\nBuy: /buy {r['id']} QUANTITY" for r in rows) if rows else "No seller products available right now.")
+        body="🏬 SELLER MARKETPLACE\n━━━━━━━━━━━━━━━━━━\nExisting shop-owner products remain separate from the central USDT catalogue.\n\n"
+        body += ("\n\n".join(f"#{r['id']} {r['title']}\nShop: {r['shop_name']}\n{r['currency']} {float(r['price']):g} | Stock: {r['stock']}\nBuy: /buy {r['id']} QUANTITY" for r in rows) if rows else "No seller products available right now.")
         await q.message.reply_text(body[:4000],reply_markup=back_dashboard_kb())
     elif action=="products":
         c=v4.db()

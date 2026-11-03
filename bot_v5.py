@@ -103,10 +103,10 @@ async def level_callback(update,ctx):
         await q.message.reply_text("Please register your shop first.")
         return
     if s["status"]!="approved":
-        await q.edit_message_text("Your shop must be approved before selecting a level.")
+        await q.message.reply_text("Your shop must be approved before selecting a level.")
         return
     if lv<=int(s["level"]):
-        await q.edit_message_text("This level is already active. Use /start to open your dashboard.")
+        await q.message.reply_text("This level is already active. Use /start to open your dashboard.")
         return
 
     c=v4.db()
@@ -117,7 +117,7 @@ async def level_callback(update,ctx):
     finally:
         c.close()
     if not cfg:
-        await q.edit_message_text("This level is not configured. Please contact Admin.")
+        await q.message.reply_text("This level is not configured. Please contact Admin.")
         return
 
     target="Unlimited product access" if not cfg["product_target"] else f"Access to up to {cfg['product_target']} products"
@@ -130,7 +130,7 @@ async def level_callback(update,ctx):
         [InlineKeyboardButton(f"💳 Continue to payment • {float(cfg['activation_usdt']):g} USDT",callback_data=f"lvpay:{lv}")],
         [InlineKeyboardButton("⬅️ Back to all levels",callback_data="lvback")]
     ])
-    await q.edit_message_text(
+    await q.message.reply_text(
         f"🔷 SHOP IN INDIA — LEVEL {lv}\n━━━━━━━━━━━━━━━━━━\n"
         f"💰 Activation price: {float(cfg['activation_usdt']):g} USDT\n"
         f"🇮🇳 INR reference: ₹{float(cfg['activation_usdt'])*v4.usdt_inr_rate():,.2f}\n\n"
@@ -145,22 +145,22 @@ async def level_pay_callback(update,ctx):
     try:
         lv=int(q.data.split(":")[1])
     except (ValueError,IndexError):
-        await q.edit_message_text("Invalid level. Please open /start and try again.")
+        await q.message.reply_text("Invalid level. Please open /start and try again.")
         return
 
     s=v4.shop_for(q.from_user.id)
     if not s or s["status"]!="approved":
-        await q.edit_message_text("An approved shop is required before payment.")
+        await q.message.reply_text("An approved shop is required before payment.")
         return
     if lv<=int(s["level"]):
-        await q.edit_message_text("This level is already active. Use /start to open your dashboard.")
+        await q.message.reply_text("This level is already active. Use /start to open your dashboard.")
         return
 
     c=v4.db()
     try:
         cfg=c.execute("SELECT activation_usdt FROM level_settings WHERE level=?",(lv,)).fetchone()
         if not cfg:
-            await q.edit_message_text("This level is not configured. Please contact Admin.")
+            await q.message.reply_text("This level is not configured. Please contact Admin.")
             return
         pending=c.execute(
             "SELECT id,amount FROM payment_requests WHERE owner_id=? "
@@ -185,7 +185,7 @@ async def level_pay_callback(update,ctx):
         InlineKeyboardButton("🔵 USDT TRC20",callback_data=f"net:{rid}:trc"),
         InlineKeyboardButton("🔵 USDT BEP20",callback_data=f"net:{rid}:bep")
     ]])
-    await q.edit_message_text(
+    await q.message.reply_text(
         f"🔷 LEVEL {lv} PAYMENT\n━━━━━━━━━━━━━━━━━━\n"
         f"Payment request: #{rid}\n"
         f"Amount: {amount:g} USDT\n"
@@ -197,7 +197,7 @@ async def level_pay_callback(update,ctx):
 async def level_back_callback(update,ctx):
     q=update.callback_query
     await q.answer()
-    await q.edit_message_text(
+    await q.message.reply_text(
         "🔷 SHOP IN INDIA\n━━━━━━━━━━━━━━━━━━\n"
         "🎯 SELECT YOUR SHOP LEVEL\n\nChoose a level to view its price and benefits.",
         reply_markup=level_kb())
@@ -213,7 +213,7 @@ async def network_callback(update,ctx):
     r=c.execute("SELECT amount FROM payment_requests WHERE id=? AND owner_id=? AND status='pending'",(rid,q.from_user.id)).fetchone()
     if not r:
         c.close()
-        await q.edit_message_text("Payment request not found.",reply_markup=back_dashboard_kb())
+        await q.message.reply_text("Payment request not found.",reply_markup=back_dashboard_kb())
         return
     c.execute("UPDATE payment_requests SET network=? WHERE id=?",(network,rid))
     rate=v4.usdt_inr_rate(c)
@@ -245,24 +245,24 @@ async def menu_callback(update,ctx):
 
     if action=="dashboard":
         if not s or s["status"]!="approved" or int(s["level"])<1:
-            await q.edit_message_text("Approved shop aur active level zaroori hai.")
+            await q.message.reply_text("Approved shop aur active level zaroori hai.")
             return
         ctx.user_data.clear()
         ctx.user_data["screen_message_id"]=q.message.message_id
         ctx.user_data["screen_chat_id"]=q.message.chat_id
-        await q.edit_message_text(
+        await q.message.reply_text(
             f"🔷 SHOP IN INDIA\n━━━━━━━━━━━━━━━━━━\n🏪 {s['shop_name']} • LEVEL {s['level']}\n\nOWNER DASHBOARD\nSelect an option:",
             reply_markup=owner_kb())
         return
 
     if not s or s["status"]!="approved" or int(s["level"])<1:
-        await q.edit_message_text("Approve your shop and activate a level first.",
+        await q.message.reply_text("Approve your shop and activate a level first.",
                                   reply_markup=back_dashboard_kb())
         return
 
     if action=="deposit":
         ctx.user_data["state"]="deposit_amount"
-        await q.edit_message_text(
+        await q.message.reply_text(
             "💳 DEPOSIT FUNDS\n━━━━━━━━━━━━━━━━━━\n"
             "Enter the amount of USDT you want to deposit.\n"
             "Minimum amount must be greater than zero.\n\n"
@@ -270,13 +270,13 @@ async def menu_callback(update,ctx):
             reply_markup=back_dashboard_kb())
     elif action=="withdraw":
         ctx.user_data["state"]="withdraw_amount"
-        await q.edit_message_text(
+        await q.message.reply_text(
             "💸 WITHDRAW FUNDS\n━━━━━━━━━━━━━━━━━━\n"
             "Enter withdrawal amount in INR. Only completed sale earnings are withdrawable.",
             reply_markup=back_dashboard_kb())
     elif action=="wallet":
         ctx.user_data["state"]="wallet_network"
-        await q.edit_message_text(
+        await q.message.reply_text(
             "👛 WALLET SETTINGS\nWallet setup is managed through the wallet verification flow. Use /verifywallet or contact Admin.",
             reply_markup=back_dashboard_kb())
     elif action=="market":
@@ -286,32 +286,32 @@ async def menu_callback(update,ctx):
         body="🛍 MARKETPLACE\n━━━━━━━━━━━━━━━━━━\n"
         body += ("\n\n".join(f"#{r['id']} {r['title']}\n{(r['description'] or '')[:250]}\nPrice: {r['currency']} {r['price']} | Stock: {r['stock']}\nBuy: /buy {r['id']} 1" for r in rows)
                  if rows else "Catalog is empty. Admin must add verified products first.")
-        await q.edit_message_text(body[:4000],reply_markup=back_dashboard_kb())
+        await q.message.reply_text(body[:4000],reply_markup=back_dashboard_kb())
     elif action=="products":
         c=v4.db()
         rows=c.execute("SELECT id,title,price,currency,stock,active FROM products WHERE shop_id=? ORDER BY id DESC LIMIT 20",(s["id"],)).fetchall()
         c.close()
         body="📦 MY PRODUCTS\n━━━━━━━━━━━━━━━━━━\n"+("\n".join(f"#{r['id']} {r['title']} — {r['currency']} {r['price']} | stock {r['stock']} | active {r['active']}" for r in rows) if rows else "No products assigned to your shop.")
-        await q.edit_message_text(body[:4000],reply_markup=back_dashboard_kb())
+        await q.message.reply_text(body[:4000],reply_markup=back_dashboard_kb())
     elif action=="orders":
         c=v4.db()
         rows=c.execute("SELECT id,product_id,quantity,total_amount,status FROM v4_orders WHERE buyer_shop_id=? OR seller_shop_id=? ORDER BY id DESC LIMIT 20",(s["id"],s["id"])).fetchall()
         c.close()
         body="🧾 MY ORDERS\n━━━━━━━━━━━━━━━━━━\n"+("\n".join(f"#{r['id']} Product #{r['product_id']} ×{r['quantity']} — ₹{r['total_amount']:.2f} — {r['status']}" for r in rows) if rows else "No orders yet.")
-        await q.edit_message_text(body,reply_markup=back_dashboard_kb())
+        await q.message.reply_text(body,reply_markup=back_dashboard_kb())
     elif action=="history":
         c=v4.db()
         rows=c.execute("SELECT entry_type,amount,currency,note,created_at FROM ledger WHERE owner_id=? ORDER BY id DESC LIMIT 20",(q.from_user.id,)).fetchall()
         c.close()
         body="📊 PROFIT & HISTORY\n━━━━━━━━━━━━━━━━━━\n"+("\n".join(f"{r['entry_type']} — {r['currency']} {r['amount']} — {r['note'] or ''} — {r['created_at']}" for r in rows) if rows else "No history yet.")
-        await q.edit_message_text(body[:4000],reply_markup=back_dashboard_kb())
+        await q.message.reply_text(body[:4000],reply_markup=back_dashboard_kb())
     elif action=="profile":
         c=v4.db()
         w=c.execute("SELECT network,verified FROM owner_wallets WHERE owner_id=?",(q.from_user.id,)).fetchone()
         c.close()
         body=(f"👤 {s['shop_name']}\nShop ID: {s['id']}\nLevel: L{s['level']}\nWallet: {w['network']} — {'Verified' if w['verified'] else 'Pending'}"
               if w else f"👤 {s['shop_name']} | L{s['level']}\nWallet: Not saved")
-        await q.edit_message_text(body,reply_markup=back_dashboard_kb())
+        await q.message.reply_text(body,reply_markup=back_dashboard_kb())
 
 
 async def text_handler(update,ctx):
@@ -417,7 +417,7 @@ async def delivered_callback(update,ctx):
     try:
         oid=int(q.data.rsplit(":",1)[1])
     except (ValueError,IndexError):
-        await q.edit_message_text("Invalid order.")
+        await q.message.reply_text("Invalid order.")
         return
     c=v4.db()
     try:
@@ -425,11 +425,11 @@ async def delivered_callback(update,ctx):
         order=c.execute("SELECT * FROM v4_orders WHERE id=?",(oid,)).fetchone()
         if not order:
             c.rollback()
-            await q.edit_message_text("Order not found.")
+            await q.message.reply_text("Order not found.")
             return
         if order["status"] in ("delivered","completed","rejected"):
             c.rollback()
-            await q.edit_message_text(f"Order #{oid} is already {order['status']}.")
+            await q.message.reply_text(f"Order #{oid} is already {order['status']}.")
             return
         c.execute("UPDATE v4_orders SET status='delivered',completed_at=?,updated_at=? WHERE id=?",
                   (v4.now(),v4.now(),oid))
@@ -444,11 +444,11 @@ async def delivered_callback(update,ctx):
     except Exception:
         c.rollback()
         log.exception("Mark delivered failed")
-        await q.edit_message_text("Could not update order. No delivery credit was recorded.")
+        await q.message.reply_text("Could not update order. No delivery credit was recorded.")
         return
     finally:
         c.close()
-    await q.edit_message_text(
+    await q.message.reply_text(
         f"✅ Order #{oid} marked DELIVERED.\n"
         f"Seller credit recorded: INR ₹{float(order['seller_amount']):.2f}")
     for uid in {int(order["buyer_owner_id"]),int(order["seller_owner_id"])}:

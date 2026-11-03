@@ -341,19 +341,19 @@ async def menu_callback(update,ctx):
         balance_line=(f"Available balance: <b>{available_wallet:.6f} USDT</b>" if bal>=-1e-9 else
                       f"⚠️ <b>Wallet shortfall: {abs(bal):.6f} USDT</b>")
         await q.message.reply_text(
-            "<b>👛 USDT WALLET</b>\\n━━━━━━━━━━━━━━━━━━\\n"
-            f"{balance_line}\\n"
-            f"Total deposits: {float(dep):.6f} USDT\\n"
-            f"Catalogue investment: {float(invested):.6f} USDT\\n"
-            f"Total resale proceeds: {float(summary['earned']):.6f} USDT\\n"
-            f"Paid withdrawals: {float(summary['paid']):.6f} USDT\\n"
-            f"Pending withdrawals: {float(summary['pending']):.6f} USDT\\n"
-            f"Sale proceeds remaining: {float(summary['sale_remaining']):.6f} USDT\\n"
-            f"Available to withdraw: <b>{float(summary['available']):.6f} USDT</b>\\n"
-            f"💚 <b>Recorded profit: +{float(profit):.6f} USDT</b>\\n\\n"
-            "<b>DEPOSIT NETWORKS</b>\\n"
-            f"TRC20: <code>{html.escape(str(v4.PAY_TRON))}</code>\\n"
-            f"BEP20: <code>{html.escape(str(v4.PAY_BSC))}</code>\\n\\n"
+            "<b>👛 USDT WALLET</b>\n━━━━━━━━━━━━━━━━━━\n"
+            f"{balance_line}\n"
+            f"Total deposits: {float(dep):.6f} USDT\n"
+            f"Catalogue investment: {float(invested):.6f} USDT\n"
+            f"Total resale proceeds: {float(summary['earned']):.6f} USDT\n"
+            f"Paid withdrawals: {float(summary['paid']):.6f} USDT\n"
+            f"Pending withdrawals: {float(summary['pending']):.6f} USDT\n"
+            f"Sale proceeds remaining: {float(summary['sale_remaining']):.6f} USDT\n"
+            f"Available to withdraw: <b>{float(summary['available']):.6f} USDT</b>\n"
+            f"💚 <b>Recorded profit: +{float(profit):.6f} USDT</b>\n\n"
+            "<b>DEPOSIT NETWORKS</b>\n"
+            f"TRC20: <code>{html.escape(str(v4.PAY_TRON))}</code>\n"
+            f"BEP20: <code>{html.escape(str(v4.PAY_BSC))}</code>\n\n"
             "Send USDT only on the selected network and upload payment proof for verification.",
             reply_markup=back_dashboard_kb(),parse_mode="HTML")
     elif action=="market":
@@ -574,12 +574,12 @@ async def withdrawal_review_callback(update,ctx):
     else:
         wallet_line=(f"Available wallet balance: <b>{max(0.0,summary['ledger_balance']-summary['pending']):.6f} USDT</b>")
     details=(
-        "<b>📊 POST-WITHDRAWAL WALLET SUMMARY</b>\\n━━━━━━━━━━━━━━━━━━\\n"
-        f"Total resale proceeds: <b>{summary['earned']:.6f} USDT</b>\\n"
-        f"Paid withdrawals: <b>{summary['paid']:.6f} USDT</b>\\n"
-        f"Pending withdrawals: <b>{summary['pending']:.6f} USDT</b>\\n"
-        f"Sale proceeds remaining: <b>{summary['sale_remaining']:.6f} USDT</b>\\n"
-        f"{wallet_line}\\n"
+        "<b>📊 POST-WITHDRAWAL WALLET SUMMARY</b>\n━━━━━━━━━━━━━━━━━━\n"
+        f"Total resale proceeds: <b>{summary['earned']:.6f} USDT</b>\n"
+        f"Paid withdrawals: <b>{summary['paid']:.6f} USDT</b>\n"
+        f"Pending withdrawals: <b>{summary['pending']:.6f} USDT</b>\n"
+        f"Sale proceeds remaining: <b>{summary['sale_remaining']:.6f} USDT</b>\n"
+        f"{wallet_line}\n"
         f"Available for another withdrawal: <b>{summary['available']:.6f} USDT</b>"
     )
     await q.message.reply_text(details,parse_mode="HTML")

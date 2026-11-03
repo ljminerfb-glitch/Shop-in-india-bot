@@ -1,5 +1,6 @@
 import os
 import re
+import html
 import hmac
 import hashlib
 import secrets
@@ -367,12 +368,15 @@ async def approval(update, context):
     con.commit()
     con.close()
 
-    await query.edit_message_text(f"Shop {status.upper()}.")
+    status_label = "<b>✅ SHOP APPROVED</b>" if status == "approved" else "<b>❌ SHOP REJECTED</b>"
+    await query.edit_message_text(f"{status_label}\nShop: <b>{html.escape(str(shop['shop_name']))}</b>",parse_mode="HTML")
 
     try:
         await context.bot.send_message(
             shop["owner_id"],
-            f"📢 Your shop application has been {status.upper()}."
+            ("<b>✅ YOUR SHOP IS APPROVED</b>" if status == "approved" else "<b>❌ YOUR SHOP APPLICATION WAS REJECTED</b>")+
+            f"\nShop: <b>{html.escape(str(shop['shop_name']))}</b>",
+            parse_mode="HTML"
         )
     except Exception:
         log.exception("Owner notification failed")

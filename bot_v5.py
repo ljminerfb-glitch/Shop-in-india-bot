@@ -267,17 +267,18 @@ async def menu_callback(update,ctx):
     if action=="deposit":
         ctx.user_data["state"]="deposit_amount"
         await q.message.reply_text(
-            "💳 DEPOSIT FUNDS\n━━━━━━━━━━━━━━━━━━\n"
-            "Enter the amount of USDT you want to deposit.\n"
-            "Minimum amount must be greater than zero.\n\n"
-            "Payment network and address will appear after amount entry. Admin manually verifies the screenshot.",
-            reply_markup=back_dashboard_kb())
+            "<b>💳 DEPOSIT USDT</b>\n━━━━━━━━━━━━━━━━━━\n"
+            "Enter the amount you want to deposit.\n"
+            "<i>Minimum amount must be greater than zero.</i>\n\n"
+            "Choose a network on the next screen, then upload your payment proof for Admin review.",
+            reply_markup=back_dashboard_kb(),parse_mode="HTML")
     elif action=="withdraw":
         ctx.user_data["state"]="withdraw_amount"
         await q.message.reply_text(
-            "💸 WITHDRAW FUNDS\n━━━━━━━━━━━━━━━━━━\n"
-            "Enter withdrawal amount in INR. Only completed sale earnings are withdrawable.",
-            reply_markup=back_dashboard_kb())
+            "<b>💸 WITHDRAW FUNDS</b>\n━━━━━━━━━━━━━━━━━━\n"
+            "Enter the amount in INR.\n"
+            "<i>Only completed and available sale earnings can be withdrawn.</i>",
+            reply_markup=back_dashboard_kb(),parse_mode="HTML")
     elif action=="wallet":
         c=v4.db()
         try:
@@ -435,13 +436,25 @@ async def menu_callback(update,ctx):
         c=v4.db()
         w=c.execute("SELECT network,verified FROM owner_wallets WHERE owner_id=?",(q.from_user.id,)).fetchone()
         c.close()
-        body=(f"👤 MY ACCOUNT\\nShop: {s['shop_name']}\\nShop ID: {s['id']}\\nLevel: L{s['level']}\\n"
-              f"Wallet verification: {w['network']} — {'Verified' if w['verified'] else 'Pending'}\\n\\n"
-              f"USDT deposit addresses\\nTRC20: {v4.PAY_TRON}\\nBEP20: {v4.PAY_BSC}\\n"
-              "Select the matching network when depositing. Send only USDT.")
-        await q.message.reply_text(body,reply_markup=back_dashboard_kb())
+        verification="✅ VERIFIED" if w and w["verified"] else "🟡 PENDING / NOT VERIFIED"
+        network=html.escape(str(w["network"])) if w else "Not set"
+        body=(
+            "<b>👤 MY ACCOUNT</b>\n━━━━━━━━━━━━━━━━━━\n"
+            f"Shop: <b>{html.escape(str(s['shop_name']))}</b>\n"
+            f"Shop ID: <code>{s['id']}</code> • Level: <b>L{s['level']}</b>\n"
+            f"Withdrawal wallet: {verification}\n"
+            f"Network: {network}\n\n"
+            "<b>DEPOSIT NETWORKS</b>\n"
+            f"TRC20: <code>{html.escape(str(v4.PAY_TRON))}</code>\n"
+            f"BEP20: <code>{html.escape(str(v4.PAY_BSC))}</code>\n\n"
+            "<i>Use the correct network and send USDT only.</i>"
+        )
+        await q.message.reply_text(body,reply_markup=back_dashboard_kb(),parse_mode="HTML")
     elif action=="support":
-        await q.message.reply_text("💬 SUPPORT\nFor help with registration, payments, shop approval or account issues, contact the Shop in India administrator.",reply_markup=back_dashboard_kb())
+        await q.message.reply_text(
+            "<b>💬 SUPPORT</b>\n━━━━━━━━━━━━━━━━━━\n"
+            "For help with registration, payments, shop approval or account issues, contact the Shop in India administrator.",
+            reply_markup=back_dashboard_kb(),parse_mode="HTML")
 
 
 async def text_handler(update,ctx):

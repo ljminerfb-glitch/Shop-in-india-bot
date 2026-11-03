@@ -1,6 +1,6 @@
 """V5 Telegram-chat UI: inline level selection, owner panel and deposits."""
 import os, logging
-from telegram import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup
+from telegram import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 import bot_v3 as v3
 import bot_v4 as v4
@@ -9,6 +9,7 @@ TOKEN=os.getenv("BOT_TOKEN")
 ADMIN_ID=int(os.getenv("ADMIN_ID","0"))
 logging.basicConfig(level=logging.INFO)
 log=logging.getLogger("shop_v5")
+v3.main_keyboard=lambda: ReplyKeyboardRemove()
 
 def level_kb():
     c=v4.db(); rows=c.execute("SELECT level,activation_usdt,product_target FROM level_settings ORDER BY level").fetchall(); c.close()

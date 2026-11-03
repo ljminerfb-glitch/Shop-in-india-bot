@@ -97,6 +97,7 @@ async def set_price(update,ctx):
     if not row: c.close(); await update.effective_message.reply_text("Central product not found."); return
     old=float(row["price_usdt"])
     c.execute("UPDATE central_catalog SET price_usdt=?,updated_at=? WHERE id=?",(price,v4.now(),pid))
+    c.execute("INSERT INTO admin_audit(admin_id,owner_id,action,details,created_at) VALUES(?,?,?,?,?)",(v4.ADMIN_ID,None,"central_price_changed",f"Product #{pid} {row['title']}: {old:g} -> {price:g} USDT",v4.now()))
     c.commit(); c.close()
     await update.effective_message.reply_text(f"Updated #{pid} {row['title']}: {old:g} → {price:g} USDT.")
 
@@ -110,7 +111,10 @@ async def set_stock(update,ctx):
     except ValueError:
         await update.effective_message.reply_text("Enter valid product ID and stock quantity (0 or more)."); return
     c=v4.db()
+    old=c.execute("SELECT stock,title FROM central_catalog WHERE id=?",(pid,)).fetchone()
     cur=c.execute("UPDATE central_catalog SET stock=?,updated_at=? WHERE id=?",(qty,v4.now(),pid))
+    if cur.rowcount and old:
+        c.execute("INSERT INTO admin_audit(admin_id,owner_id,action,details,created_at) VALUES(?,?,?,?,?)",(v4.ADMIN_ID,None,"central_stock_changed",f"Product #{pid} {old['title']}: {old['stock']} -> {qty}",v4.now()))
     c.commit(); c.close()
     await update.effective_message.reply_text(f"Stock updated for product #{pid}." if cur.rowcount else "Central product not found.")
 
@@ -120,7 +124,12 @@ async def set_active(update,ctx):
         await update.effective_message.reply_text("Usage: /centralactive PRODUCT_ID on|off"); return
     try: pid=int(ctx.args[0])
     except ValueError: await update.effective_message.reply_text("Invalid product ID."); return
-    c=v4.db(); cur=c.execute("UPDATE central_catalog SET active=?,updated_at=? WHERE id=?",(1 if ctx.args[1].lower()=="on" else 0,v4.now(),pid)); c.commit(); c.close()
+    c=v4.db(); before=c.execute("SELECT title,active FROM central_catalog WHERE id=?",(pid,)).fetchone()
+    new_active=1 if ctx.args[1].lower()=="on" else 0
+    cur=c.execute("UPDATE central_catalog SET active=?,updated_at=? WHERE id=?",(new_active,v4.now(),pid))
+    if cur.rowcount and before:
+        c.execute("INSERT INTO admin_audit(admin_id,owner_id,action,details,created_at) VALUES(?,?,?,?,?)",(v4.ADMIN_ID,None,"central_active_changed",f"Product #{pid} {before['title']}: {before['active']} -> {new_active}",v4.now()))
+    c.commit(); c.close()
     await update.effective_message.reply_text("Catalogue status updated." if cur.rowcount else "Central product not found.")
 
 async def buy(update,ctx):
@@ -227,8 +236,11 @@ async def admin_callback(update,ctx):
         return
     if action=="toggle":
         pid=int(parts[2]); c=v4.db()
+        before=c.execute("SELECT title,active FROM central_catalog WHERE id=?",(pid,)).fetchone()
         c.execute("UPDATE central_catalog SET active=CASE WHEN active=1 THEN 0 ELSE 1 END,updated_at=? WHERE id=?",(v4.now(),pid))
         row=c.execute("SELECT title,active FROM central_catalog WHERE id=?",(pid,)).fetchone()
+        if row and before:
+            c.execute("INSERT INTO admin_audit(admin_id,owner_id,action,details,created_at) VALUES(?,?,?,?,?)",(v4.ADMIN_ID,None,"central_active_changed",f"Product #{pid} {row['title']}: {before['active']} -> {row['active']}",v4.now()))
         c.commit(); c.close()
         await q.message.reply_text(f"{row['title']}: {'ACTIVE' if row['active'] else 'OFF'}",
           reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Product",callback_data=f"cc:view:{pid}"),InlineKeyboardButton("⬅️ Catalogue",callback_data="adm:central")]])); return

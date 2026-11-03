@@ -457,6 +457,7 @@ async def send_admin_panel(bot, chat_id):
     kb=InlineKeyboardMarkup([
       [InlineKeyboardButton("👥 Owner Control Panel",callback_data="adm:owners")],
       [InlineKeyboardButton("🛒 Central Catalogue (USDT)",callback_data="adm:central")],
+      [InlineKeyboardButton("🏷️ Admin Resale Market",callback_data="adm:resale")],
       [InlineKeyboardButton("🧾 FULL AUDIT LOG",callback_data="adm:audit")],
       [InlineKeyboardButton("🏪 All Shops",callback_data="adm:shops"),InlineKeyboardButton("🛍 Products",callback_data="adm:products")],
       [InlineKeyboardButton(f"💳 Pending Deposits ({pending_deposits})",callback_data="adm:payments")],

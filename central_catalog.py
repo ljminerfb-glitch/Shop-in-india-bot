@@ -320,10 +320,9 @@ async def owner_market(update,ctx,shop):
                  f"Price: {price:g} USDT\nPotential margin: 1.5–2 USDT (reference only)\n"
                  f"Available stock: {stock}\n"+
                  ("Select quantity below to buy." if price>0 and stock>0 else "Currently unavailable — Admin must set price and stock."))
-        buttons=[]
-        if price>0 and stock>0:
-            buttons=[[InlineKeyboardButton(f"🛒 Buy × {n}",callback_data=f"ccbuy:{p['id']}:{n}")
-                      for n in (1,2,5) if n<=stock]]
+        quantities=[n for n in (1,2,5) if n<=stock] or [1]
+        buttons=[[InlineKeyboardButton(f"🛒 Buy × {n}",callback_data=f"ccbuy:{p['id']}:{n}")
+                  for n in quantities]]
         buttons.append([InlineKeyboardButton("⬅️ Back to Dashboard",callback_data="m:dashboard")])
         kb=InlineKeyboardMarkup(buttons)
         image_path=Path(__file__).resolve().parent/(p["image_path"] or "")

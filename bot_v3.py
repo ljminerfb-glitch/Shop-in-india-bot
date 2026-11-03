@@ -699,6 +699,7 @@ async def save_suggestion_price(update, context):
     con.close()
 
     title = context.user_data["suggest_title"]
+    description = context.user_data["suggest_description"]
     context.user_data.clear()
     await update.message.reply_text(
         f"✅ Product suggestion submitted!\n"
@@ -719,7 +720,7 @@ async def save_suggestion_price(update, context):
             f"📝 NEW PRODUCT SUGGESTION #{suggestion_id}\n\n"
             f"Shop: {shop['shop_name']}\nOwner ID: {update.effective_user.id}\n"
             f"Product: {title}\n"
-            f"Description: {context.user_data.get('suggest_description', '') or 'See submitted details'}\n"
+            f"Description: {description}\n"
             f"Suggested price: ₹{price:,.2f}\n\n"
             "Approve or reject this suggestion:",
             reply_markup=keyboard

@@ -76,13 +76,21 @@ async def approved_callback(update,ctx):
         else: await ctx.bot.send_message(row["owner_id"],"🏪 Your shop is approved and level is active. Open /start for your owner panel.",reply_markup=owner_kb())
 
 async def level_callback(update,ctx):
-    q=update.callback_query; await q.answer()
-    lv=int(q.data.split(":")[1]); s=v4.shop_for(q.from_user.id)
-    if not s or lv<=int(s["level"]): await q.edit_message_text("Registered shop and a higher level are required."); return
-    c=v4.db(); cfg=c.execute("SELECT activation_usdt FROM level_settings WHERE level=?",(lv,)).fetchone()
-    if not s or s["status"]!="approved":
+    q=update.callback_query
+    await q.answer()
+    lv=int(q.data.split(":")[1])
+    s=v4.shop_for(q.from_user.id)
+    if not s:
+        await q.edit_message_text("Please register your shop first.")
+        return
+    if s["status"]!="approved":
         await q.edit_message_text("Your shop must be approved before selecting a level.")
         return
+    if lv<=int(s["level"]):
+        await q.edit_message_text("This level is already active. Use /start to open your dashboard.")
+        return
+
+    c=v4.db()
     cfg=c.execute("SELECT activation_usdt FROM level_settings WHERE level=?",(lv,)).fetchone()
     if not cfg:
         c.close()
@@ -104,6 +112,7 @@ async def level_callback(update,ctx):
     rate=v4.usdt_inr_rate(c)
     c.commit()
     c.close()
+
     ctx.user_data.update({"state":"payment_proof","payment_request_id":rid})
     kb=InlineKeyboardMarkup([[
         InlineKeyboardButton("🔵 USDT TRC20",callback_data=f"net:{rid}:trc"),

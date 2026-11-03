@@ -245,6 +245,182 @@ async def orderreject(update,ctx):
     finally: c.close()
     await update.message.reply_text(f"Order #{oid} rejected and reserved stock restored.")
 
+
+
+# ---- Payments, level activation and withdrawal controls ----
+PAY_TRON = "TDrWh8zrWDgB3uGeyBsWym9ATNVNDPjD7v"
+PAY_BSC = "0x62eb80614112d7b6bdeacf07b745755605c4b7e0"
+
+async def activate(update, ctx):
+    shop=shop_for(update.effective_user.id)
+    if not shop or shop["status"]!="approved":
+        await update.message.reply_text("Approved shop required."); return
+    if len(ctx.args)!=1 or not ctx.args[0].isdigit() or int(ctx.args[0]) not in range(1,6):
+        await update.message.reply_text("Usage: /activate LEVEL (1–5)"); return
+    target=int(ctx.args[0])
+    if target<=int(shop["level"]):
+        await update.message.reply_text("Aapka current level is level ke barabar ya is se upar hai."); return
+    c=db()
+    setting=c.execute("SELECT activation_usdt FROM level_settings WHERE level=?",(target,)).fetchone()
+    if not setting: c.close(); await update.message.reply_text("Level configuration missing."); return
+    pending=c.execute("SELECT id FROM payment_requests WHERE owner_id=? AND payment_type='level_activation' AND level=? AND status='pending'",(update.effective_user.id,target)).fetchone()
+    if pending: c.close(); await update.message.reply_text(f"Is level ki payment request #{pending['id']} pehle se pending hai."); return
+    amount=float(setting["activation_usdt"])
+    cur=c.execute("""INSERT INTO payment_requests(owner_id,shop_id,payment_type,level,amount,currency,network,status,created_at)
+       VALUES(?,?,'level_activation',?,?,'USDT','not_selected','pending',?)""",(update.effective_user.id,shop["id"],target,amount,now()))
+    rid=cur.lastrowid; c.commit(); c.close()
+    ctx.user_data["payment_request_id"]=rid
+    ctx.user_data["state"]="activation_network"
+    await update.message.reply_text(
+      f"Level L{target} activation request #{rid}\nAmount: {amount:g} USDT\n\n"
+      "Network choose karein: TRC20 ya BEP20. Payment sirf tab karein jab aap address/network verify kar lein.",
+      reply_markup=__import__("telegram").ReplyKeyboardMarkup([["USDT TRC20","USDT BEP20"],["Cancel"]],resize_keyboard=True))
+
+async def payment_network(update,ctx):
+    value=update.message.text.strip()
+    rid=ctx.user_data.get("payment_request_id")
+    if value=="Cancel":
+        if rid:
+            c=db(); c.execute("UPDATE payment_requests SET status='cancelled',reviewed_at=? WHERE id=? AND owner_id=? AND status='pending'",(now(),rid,update.effective_user.id)); c.commit(); c.close()
+        ctx.user_data.clear(); await update.message.reply_text("Cancelled.",reply_markup=v3.main_keyboard()); return
+    if value not in ("USDT TRC20","USDT BEP20") or not rid:
+        await update.message.reply_text("TRC20 ya BEP20 choose karein, ya Cancel."); return
+    address=PAY_TRON if value=="USDT TRC20" else PAY_BSC
+    c=db(); c.execute("UPDATE payment_requests SET network=? WHERE id=? AND owner_id=? AND status='pending'",(value,rid,update.effective_user.id)); c.commit(); c.close()
+    ctx.user_data["state"]="payment_proof"
+    await update.message.reply_text(f"Payment address ({value}):\n{address}\n\nPayment ke baad transaction screenshot/photo bhejein. Address aur network dobara check karein.")
+
+async def payment_photo(update,ctx):
+    rid=ctx.user_data.get("payment_request_id")
+    if not rid or ctx.user_data.get("state")!="payment_proof": return
+    photo=update.message.photo[-1].file_id
+    c=db()
+    row=c.execute("SELECT * FROM payment_requests WHERE id=? AND owner_id=? AND status='pending'",(rid,update.effective_user.id)).fetchone()
+    if not row: c.close(); ctx.user_data.clear(); await update.message.reply_text("Pending request nahi mili."); return
+    c.execute("UPDATE payment_requests SET screenshot_file_id=? WHERE id=?",(photo,rid)); c.commit(); c.close()
+    ctx.user_data.clear()
+    kb=InlineKeyboardMarkup([[InlineKeyboardButton("Approve",callback_data=f"pay:approve:{rid}"),InlineKeyboardButton("Reject",callback_data=f"pay:reject:{rid}")]])
+    try:
+        await ctx.bot.send_photo(ADMIN_ID,photo=photo,caption=f"PAYMENT PROOF #{rid}\nOwner: {row['owner_id']}\nShop: {row['shop_id']}\nType: {row['payment_type']} L{row['level']}\nAmount: {row['amount']} {row['currency']}\nNetwork: {row['network']}\nVerify transaction independently before approving.",reply_markup=kb)
+    except Exception:
+        log.exception("Payment proof admin delivery failed")
+        await update.message.reply_text("Proof save ho gaya, lekin Admin ko Telegram notification nahi ja saki. Admin se contact karein.")
+        return
+    await update.message.reply_text(f"Payment proof request #{rid} Admin review ke liye bhej di gayi hai.",reply_markup=v3.main_keyboard())
+
+async def payment_review(update,ctx):
+    q=update.callback_query
+    if not admin(q.from_user.id): await q.answer("Admin only",show_alert=True); return
+    await q.answer()
+    _,action,rid_text=q.data.split(":"); rid=int(rid_text)
+    c=db()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        r=c.execute("SELECT * FROM payment_requests WHERE id=?",(rid,)).fetchone()
+        if not r or r["status"]!="pending" or not r["screenshot_file_id"]:
+            c.rollback(); await q.edit_message_caption(caption="Request missing, proof missing, or already reviewed."); return
+        status="approved" if action=="approve" else "rejected"
+        c.execute("UPDATE payment_requests SET status=?,reviewed_at=?,admin_note=? WHERE id=? AND status='pending'",(status,now(),"Admin verified manually" if action=="approve" else "Admin rejected proof",rid))
+        c.execute("""INSERT INTO payment_history(owner_id,shop_id,payment_type,amount,currency,status,reference,admin_note,actor_id,created_at,reviewed_at)
+          VALUES(?,?,?,?,?,?,?,?,?,?,?)""",(r["owner_id"],r["shop_id"],r["payment_type"],r["amount"],r["currency"],status,f"payment_request:{rid}","Manually reviewed by admin",ADMIN_ID,r["created_at"],now()))
+        if action=="approve" and r["payment_type"]=="level_activation":
+            shop=c.execute("SELECT level FROM shops WHERE id=? AND owner_id=?",(r["shop_id"],r["owner_id"])).fetchone()
+            if not shop: raise RuntimeError("Shop missing for payment request")
+            old=int(shop["level"]); new=int(r["level"])
+            if new>old:
+                c.execute("UPDATE shops SET level=? WHERE id=?",(new,r["shop_id"]))
+                c.execute("INSERT INTO level_history(shop_id,owner_id,old_level,new_level,reason,actor_id,created_at) VALUES(?,?,?,?,?,?,?)",(r["shop_id"],r["owner_id"],old,new,f"Approved activation payment #{rid}",ADMIN_ID,now()))
+                audit_shop(c,r["shop_id"],r["owner_id"],ADMIN_ID,"level_activated",old,new)
+        c.execute("INSERT INTO admin_audit(admin_id,owner_id,action,details,created_at) VALUES(?,?,?,?,?)",(ADMIN_ID,r["owner_id"],"payment_"+status,f"Payment request #{rid}",now()))
+        c.commit()
+    except Exception:
+        c.rollback(); log.exception("Payment review failed"); await q.edit_message_caption(caption="Review failed; no changes committed."); return
+    finally: c.close()
+    await q.edit_message_caption(caption=f"Payment request #{rid}: {status.upper()} (manual review).")
+    try: await ctx.bot.send_message(r["owner_id"],f"Payment request #{rid} {status.upper()}."+(f" Your shop level is now L{r['level']}." if status=="approved" and r["payment_type"]=="level_activation" else ""))
+    except Exception: pass
+
+async def setshoplevel(update,ctx):
+    if not admin(update.effective_user.id): return
+    if len(ctx.args)<2 or not all(x.isdigit() for x in ctx.args[:2]):
+        await update.message.reply_text("Usage: /setshoplevel SHOP_ID LEVEL [reason]"); return
+    sid,lv=map(int,ctx.args[:2]); reason=" ".join(ctx.args[2:]) or "Admin adjustment"
+    if lv not in range(0,6): await update.message.reply_text("Level 0–5 only."); return
+    c=db(); r=c.execute("SELECT owner_id,level FROM shops WHERE id=?",(sid,)).fetchone()
+    if not r: c.close(); await update.message.reply_text("Shop not found."); return
+    old=int(r["level"])
+    c.execute("UPDATE shops SET level=? WHERE id=?",(lv,sid))
+    c.execute("INSERT INTO level_history(shop_id,owner_id,old_level,new_level,reason,actor_id,created_at) VALUES(?,?,?,?,?,?,?)",(sid,r["owner_id"],old,lv,reason,ADMIN_ID,now()))
+    audit_shop(c,sid,r["owner_id"],ADMIN_ID,"level_changed",old,lv)
+    c.execute("INSERT INTO admin_audit(admin_id,owner_id,action,details,created_at) VALUES(?,?,?,?,?)",(ADMIN_ID,r["owner_id"],"shop_level_changed",f"Shop {sid}: {old}->{lv}; {reason}",now()))
+    c.commit(); c.close(); await update.message.reply_text(f"Shop #{sid} level changed L{old} → L{lv}; audit saved.")
+
+async def withdraw(update,ctx):
+    s=shop_for(update.effective_user.id)
+    if not s or s["status"]!="approved": await update.message.reply_text("Approved shop required."); return
+    if len(ctx.args)!=1:
+        await update.message.reply_text("Usage: /withdraw AMOUNT (INR)"); return
+    try: amount=round(float(ctx.args[0]),2); assert amount>0
+    except Exception: await update.message.reply_text("Valid positive amount enter karein."); return
+    c=db(); wallet=c.execute("SELECT * FROM owner_wallets WHERE owner_id=?",(update.effective_user.id,)).fetchone()
+    if not wallet or not wallet["verified"]:
+        c.close(); await update.message.reply_text("Withdrawal ke liye pehle wallet save aur Admin se verify karwayein."); return
+    earned=float(c.execute("SELECT COALESCE(SUM(amount),0) n FROM ledger WHERE owner_id=? AND entry_type='sale_credit'",(update.effective_user.id,)).fetchone()["n"])
+    paid=float(c.execute("SELECT COALESCE(SUM(amount),0) n FROM ledger WHERE owner_id=? AND entry_type='withdrawal_debit'",(update.effective_user.id,)).fetchone()["n"])
+    reserved=float(c.execute("SELECT COALESCE(SUM(amount),0) n FROM withdrawals WHERE owner_id=? AND status='pending'",(update.effective_user.id,)).fetchone()["n"])
+    available=round(earned-paid-reserved,2)
+    if amount>available:
+        c.close(); await update.message.reply_text(f"Insufficient recorded balance. Available: INR {available:.2f}"); return
+    cur=c.execute("""INSERT INTO withdrawals(owner_id,shop_id,amount,currency,network,wallet_address,status,created_at)
+      VALUES(?,?,?,'INR',?,?,'pending',?)""",(update.effective_user.id,s["id"],amount,wallet["network"],wallet["address"],now()))
+    wid=cur.lastrowid; c.commit(); c.close()
+    kb=InlineKeyboardMarkup([[InlineKeyboardButton("Mark PAID",callback_data=f"wd:paid:{wid}"),InlineKeyboardButton("Reject",callback_data=f"wd:reject:{wid}")]])
+    await update.message.reply_text(f"Withdrawal request #{wid} submitted. Amount INR {amount:.2f}; pending Admin review.")
+    try: await ctx.bot.send_message(ADMIN_ID,f"WITHDRAWAL #{wid}\nOwner: {update.effective_user.id}\nAmount: INR {amount:.2f}\nWallet: {wallet['network']} {wallet['address']}\nVerify and actually send payment before Mark PAID.",reply_markup=kb)
+    except Exception: log.exception("Withdrawal notification failed")
+
+async def withdrawal_review(update,ctx):
+    q=update.callback_query
+    if not admin(q.from_user.id): await q.answer("Admin only",show_alert=True); return
+    await q.answer(); _,action,wid_text=q.data.split(":"); wid=int(wid_text)
+    c=db()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        r=c.execute("SELECT * FROM withdrawals WHERE id=?",(wid,)).fetchone()
+        if not r or r["status"]!="pending":
+            c.rollback(); await q.edit_message_text("Withdrawal missing or already reviewed."); return
+        if action=="paid":
+            c.execute("UPDATE withdrawals SET status='paid',reviewed_at=?,admin_note='Marked paid after manual payout verification' WHERE id=?",(now(),wid))
+            c.execute("INSERT INTO ledger(transaction_id,shop_id,owner_id,entry_type,amount,currency,note,created_at) VALUES(NULL,?,?, 'withdrawal_debit',?,'INR',?,?)",(r["shop_id"],r["owner_id"],r["amount"],f"Withdrawal #{wid} paid",now()))
+            status="paid"
+        else:
+            c.execute("UPDATE withdrawals SET status='rejected',reviewed_at=?,admin_note='Rejected by admin' WHERE id=?",(now(),wid)); status="rejected"
+        c.execute("INSERT INTO admin_audit(admin_id,owner_id,action,details,created_at) VALUES(?,?,?,?,?)",(ADMIN_ID,r["owner_id"],"withdrawal_"+status,f"Withdrawal #{wid}",now()))
+        c.commit()
+    except Exception:
+        c.rollback(); log.exception("Withdrawal review failed"); await q.edit_message_text("Withdrawal review failed."); return
+    finally: c.close()
+    await q.edit_message_text(f"Withdrawal #{wid}: {status.upper()}.")
+    try: await ctx.bot.send_message(r["owner_id"],f"Withdrawal #{wid}: {status.upper()}.")
+    except Exception: pass
+
+async def myproductaudit(update,ctx):
+    s=shop_for(update.effective_user.id)
+    if not s: await update.message.reply_text("Shop not found."); return
+    c=db(); rows=c.execute("SELECT * FROM product_audit WHERE shop_id=? ORDER BY id DESC LIMIT 20",(s["id"],)).fetchall(); c.close()
+    await update.message.reply_text("YOUR PRODUCT AUDIT\n"+("\n".join(f"Product #{r['product_id']} {r['action']}: {r['old_value']} → {r['new_value']} | {r['created_at']}" for r in rows) if rows else "Abhi koi product changes record nahi hain."))
+
+async def setfee(update,ctx):
+    if not admin(update.effective_user.id): return
+    if len(ctx.args)!=1: await update.message.reply_text("Usage: /setfee PERCENT (0–30)"); return
+    try: pct=float(ctx.args[0]); assert 0<=pct<=30
+    except Exception: await update.message.reply_text("Fee 0–30% ke darmiyan honi chahiye."); return
+    c=db(); old=c.execute("SELECT setting_value FROM platform_settings WHERE setting_key='platform_fee_percent'").fetchone()
+    c.execute("UPDATE platform_settings SET setting_value=?,updated_by=?,updated_at=? WHERE setting_key='platform_fee_percent'",(str(pct),ADMIN_ID,now()))
+    c.execute("INSERT INTO admin_audit(admin_id,action,details,created_at) VALUES(?,?,?,?)",(ADMIN_ID,"platform_fee_changed",f"{old['setting_value'] if old else 'unset'} -> {pct}",now()))
+    c.commit(); c.close(); await update.message.reply_text(f"Platform fee set to {pct:g}%.")
+
+
 def main():
     if not TOKEN or not ADMIN_ID: raise RuntimeError("BOT_TOKEN and ADMIN_ID environment variables are required.")
     v3.setup(); v3.ensure_catalog_schema()
@@ -255,11 +431,20 @@ def main():
       ("setprice",lambda u,c:edit_product(u,c,"setprice")),("setstock",lambda u,c:edit_product(u,c,"setstock")),
       ("setproductlevel",setproductlevel),("myproducts",myproducts),("myorders",myorders),("history",history),
       ("mylevels",mylevels),("audit",lambda u,c:audit(u,c,"product")),("shopaudit",lambda u,c:audit(u,c,"shop")),
-      ("owner",owner_audit),("buy",buy),("orders",orders),("orderdone",orderdone),("orderreject",orderreject)]:
+      ("owner",owner_audit),("buy",buy),("orders",orders),("orderdone",orderdone),("orderreject",orderreject),
+      ("activate",activate),("setshoplevel",setshoplevel),("withdraw",withdraw),("myproductaudit",myproductaudit),("setfee",setfee)]:
         app.add_handler(CommandHandler(cmd,fn))
+    app.add_handler(CallbackQueryHandler(payment_review,pattern=r"^pay:(approve|reject):[0-9]+$"))
+    app.add_handler(CallbackQueryHandler(withdrawal_review,pattern=r"^wd:(paid|reject):[0-9]+$"))
     app.add_handler(CallbackQueryHandler(v3.product_review,pattern=r"^product:(approve|reject):[0-9]+$"))
     app.add_handler(CallbackQueryHandler(v3.approval))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,v3.handle_message))
+    async def v4_text(update,ctx):
+        if ctx.user_data.get("state")=="activation_network":
+            await payment_network(update,ctx)
+        else:
+            await v3.handle_message(update,ctx)
+    app.add_handler(MessageHandler(filters.PHOTO,payment_photo))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,v4_text))
     print("SHOP IN INDIA V4 ready; polling starts now.")
     app.run_polling()
 

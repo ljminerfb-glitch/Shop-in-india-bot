@@ -381,6 +381,7 @@ async def payment_review(update,ctx):
            status,f"payment_request:{rid}","Manually reviewed by admin",ADMIN_ID,
            r["created_at"],reviewed_at))
 
+        cashback_amount=0.0
         if action=="approve" and r["payment_type"]=="level_activation":
             shop=c.execute("SELECT level FROM shops WHERE id=? AND owner_id=?",
                            (r["shop_id"],r["owner_id"])).fetchone()
@@ -394,6 +395,14 @@ async def payment_review(update,ctx):
                           (r["shop_id"],r["owner_id"],old,new,
                            f"Approved activation payment #{rid}",ADMIN_ID,reviewed_at))
                 audit_shop(c,r["shop_id"],r["owner_id"],ADMIN_ID,"level_activated",old,new)
+            # Credit 50% of the approved activation fee to the owner's USDT wallet.
+            # The pending->approved transition above prevents duplicate credits.
+            cashback_amount=round(float(r["amount"])*0.50,6)
+            if cashback_amount>0:
+                c.execute("""INSERT INTO ledger(transaction_id,shop_id,owner_id,entry_type,amount,currency,note,created_at)
+                              VALUES(NULL,?,?, 'level_activation_wallet_credit',?,'USDT',?,?)""",
+                          (r["shop_id"],r["owner_id"],cashback_amount,
+                           f"50% wallet cashback for approved level activation #{rid}",reviewed_at))
 
         if action=="approve" and r["payment_type"]=="wallet_deposit":
             c.execute("INSERT INTO ledger(transaction_id,shop_id,owner_id,entry_type,amount,currency,note,created_at) VALUES(NULL,?,?, 'deposit_credit',?,'USDT',?,?)",
@@ -434,7 +443,7 @@ async def payment_review(update,ctx):
         await ctx.bot.send_message(
             r["owner_id"],
             f"Payment request #{rid} {status.upper()}."+
-            (f" Your shop level is now L{r['level']}."
+            (f" Your shop level is now L{r['level']}. {cashback_amount:g} USDT (50% of activation fee) has been credited to your wallet."
              if status=="approved" and r["payment_type"]=="level_activation" else ""))
     except Exception:
         log.exception("Payment review owner notification failed")

@@ -78,7 +78,12 @@ async def approved_callback(update,ctx):
 async def level_callback(update,ctx):
     q=update.callback_query
     await q.answer()
-    lv=int(q.data.split(":")[1])
+    try:
+        lv=int(q.data.split(":")[1])
+    except (ValueError,IndexError):
+        await q.edit_message_text("Invalid level. Please open /start and try again.")
+        return
+
     s=v4.shop_for(q.from_user.id)
     if not s:
         await q.edit_message_text("Please register your shop first.")
@@ -91,27 +96,75 @@ async def level_callback(update,ctx):
         return
 
     c=v4.db()
-    cfg=c.execute("SELECT activation_usdt FROM level_settings WHERE level=?",(lv,)).fetchone()
-    if not cfg:
+    try:
+        cfg=c.execute(
+            "SELECT level,activation_usdt,product_target,profit_min,profit_max "
+            "FROM level_settings WHERE level=?",(lv,)).fetchone()
+    finally:
         c.close()
+    if not cfg:
         await q.edit_message_text("This level is not configured. Please contact Admin.")
         return
-    pending=c.execute(
-        "SELECT id,amount FROM payment_requests WHERE owner_id=? "
-        "AND payment_type='level_activation' AND level=? AND status='pending' "
-        "ORDER BY id DESC LIMIT 1",(q.from_user.id,lv)).fetchone()
-    if pending:
-        rid=int(pending["id"])
-        amount=float(pending["amount"])
-    else:
-        amount=float(cfg["activation_usdt"])
-        cur=c.execute("""INSERT INTO payment_requests(owner_id,shop_id,payment_type,level,amount,currency,network,status,created_at)
-          VALUES(?,?,'level_activation',?,?,'USDT','not_selected','pending',?)""",
-          (q.from_user.id,s["id"],lv,amount,v4.now()))
-        rid=cur.lastrowid
-    rate=v4.usdt_inr_rate(c)
-    c.commit()
-    c.close()
+
+    target="Unlimited product access" if not cfg["product_target"] else f"Access to up to {cfg['product_target']} products"
+    benefits=(
+        f"📦 Product access: {target}\n"
+        f"📈 Profit/margin reference: {float(cfg['profit_min']):g}%–{float(cfg['profit_max']):g}%\n"
+        "🔓 Marketplace access according to this level"
+    )
+    kb=InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"💳 Continue to payment • {float(cfg['activation_usdt']):g} USDT",callback_data=f"lvpay:{lv}")],
+        [InlineKeyboardButton("⬅️ Back to all levels",callback_data="lvback")]
+    ])
+    await q.edit_message_text(
+        f"🔷 SHOP IN INDIA — LEVEL {lv}\n━━━━━━━━━━━━━━━━━━\n"
+        f"💰 Activation price: {float(cfg['activation_usdt']):g} USDT\n"
+        f"🇮🇳 INR reference: ₹{float(cfg['activation_usdt'])*v4.usdt_inr_rate():,.2f}\n\n"
+        f"🎁 LEVEL BENEFITS\n{benefits}\n\n"
+        "Note: Profit/margin figures are references, not guaranteed earnings. "
+        "Level activates only after Admin verifies your payment.",
+        reply_markup=kb)
+
+async def level_pay_callback(update,ctx):
+    q=update.callback_query
+    await q.answer()
+    try:
+        lv=int(q.data.split(":")[1])
+    except (ValueError,IndexError):
+        await q.edit_message_text("Invalid level. Please open /start and try again.")
+        return
+
+    s=v4.shop_for(q.from_user.id)
+    if not s or s["status"]!="approved":
+        await q.edit_message_text("An approved shop is required before payment.")
+        return
+    if lv<=int(s["level"]):
+        await q.edit_message_text("This level is already active. Use /start to open your dashboard.")
+        return
+
+    c=v4.db()
+    try:
+        cfg=c.execute("SELECT activation_usdt FROM level_settings WHERE level=?",(lv,)).fetchone()
+        if not cfg:
+            await q.edit_message_text("This level is not configured. Please contact Admin.")
+            return
+        pending=c.execute(
+            "SELECT id,amount FROM payment_requests WHERE owner_id=? "
+            "AND payment_type='level_activation' AND level=? AND status='pending' "
+            "ORDER BY id DESC LIMIT 1",(q.from_user.id,lv)).fetchone()
+        if pending:
+            rid=int(pending["id"])
+            amount=float(pending["amount"])
+        else:
+            amount=float(cfg["activation_usdt"])
+            cur=c.execute("""INSERT INTO payment_requests(owner_id,shop_id,payment_type,level,amount,currency,network,status,created_at)
+              VALUES(?,?,'level_activation',?,?,'USDT','not_selected','pending',?)""",
+              (q.from_user.id,s["id"],lv,amount,v4.now()))
+            rid=cur.lastrowid
+        rate=v4.usdt_inr_rate(c)
+        c.commit()
+    finally:
+        c.close()
 
     ctx.user_data.update({"state":"payment_proof","payment_request_id":rid})
     kb=InlineKeyboardMarkup([[
@@ -119,13 +172,21 @@ async def level_callback(update,ctx):
         InlineKeyboardButton("🔵 USDT BEP20",callback_data=f"net:{rid}:bep")
     ]])
     await q.edit_message_text(
-        f"🔷 LEVEL {lv} ACTIVATION\n━━━━━━━━━━━━━━━━━━\n"
+        f"🔷 LEVEL {lv} PAYMENT\n━━━━━━━━━━━━━━━━━━\n"
         f"Payment request: #{rid}\n"
         f"Amount: {amount:g} USDT\n"
         f"Rate: 1 USDT = INR {rate:,.2f}\n"
-        f"INR reference: {amount*rate:,.2f}\n\n"
+        f"INR reference: ₹{amount*rate:,.2f}\n\n"
         "Choose your payment network:",
         reply_markup=kb)
+
+async def level_back_callback(update,ctx):
+    q=update.callback_query
+    await q.answer()
+    await q.edit_message_text(
+        "🔷 SHOP IN INDIA\n━━━━━━━━━━━━━━━━━━\n"
+        "🎯 SELECT YOUR SHOP LEVEL\n\nChoose a level to view its price and benefits.",
+        reply_markup=level_kb())
 
 async def network_callback(update,ctx):
     q=update.callback_query; await q.answer(); _,rid_s,net=q.data.split(":"); rid=int(rid_s)
@@ -336,6 +397,8 @@ def main():
         app.add_handler(CommandHandler(cmd,fn))
     app.add_handler(CallbackQueryHandler(approved_callback,pattern=r"^(approve|reject):[0-9]+$"))
     app.add_handler(CallbackQueryHandler(level_callback,pattern=r"^lv:[1-5]$"))
+    app.add_handler(CallbackQueryHandler(level_pay_callback,pattern=r"^lvpay:[1-5]$"))
+    app.add_handler(CallbackQueryHandler(level_back_callback,pattern=r"^lvback$"))
     app.add_handler(CallbackQueryHandler(network_callback,pattern=r"^net:[0-9]+:(trc|bep)$"))
     app.add_handler(CallbackQueryHandler(menu_callback,pattern=r"^m:(market|deposit|withdraw|wallet|products|orders|history|profile)$"))
     app.add_handler(CallbackQueryHandler(delivered_callback,pattern=r"^order:delivered:[0-9]+$"))

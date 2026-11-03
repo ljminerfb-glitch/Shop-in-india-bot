@@ -283,7 +283,7 @@ async def menu_callback(update,ctx):
         try:
             bal=central.balance(c,q.from_user.id)
             invested=c.execute("SELECT COALESCE(SUM(amount),0) FROM ledger WHERE owner_id=? AND currency='USDT' AND entry_type='central_purchase_debit'",(q.from_user.id,)).fetchone()[0]
-            profit=c.execute("SELECT COALESCE(SUM(amount),0) FROM ledger WHERE owner_id=? AND currency='USDT' AND entry_type IN ('sale_credit','central_sale_profit')",(q.from_user.id,)).fetchone()[0]
+            profit=c.execute("SELECT COALESCE(SUM(amount),0) FROM ledger WHERE owner_id=? AND currency='USDT' AND entry_type IN ('resale_profit_credit','central_sale_profit')",(q.from_user.id,)).fetchone()[0]
             dep=c.execute("SELECT COALESCE(SUM(amount),0) FROM ledger WHERE owner_id=? AND currency='USDT' AND entry_type='deposit_credit'",(q.from_user.id,)).fetchone()[0]
         finally: c.close()
         await q.message.reply_text(
@@ -428,7 +428,8 @@ async def text_handler(update,ctx):
         await edit_screen(ctx,update,
             f"Withdrawal #{wid} pending Admin review.\nINR ₹{amount:,.2f} | Rate ₹{rate:,.2f}/USDT | Equivalent {usdt:g} USDT.",
             reply_markup=back_dashboard_kb())
-        await ctx.bot.send_message(ADMIN_ID,f"Withdrawal #{wid} from {update.effective_user.id}: INR ₹{amount:,.2f}, {usdt:g} USDT equivalent. Wallet {w['network']} {w['address']}. Send payout manually before marking paid.")
+        wd_kb=InlineKeyboardMarkup([[InlineKeyboardButton("✅ MARK PAID",callback_data=f"wd:paid:{wid}"),InlineKeyboardButton("❌ REJECT",callback_data=f"wd:reject:{wid}")],[InlineKeyboardButton("💸 All Pending Withdrawals",callback_data="adm:withdrawals"),InlineKeyboardButton("🏠 Admin Panel",callback_data="adm:home")]])
+        await ctx.bot.send_message(ADMIN_ID,f"WITHDRAWAL REQUEST #{wid}\\nOwner: {update.effective_user.id}\\nINR: ₹{amount:,.2f} | USDT equivalent: {usdt:g}\\nWallet: {w['network']} {w['address']}\\nVerify payout manually before marking paid.",reply_markup=wd_kb)
         ctx.user_data.pop("state",None)
     else:
         was_registering=state=="shop_password"

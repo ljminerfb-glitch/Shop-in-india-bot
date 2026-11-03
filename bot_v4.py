@@ -1,7 +1,7 @@
 """Shop in India V4 add-on. Run migrate_v4.py, then python bot_v4.py.
 Keeps V3 registration, approval, product submission and wallet flows.
 """
-import os, sqlite3, logging, re
+import os, sqlite3, logging, re, html
 from datetime import datetime, timezone
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters

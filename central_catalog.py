@@ -44,10 +44,11 @@ def setup(c=None):
 
 def balance(c, owner_id):
     row=c.execute("""SELECT
-      COALESCE(SUM(CASE WHEN currency='USDT' AND entry_type='deposit_credit' THEN amount ELSE 0 END),0)
-      - COALESCE(SUM(CASE WHEN currency='USDT' AND entry_type='central_purchase_debit' THEN amount ELSE 0 END),0) AS bal
+      COALESCE(SUM(CASE WHEN currency='USDT' AND entry_type='deposit_credit' THEN amount ELSE 0 END),0) deposits,
+      COALESCE(SUM(CASE WHEN currency='USDT' AND entry_type='central_purchase_debit' THEN amount ELSE 0 END),0) debits,
+      COALESCE(SUM(CASE WHEN currency='USDT' AND entry_type='central_purchase_refund_credit' THEN amount ELSE 0 END),0) refunds
       FROM ledger WHERE owner_id=?""",(owner_id,)).fetchone()
-    return round(float(row["bal"] or 0),6)
+    return round(float(row["deposits"] or 0)-float(row["debits"] or 0)+float(row["refunds"] or 0),6)
 
 def catalogue_text(c):
     rows=c.execute("SELECT id,title,price_usdt,stock,active FROM central_catalog ORDER BY id").fetchall()
@@ -61,10 +62,18 @@ async def admin_catalog(update,ctx):
     setup()
     c=v4.db()
     try:
+        rows=c.execute("SELECT id,title,price_usdt,stock,active FROM central_catalog ORDER BY id").fetchall()
+        from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+        keyboard=[]
+        for r in rows:
+            keyboard.append([InlineKeyboardButton(
+                f"#{r['id']} {r['title']} | {float(r['price_usdt']):g} USDT | Stock {r['stock']}",
+                callback_data=f"cc:view:{r['id']}")])
+        keyboard += [[InlineKeyboardButton("📦 Manage Central Orders",callback_data="cc:orders")],
+                     [InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]
         await update.effective_message.reply_text(
-          catalogue_text(c)+"\n\nEdit from this Admin Dashboard with:\n"
-          "/centralprice ID USDT_PRICE\n/centralstock ID QUANTITY\n/centralactive ID on|off\n"
-          "/centralorders — paid order history\n\nPrice 0 means product cannot be purchased.")
+            "🛠 CENTRAL CATALOGUE ADMIN\nChoose a product to edit its USDT price, shared stock or active status.\nPrices are always USDT; INR conversion is only for deposits/withdrawals.",
+            reply_markup=InlineKeyboardMarkup(keyboard))
     finally: c.close()
 
 async def set_price(update,ctx):
@@ -158,13 +167,98 @@ def balance_after_text(total, before):
 
 async def orders(update,ctx):
     if update.effective_user.id != v4.ADMIN_ID: return
+    from telegram import InlineKeyboardMarkup, InlineKeyboardButton
     c=v4.db()
     rows=c.execute("""SELECT o.id,o.buyer_owner_id,o.buyer_shop_id,o.quantity,o.total_usdt,o.status,o.created_at,p.title
       FROM central_orders o JOIN central_catalog p ON p.id=o.catalog_id ORDER BY o.id DESC LIMIT 50""").fetchall()
     c.close()
-    await update.effective_message.reply_text("📦 CENTRAL CATALOGUE ORDERS\n\n"+(
+    await update.effective_message.reply_text("📦 CENTRAL CATALOGUE ORDERS\n"+(
+      "Orders are charged in USDT. Fulfil only after arranging delivery; refund restores wallet and shared stock.\n\n"+
       "\n\n".join(f"#{r['id']} {r['title']} ×{r['quantity']}\nOwner {r['buyer_owner_id']} | Shop #{r['buyer_shop_id']}\n{r['total_usdt']:g} USDT | {r['status']} | {r['created_at']}" for r in rows)
       if rows else "No central orders yet."))
+    for r in rows:
+        buttons=[]
+        if r["status"]=="paid":
+            buttons=[[InlineKeyboardButton("✅ Mark Fulfilled",callback_data=f"cc:fulfill:{r['id']}"),
+                      InlineKeyboardButton("↩️ Refund + Restock",callback_data=f"cc:refund:{r['id']}")]]
+        buttons.append([InlineKeyboardButton("⬅️ Central Catalogue",callback_data="adm:central"),
+                        InlineKeyboardButton("🏠 Admin Panel",callback_data="adm:home")])
+        await update.effective_message.reply_text(
+            f"Central order #{r['id']} — {r['status'].upper()}",
+            reply_markup=InlineKeyboardMarkup(buttons))
+
+async def admin_callback(update,ctx):
+    q=update.callback_query
+    if q.from_user.id != v4.ADMIN_ID:
+        await q.answer("Admin only",show_alert=True); return
+    await q.answer()
+    parts=q.data.split(":")
+    action=parts[1]
+    if action=="orders":
+        await orders(update,ctx); return
+    if action=="view":
+        pid=int(parts[2]); c=v4.db()
+        row=c.execute("SELECT * FROM central_catalog WHERE id=?",(pid,)).fetchone(); c.close()
+        if not row:
+            await q.message.reply_text("Product not found."); return
+        from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+        kb=InlineKeyboardMarkup([
+          [InlineKeyboardButton("💲 Edit USDT Price",callback_data=f"cc:price:{pid}"),
+           InlineKeyboardButton("📦 Edit Shared Stock",callback_data=f"cc:stock:{pid}")],
+          [InlineKeyboardButton("🔴 Turn Off" if row["active"] else "🟢 Turn On",callback_data=f"cc:toggle:{pid}")],
+          [InlineKeyboardButton("⬅️ Catalogue List",callback_data="adm:central"),
+           InlineKeyboardButton("🏠 Admin Panel",callback_data="adm:home")]
+        ])
+        await q.message.reply_text(
+          f"#{pid} {row['title']}\nPrice: {float(row['price_usdt']):g} USDT\nShared stock: {row['stock']}\nActive: {'Yes' if row['active'] else 'No'}",
+          reply_markup=kb); return
+    if action in ("price","stock"):
+        pid=int(parts[2]); ctx.user_data["central_admin_edit"]={"field":action,"product_id":pid}
+        prompt="new price in USDT" if action=="price" else "new shared stock quantity"
+        await q.message.reply_text(f"Product #{pid}: send the {prompt} as a number. Send /cancel to stop.")
+        return
+    if action=="toggle":
+        pid=int(parts[2]); c=v4.db()
+        c.execute("UPDATE central_catalog SET active=CASE WHEN active=1 THEN 0 ELSE 1 END,updated_at=? WHERE id=?",(v4.now(),pid))
+        row=c.execute("SELECT title,active FROM central_catalog WHERE id=?",(pid,)).fetchone()
+        c.commit(); c.close()
+        await q.message.reply_text(f"{row['title']}: {'ACTIVE' if row['active'] else 'OFF'}",
+          reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Product",callback_data=f"cc:view:{pid}"),InlineKeyboardButton("⬅️ Catalogue",callback_data="adm:central")]])); return
+    if action in ("fulfill","refund"):
+        oid=int(parts[2]); c=v4.db()
+        try:
+            c.execute("BEGIN IMMEDIATE")
+            order=c.execute("SELECT * FROM central_orders WHERE id=?",(oid,)).fetchone()
+            if not order or order["status"]!="paid":
+                c.rollback(); await q.message.reply_text("Order not found or already processed. No changes made."); return
+            if action=="fulfill":
+                c.execute("UPDATE central_orders SET status='fulfilled' WHERE id=? AND status='paid'",(oid,))
+                label="fulfilled"
+                details=f"Central order #{oid} marked fulfilled"
+            else:
+                c.execute("UPDATE central_orders SET status='refunded' WHERE id=? AND status='paid'",(oid,))
+                if c.execute("SELECT changes()").fetchone()[0]!=1:
+                    raise RuntimeError("Order already processed")
+                c.execute("UPDATE central_catalog SET stock=stock+?,updated_at=? WHERE id=?",
+                          (order["quantity"],v4.now(),order["catalog_id"]))
+                c.execute("""INSERT INTO ledger(transaction_id,shop_id,owner_id,entry_type,amount,currency,note,created_at)
+                  VALUES(?,?,?,'central_purchase_refund_credit',?,'USDT',?,?)""",
+                  (oid,order["buyer_shop_id"],order["buyer_owner_id"],order["total_usdt"],f"Refund for central order #{oid}",v4.now()))
+                label="refunded + stock restored"
+                details=f"Central order #{oid} refunded {order['total_usdt']} USDT; stock restored"
+            c.execute("INSERT INTO admin_audit(admin_id,owner_id,action,details,created_at) VALUES(?,?,?,?,?)",
+              (v4.ADMIN_ID,order["buyer_owner_id"],f"central_order_{action}",details,v4.now()))
+            c.commit()
+        except Exception:
+            c.rollback(); log.exception("Central order action failed")
+            await q.message.reply_text("Action failed safely. No refund or status change was committed."); return
+        finally: c.close()
+        await q.message.reply_text(f"Central order #{oid}: {label.upper()}.")
+        try:
+            await ctx.bot.send_message(order["buyer_owner_id"],
+              f"Central order #{oid} is {label.upper()}."+
+              (f" {order['total_usdt']:g} USDT has been returned to your wallet and stock restored." if action=="refund" else ""))
+        except Exception: log.exception("Central order owner notification failed")
 
 
 async def owner_market(update,ctx,shop):

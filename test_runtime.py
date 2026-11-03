@@ -24,12 +24,24 @@ def require(condition, message):
 class Message:
     def __init__(self, text=None, chat_id=0):
         self.text = text
+        self.caption = None
         self.chat_id = chat_id
         self.message_id = 100
         self.replies = []
+        self.edits = []
 
     async def reply_text(self, text, **kwargs):
         self.replies.append({"text": text, "kwargs": kwargs})
+        return self
+
+    async def edit_text(self, text, **kwargs):
+        self.text = text
+        self.edits.append({"text": text, "kwargs": kwargs})
+        return self
+
+    async def edit_caption(self, caption, **kwargs):
+        self.caption = caption
+        self.edits.append({"caption": caption, "kwargs": kwargs})
         return self
 
 
@@ -461,6 +473,8 @@ def test_usdt_trc20_withdrawal_flow():
 
     # A rejected request releases its reserved amount and does not debit the seller.
     reject_ctx=context()
+    withdraw2_update,withdraw2_message,withdraw2_query=callback_update(101,"m:withdraw")
+    asyncio.run(v5.menu_callback(withdraw2_update,reject_ctx))
     amount2_update,amount2_message=message_update(101,"1")
     asyncio.run(v5.text_handler(amount2_update,reject_ctx))
     address2_update,address2_message=message_update(101,address)

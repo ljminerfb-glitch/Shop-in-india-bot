@@ -199,7 +199,7 @@ async def buy(update,ctx):
         if not p or p["stock"]<qty or p["shop_id"]==buyer["id"]:
             c.rollback(); await update.message.reply_text("Product unavailable, insufficient stock, or buying from your own shop is not allowed."); return
         target=p["level_required"] if "level_required" in p.keys() else 1
-        if buyer["level"]<target:
+        if int(buyer["level"])!=int(target):
             c.rollback(); await update.message.reply_text(f"This product requires buyer shop L{target}."); return
         total=round(float(p["price"])*qty,2)
         fee_pct=float(c.execute("SELECT setting_value FROM platform_settings WHERE setting_key='platform_fee_percent'").fetchone()[0])

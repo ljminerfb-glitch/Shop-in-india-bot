@@ -1,5 +1,5 @@
 """V5 Telegram-chat UI: inline level selection, owner panel and deposits."""
-import os, logging, asyncio, html
+import os, logging, asyncio, html, re
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove, CopyTextButton
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 import bot_v3 as v3
@@ -269,11 +269,13 @@ async def menu_callback(update,ctx):
             "Choose a network on the next screen, then upload your payment proof for Admin review.",
             reply_markup=back_dashboard_kb(),parse_mode="HTML")
     elif action=="withdraw":
+        available=available_withdrawal_usdt(q.from_user.id)
         ctx.user_data["state"]="withdraw_amount"
         await q.message.reply_text(
-            "<b>💸 WITHDRAW FUNDS</b>\n━━━━━━━━━━━━━━━━━━\n"
-            "Enter the amount in INR.\n"
-            "<i>Only completed and available sale earnings can be withdrawn.</i>",
+            "<b>💸 WITHDRAW USDT</b>\n━━━━━━━━━━━━━━━━━━\n"
+            f"Available sale earnings: <b>{available:.6f} USDT</b>\n\n"
+            "Enter the amount you want to withdraw in <b>USDT</b>.\n"
+            "<i>Only completed USDT resale sale proceeds are withdrawable. Payout is TRC20 only.</i>",
             reply_markup=back_dashboard_kb(),parse_mode="HTML")
     elif action=="wallet":
         c=v4.db()
@@ -429,21 +431,16 @@ async def menu_callback(update,ctx):
             body+="No wallet or order activity has been recorded yet."
         await q.message.reply_text(body[:4000],reply_markup=back_dashboard_kb(),parse_mode="HTML")
     elif action=="profile":
-        c=v4.db()
-        w=c.execute("SELECT network,verified FROM owner_wallets WHERE owner_id=?",(q.from_user.id,)).fetchone()
-        c.close()
-        verification="✅ VERIFIED" if w and w["verified"] else "🟡 PENDING / NOT VERIFIED"
-        network=html.escape(str(w["network"])) if w else "Not set"
         body=(
             "<b>👤 MY ACCOUNT</b>\n━━━━━━━━━━━━━━━━━━\n"
             f"Shop: <b>{html.escape(str(s['shop_name']))}</b>\n"
             f"Shop ID: <code>{s['id']}</code> • Level: <b>L{s['level']}</b>\n"
-            f"Withdrawal wallet: {verification}\n"
-            f"Network: {network}\n\n"
+            "Withdrawal network: <b>USDT TRC20 only</b>\n"
+            "Enter your TRC20 address with each withdrawal request.\n\n"
             "<b>DEPOSIT NETWORKS</b>\n"
             f"TRC20: <code>{html.escape(str(v4.PAY_TRON))}</code>\n"
             f"BEP20: <code>{html.escape(str(v4.PAY_BSC))}</code>\n\n"
-            "<i>Use the correct network and send USDT only.</i>"
+            "<i>Withdrawal address is requested separately for every payout.</i>"
         )
         await q.message.reply_text(body,reply_markup=back_dashboard_kb(),parse_mode="HTML")
     elif action=="support":
@@ -451,6 +448,24 @@ async def menu_callback(update,ctx):
             "<b>💬 SUPPORT</b>\n━━━━━━━━━━━━━━━━━━\n"
             "For help with registration, payments, shop approval or account issues, contact the Shop in India administrator.",
             reply_markup=back_dashboard_kb(),parse_mode="HTML")
+
+
+def available_withdrawal_usdt(owner_id):
+    """Completed resale proceeds less paid and currently reserved withdrawals."""
+    c=v4.db()
+    try:
+        earned=float(c.execute(
+            "SELECT COALESCE(SUM(amount),0) FROM ledger WHERE owner_id=? AND currency='USDT' AND entry_type='resale_sale_credit'",
+            (owner_id,)).fetchone()[0])
+        paid=float(c.execute(
+            "SELECT COALESCE(SUM(amount),0) FROM ledger WHERE owner_id=? AND currency='USDT' AND entry_type='withdrawal_debit'",
+            (owner_id,)).fetchone()[0])
+        pending=float(c.execute(
+            "SELECT COALESCE(SUM(amount),0) FROM withdrawals WHERE owner_id=? AND currency='USDT' AND status='pending'",
+            (owner_id,)).fetchone()[0])
+        return max(0.0,round(earned-paid-pending,6))
+    finally:
+        c.close()
 
 
 async def text_handler(update,ctx):
@@ -510,32 +525,100 @@ async def text_handler(update,ctx):
             reply_markup=kb)
     elif state=="withdraw_amount":
         try:
-            amount=round(float(update.message.text),2)
+            amount=round(float(update.message.text),6)
+            if amount<=0: raise ValueError()
         except (TypeError,ValueError):
-            await edit_screen(ctx,update,"Valid INR amount enter karein.",reply_markup=back_dashboard_kb())
+            await edit_screen(ctx,update,"Please enter a valid positive USDT amount.",reply_markup=back_dashboard_kb())
             return
-        s=v4.shop_for(update.effective_user.id)
-        c=v4.db()
-        w=c.execute("SELECT * FROM owner_wallets WHERE owner_id=? AND verified=1",(update.effective_user.id,)).fetchone()
-        earned=float(c.execute("SELECT COALESCE(SUM(amount),0) FROM ledger WHERE owner_id=? AND entry_type='sale_credit'",(update.effective_user.id,)).fetchone()[0])
-        paid=float(c.execute("SELECT COALESCE(SUM(amount),0) FROM ledger WHERE owner_id=? AND entry_type='withdrawal_debit'",(update.effective_user.id,)).fetchone()[0])
-        pending=float(c.execute("SELECT COALESCE(SUM(amount),0) FROM withdrawals WHERE owner_id=? AND status='pending'",(update.effective_user.id,)).fetchone()[0])
-        if not s or not w or amount<=0 or amount>earned-paid-pending:
-            c.close()
-            await edit_screen(ctx,update,"Wallet must be verified and amount must be within available sale balance.",reply_markup=back_dashboard_kb())
+        available=available_withdrawal_usdt(update.effective_user.id)
+        if amount>available+1e-9:
+            await edit_screen(ctx,update,
+                f"Insufficient available sale earnings. Available: {available:.6f} USDT.",
+                reply_markup=back_dashboard_kb())
             return
-        rate=v4.usdt_inr_rate(c)
-        usdt=round(amount/rate,6)
-        cur=c.execute("""INSERT INTO withdrawals(owner_id,shop_id,amount,currency,network,wallet_address,status,created_at,amount_inr,exchange_rate)
-          VALUES(?,?,?,'INR',?,?,'pending',?,?,?)""",(update.effective_user.id,s["id"],amount,w["network"],w["address"],v4.now(),amount,rate))
-        wid=cur.lastrowid
-        c.commit()
-        c.close()
+        ctx.user_data["withdraw_amount_usdt"]=amount
+        ctx.user_data["state"]="withdraw_address"
         await edit_screen(ctx,update,
-            f"Withdrawal #{wid} pending Admin review.\nINR ₹{amount:,.2f} | Rate ₹{rate:,.2f}/USDT | Equivalent {usdt:g} USDT.",
+            "<b>🔐 USDT TRC20 PAYOUT ADDRESS</b>\n━━━━━━━━━━━━━━━━━━\n"
+            f"Withdrawal amount: <b>{amount:.6f} USDT</b>\n"
+            "Now enter your <b>USDT TRC20 (TRON) address</b>.\n"
+            "<i>Only a valid TRC20 address is accepted. BEP20/ERC20 addresses are not accepted.</i>",
+            reply_markup=back_dashboard_kb(),)
+    elif state=="withdraw_address":
+        address=(update.message.text or "").strip()
+        if not re.fullmatch(r"T[1-9A-HJ-NP-Za-km-z]{33}",address):
+            await edit_screen(ctx,update,
+                "❌ Invalid TRC20 address format. Enter a valid USDT TRC20 address beginning with T.",
+                reply_markup=back_dashboard_kb())
+            return
+        amount=float(ctx.user_data.get("withdraw_amount_usdt") or 0)
+        shop=v4.shop_for(update.effective_user.id)
+        if not shop or shop["status"]!="approved" or amount<=0:
+            ctx.user_data.pop("withdraw_amount_usdt",None)
+            ctx.user_data.pop("state",None)
+            await edit_screen(ctx,update,"Approved shop and a valid withdrawal amount are required.",
+                              reply_markup=back_dashboard_kb())
+            return
+        c=v4.db()
+        try:
+            c.execute("BEGIN IMMEDIATE")
+            earned=float(c.execute(
+                "SELECT COALESCE(SUM(amount),0) FROM ledger WHERE owner_id=? AND currency='USDT' AND entry_type='resale_sale_credit'",
+                (update.effective_user.id,)).fetchone()[0])
+            paid=float(c.execute(
+                "SELECT COALESCE(SUM(amount),0) FROM ledger WHERE owner_id=? AND currency='USDT' AND entry_type='withdrawal_debit'",
+                (update.effective_user.id,)).fetchone()[0])
+            pending=float(c.execute(
+                "SELECT COALESCE(SUM(amount),0) FROM withdrawals WHERE owner_id=? AND currency='USDT' AND status='pending'",
+                (update.effective_user.id,)).fetchone()[0])
+            available=round(earned-paid-pending,6)
+            if amount>available+1e-9:
+                c.rollback()
+                await edit_screen(ctx,update,
+                    f"Your available sale earnings changed. Current available amount: {max(0,available):.6f} USDT.",
+                    reply_markup=back_dashboard_kb())
+                ctx.user_data.pop("withdraw_amount_usdt",None)
+                ctx.user_data.pop("state",None)
+                return
+            cur=c.execute("""INSERT INTO withdrawals
+                (owner_id,shop_id,amount,currency,network,wallet_address,status,created_at)
+                VALUES(?,?,?,'USDT','USDT TRC20',?,'pending',?)""",
+                (update.effective_user.id,shop["id"],amount,address,v4.now()))
+            wid=cur.lastrowid
+            c.execute("""INSERT INTO admin_audit(admin_id,owner_id,action,details,created_at)
+                VALUES(?,?,?,?,?)""",
+                (ADMIN_ID,update.effective_user.id,"withdrawal_requested",
+                 f"Withdrawal #{wid}: {amount:g} USDT to TRC20 address {address}",v4.now()))
+            c.commit()
+        except Exception:
+            c.rollback()
+            log.exception("USDT withdrawal request failed")
+            await edit_screen(ctx,update,"Withdrawal request could not be saved. No balance was deducted.",
+                              reply_markup=back_dashboard_kb())
+            return
+        finally:
+            c.close()
+        await edit_screen(ctx,update,
+            f"<b>🟡 WITHDRAWAL REQUEST SUBMITTED</b>\n━━━━━━━━━━━━━━━━━━\n"
+            f"Request: <code>#{wid}</code>\nAmount: <b>{amount:.6f} USDT</b>\n"
+            "Network: <b>USDT TRC20</b>\nStatus: <b>PENDING ADMIN REVIEW</b>",
             reply_markup=back_dashboard_kb())
-        wd_kb=InlineKeyboardMarkup([[InlineKeyboardButton("✅ MARK PAID",callback_data=f"wd:paid:{wid}"),InlineKeyboardButton("❌ REJECT",callback_data=f"wd:reject:{wid}")],[InlineKeyboardButton("💸 All Pending Withdrawals",callback_data="adm:withdrawals"),InlineKeyboardButton("🏠 Admin Panel",callback_data="adm:home")]])
-        await ctx.bot.send_message(ADMIN_ID,f"WITHDRAWAL REQUEST #{wid}\\nOwner: {update.effective_user.id}\\nINR: ₹{amount:,.2f} | USDT equivalent: {usdt:g}\\nWallet: {w['network']} {w['address']}\\nVerify payout manually before marking paid.",reply_markup=wd_kb)
+        wd_kb=InlineKeyboardMarkup([
+            [InlineKeyboardButton("📋 COPY TRC20 ADDRESS",copy_text=CopyTextButton(text=address))],
+            [InlineKeyboardButton("✅ MARK PAID",callback_data=f"wd:paid:{wid}"),
+             InlineKeyboardButton("❌ REJECT",callback_data=f"wd:reject:{wid}")],
+            [InlineKeyboardButton("💸 All Pending Withdrawals",callback_data="adm:withdrawals"),
+             InlineKeyboardButton("🏠 Admin Panel",callback_data="adm:home")]
+        ])
+        await ctx.bot.send_message(ADMIN_ID,
+            f"<b>💸 USDT WITHDRAWAL REQUEST #{wid}</b>\n━━━━━━━━━━━━━━━━━━\n"
+            f"Owner: <code>{update.effective_user.id}</code>\n"
+            f"Shop: <b>{html.escape(str(shop['shop_name']))}</b> • #{shop['id']}\n"
+            f"Amount: <b>{amount:.6f} USDT</b>\nNetwork: <b>USDT TRC20</b>\n"
+            f"Address: <code>{html.escape(address)}</code>\n\n"
+            "<i>Manually send the exact USDT amount on TRON, then tap MARK PAID. Reject only when declining the request.</i>",
+            reply_markup=wd_kb,parse_mode="HTML")
+        ctx.user_data.pop("withdraw_amount_usdt",None)
         ctx.user_data.pop("state",None)
     else:
         was_registering=state=="shop_password"
@@ -647,19 +730,29 @@ async def admin_panel_callback(update,ctx):
                     await q.message.reply_text(caption+"\n⚠️ No screenshot attached.",reply_markup=kb,parse_mode="HTML")
             await q.message.reply_text("⬅️ Back options:",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]))
         elif action=="withdrawals":
-            rows=c.execute("SELECT id,owner_id,amount,currency,network,wallet_address,status,amount_inr,exchange_rate FROM withdrawals WHERE status='pending' ORDER BY id DESC LIMIT 25").fetchall()
-            await q.message.reply_text("<b>💸 WITHDRAWAL REVIEW</b>\n━━━━━━━━━━━━━━━━━━\nMark PAID only after the payout has actually been sent.",parse_mode="HTML")
+            rows=c.execute("SELECT id,owner_id,amount,currency,network,wallet_address,status FROM withdrawals WHERE status='pending' ORDER BY id DESC LIMIT 25").fetchall()
+            await q.message.reply_text("<b>💸 USDT WITHDRAWAL REVIEW</b>\n━━━━━━━━━━━━━━━━━━\n"
+                "Check the TRC20 address carefully. Send the payout manually on TRON; mark paid only after the transfer succeeds.",
+                parse_mode="HTML")
             if not rows:
                 await q.message.reply_text("No pending withdrawals.")
             for r in rows:
-                rate=float(r['exchange_rate'] or 0)
+                currency=str(r["currency"] or "USDT").upper()
+                amount=float(r["amount"])
+                address=str(r["wallet_address"] or "")
                 caption=(f"<b>💸 WITHDRAWAL REQUEST #{r['id']}</b>\n━━━━━━━━━━━━━━━━━━\n"
                          f"Owner: <code>{r['owner_id']}</code>\n"
-                         f"Amount: <b>₹{float(r['amount_inr'] or r['amount']):,.2f}</b>\n"
-                         f"Network: {html.escape(str(r['network']))}\n"
-                         f"Wallet: <code>{html.escape(str(r['wallet_address']))}</code>\n"
-                         f"Rate: ₹{rate:,.2f} per USDT\n🟡 <b>STATUS: PENDING</b>")
-                kb=InlineKeyboardMarkup([[InlineKeyboardButton("✅ MARK PAID",callback_data=f"wd:paid:{r['id']}"),InlineKeyboardButton("❌ REJECT",callback_data=f"wd:reject:{r['id']}")],[InlineKeyboardButton("⬅️ Withdrawals",callback_data="adm:withdrawals"),InlineKeyboardButton("🏠 Admin Panel",callback_data="adm:home")]])
+                         f"Amount: <b>{amount:.6f} {html.escape(currency)}</b>\n"
+                         f"Network: <b>{html.escape(str(r['network'] or 'USDT TRC20'))}</b>\n"
+                         f"TRC20 address: <code>{html.escape(address)}</code>\n"
+                         "🟡 <b>STATUS: PENDING</b>")
+                kb=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📋 COPY TRC20 ADDRESS",copy_text=CopyTextButton(text=address))],
+                    [InlineKeyboardButton("✅ MARK PAID",callback_data=f"wd:paid:{r['id']}"),
+                     InlineKeyboardButton("❌ REJECT",callback_data=f"wd:reject:{r['id']}")],
+                    [InlineKeyboardButton("⬅️ Withdrawals",callback_data="adm:withdrawals"),
+                     InlineKeyboardButton("🏠 Admin Panel",callback_data="adm:home")]
+                ])
                 await q.message.reply_text(caption,reply_markup=kb,parse_mode="HTML")
             await q.message.reply_text("⬅️ Back options:",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]))
         elif action=="products":

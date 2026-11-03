@@ -331,20 +331,29 @@ async def menu_callback(update,ctx):
     elif action=="wallet":
         c=v4.db()
         try:
-            bal=central.balance(c,q.from_user.id)
+            summary=usdt_wallet_summary(c,q.from_user.id)
+            bal=float(summary["ledger_balance"])
+            available_wallet=max(0.0,round(bal-float(summary["pending"]),6))
             invested=c.execute("SELECT COALESCE(SUM(amount),0) FROM ledger WHERE owner_id=? AND currency='USDT' AND entry_type='central_purchase_debit'",(q.from_user.id,)).fetchone()[0]
             profit=c.execute("SELECT COALESCE(SUM(amount),0) FROM ledger WHERE owner_id=? AND currency='USDT' AND entry_type IN ('resale_profit_credit','central_sale_profit')",(q.from_user.id,)).fetchone()[0]
             dep=c.execute("SELECT COALESCE(SUM(amount),0) FROM ledger WHERE owner_id=? AND currency='USDT' AND entry_type='deposit_credit'",(q.from_user.id,)).fetchone()[0]
         finally: c.close()
+        balance_line=(f"Available balance: <b>{available_wallet:.6f} USDT</b>" if bal>=-1e-9 else
+                      f"⚠️ <b>Wallet shortfall: {abs(bal):.6f} USDT</b>")
         await q.message.reply_text(
-            "<b>👛 USDT WALLET</b>\n━━━━━━━━━━━━━━━━━━\n"
-            f"Available balance: <b>{bal:.6f} USDT</b>\n"
-            f"Total deposits: {float(dep):.6f} USDT\n"
-            f"Catalogue investment: {float(invested):.6f} USDT\n"
-            f"💚 <b>Recorded profit: +{float(profit):.6f} USDT</b>\n\n"
-            "<b>DEPOSIT NETWORKS</b>\n"
-            f"TRC20: <code>{html.escape(str(v4.PAY_TRON))}</code>\n"
-            f"BEP20: <code>{html.escape(str(v4.PAY_BSC))}</code>\n\n"
+            "<b>👛 USDT WALLET</b>\\n━━━━━━━━━━━━━━━━━━\\n"
+            f"{balance_line}\\n"
+            f"Total deposits: {float(dep):.6f} USDT\\n"
+            f"Catalogue investment: {float(invested):.6f} USDT\\n"
+            f"Total resale proceeds: {float(summary['earned']):.6f} USDT\\n"
+            f"Paid withdrawals: {float(summary['paid']):.6f} USDT\\n"
+            f"Pending withdrawals: {float(summary['pending']):.6f} USDT\\n"
+            f"Sale proceeds remaining: {float(summary['sale_remaining']):.6f} USDT\\n"
+            f"Available to withdraw: <b>{float(summary['available']):.6f} USDT</b>\\n"
+            f"💚 <b>Recorded profit: +{float(profit):.6f} USDT</b>\\n\\n"
+            "<b>DEPOSIT NETWORKS</b>\\n"
+            f"TRC20: <code>{html.escape(str(v4.PAY_TRON))}</code>\\n"
+            f"BEP20: <code>{html.escape(str(v4.PAY_BSC))}</code>\\n\\n"
             "Send USDT only on the selected network and upload payment proof for verification.",
             reply_markup=back_dashboard_kb(),parse_mode="HTML")
     elif action=="market":
@@ -501,22 +510,83 @@ async def menu_callback(update,ctx):
             reply_markup=back_dashboard_kb(),parse_mode="HTML")
 
 
+def usdt_wallet_summary(c, owner_id):
+    """One source of truth for resale proceeds, withdrawals and spendable wallet balance."""
+    earned=float(c.execute(
+        "SELECT COALESCE(SUM(amount),0) FROM ledger WHERE owner_id=? AND currency='USDT' AND entry_type='resale_sale_credit'",
+        (owner_id,)).fetchone()[0])
+    paid=float(c.execute(
+        "SELECT COALESCE(SUM(amount),0) FROM ledger WHERE owner_id=? AND currency='USDT' AND entry_type='withdrawal_debit'",
+        (owner_id,)).fetchone()[0])
+    pending=float(c.execute(
+        "SELECT COALESCE(SUM(amount),0) FROM withdrawals WHERE owner_id=? AND currency='USDT' AND status='pending'",
+        (owner_id,)).fetchone()[0])
+    ledger_balance=float(central.balance(c,owner_id))
+    sale_remaining=max(0.0,round(earned-paid-pending,6))
+    spendable_after_reservations=round(ledger_balance-pending,6)
+    available=max(0.0,round(min(sale_remaining,spendable_after_reservations),6))
+    return {
+        "earned":round(earned,6),
+        "paid":round(paid,6),
+        "pending":round(pending,6),
+        "ledger_balance":round(ledger_balance,6),
+        "sale_remaining":sale_remaining,
+        "available":available,
+        "shortfall":max(0.0,round(-ledger_balance,6)),
+    }
+
+
 def available_withdrawal_usdt(owner_id):
-    """Completed resale proceeds less paid and currently reserved withdrawals."""
+    """Only unwithdrawn resale proceeds backed by the merchant's net USDT wallet."""
     c=v4.db()
     try:
-        earned=float(c.execute(
-            "SELECT COALESCE(SUM(amount),0) FROM ledger WHERE owner_id=? AND currency='USDT' AND entry_type='resale_sale_credit'",
-            (owner_id,)).fetchone()[0])
-        paid=float(c.execute(
-            "SELECT COALESCE(SUM(amount),0) FROM ledger WHERE owner_id=? AND currency='USDT' AND entry_type='withdrawal_debit'",
-            (owner_id,)).fetchone()[0])
-        pending=float(c.execute(
-            "SELECT COALESCE(SUM(amount),0) FROM withdrawals WHERE owner_id=? AND currency='USDT' AND status='pending'",
-            (owner_id,)).fetchone()[0])
-        return max(0.0,round(earned-paid-pending,6))
+        return usdt_wallet_summary(c,owner_id)["available"]
     finally:
         c.close()
+
+
+async def withdrawal_review_callback(update,ctx):
+    """Apply Admin review, then show the same post-payout figures to Admin and merchant."""
+    q=update.callback_query
+    try:
+        _,action,wid_text=q.data.split(":")
+        wid=int(wid_text)
+    except (ValueError,IndexError):
+        await v4.withdrawal_review(update,ctx)
+        return
+    c=v4.db()
+    try:
+        before=c.execute("SELECT owner_id,status FROM withdrawals WHERE id=?",(wid,)).fetchone()
+        owner_id=int(before["owner_id"]) if before else None
+        was_pending=bool(before and before["status"]=="pending")
+    finally:
+        c.close()
+    await v4.withdrawal_review(update,ctx)
+    if action!="paid" or not was_pending or owner_id is None:
+        return
+    c=v4.db()
+    try:
+        summary=usdt_wallet_summary(c,owner_id)
+    finally:
+        c.close()
+    if summary["ledger_balance"] < -1e-9:
+        wallet_line=(f"⚠️ Wallet shortfall: <b>{summary['shortfall']:.6f} USDT</b>")
+    else:
+        wallet_line=(f"Available wallet balance: <b>{max(0.0,summary['ledger_balance']-summary['pending']):.6f} USDT</b>")
+    details=(
+        "<b>📊 POST-WITHDRAWAL WALLET SUMMARY</b>\\n━━━━━━━━━━━━━━━━━━\\n"
+        f"Total resale proceeds: <b>{summary['earned']:.6f} USDT</b>\\n"
+        f"Paid withdrawals: <b>{summary['paid']:.6f} USDT</b>\\n"
+        f"Pending withdrawals: <b>{summary['pending']:.6f} USDT</b>\\n"
+        f"Sale proceeds remaining: <b>{summary['sale_remaining']:.6f} USDT</b>\\n"
+        f"{wallet_line}\\n"
+        f"Available for another withdrawal: <b>{summary['available']:.6f} USDT</b>"
+    )
+    await q.message.reply_text(details,parse_mode="HTML")
+    try:
+        await ctx.bot.send_message(owner_id,details,parse_mode="HTML")
+    except Exception:
+        log.exception("Post-withdrawal wallet summary notification failed")
 
 
 async def text_handler(update,ctx):
@@ -657,16 +727,7 @@ async def text_handler(update,ctx):
                         [InlineKeyboardButton("🔐 OPEN WITHDRAW SETUP",callback_data="m:withdrawsetup")],
                         [InlineKeyboardButton("⬅️ Dashboard",callback_data="m:dashboard")]]))
                 return
-            earned=float(c.execute(
-                "SELECT COALESCE(SUM(amount),0) FROM ledger WHERE owner_id=? AND currency='USDT' AND entry_type='resale_sale_credit'",
-                (update.effective_user.id,)).fetchone()[0])
-            paid=float(c.execute(
-                "SELECT COALESCE(SUM(amount),0) FROM ledger WHERE owner_id=? AND currency='USDT' AND entry_type='withdrawal_debit'",
-                (update.effective_user.id,)).fetchone()[0])
-            pending=float(c.execute(
-                "SELECT COALESCE(SUM(amount),0) FROM withdrawals WHERE owner_id=? AND currency='USDT' AND status='pending'",
-                (update.effective_user.id,)).fetchone()[0])
-            available=round(earned-paid-pending,6)
+            available=usdt_wallet_summary(c,update.effective_user.id)["available"]
             if amount>available+1e-9:
                 c.rollback()
                 await edit_screen(ctx,update,
@@ -1113,7 +1174,7 @@ def main():
     app.add_handler(CallbackQueryHandler(central.admin_callback,pattern=r"^cc:(view|orders|price|stock|toggle|fulfill|refund)(:[0-9]+)?$"))
     app.add_handler(CallbackQueryHandler(central.owner_buy_callback,pattern=r"^ccbuy:[0-9]+:[0-9]+$"))
     app.add_handler(CallbackQueryHandler(v4.payment_review,pattern=r"^pay:(approve|reject):[0-9]+$"))
-    app.add_handler(CallbackQueryHandler(v4.withdrawal_review,pattern=r"^wd:(paid|reject):[0-9]+$"))
+    app.add_handler(CallbackQueryHandler(withdrawal_review_callback,pattern=r"^wd:(paid|reject):[0-9]+$"))
     app.add_handler(MessageHandler(filters.PHOTO,v4.payment_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,text_handler))
     print("SHOP IN INDIA V5 Telegram UI started.")

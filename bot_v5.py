@@ -1,5 +1,5 @@
 """V5 Telegram-chat UI: inline level selection, owner panel and deposits."""
-import os, logging
+import os, logging, asyncio
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove, CopyTextButton
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 import bot_v3 as v3
@@ -767,6 +767,7 @@ def main():
     app.add_handler(MessageHandler(filters.PHOTO,v4.payment_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,text_handler))
     print("SHOP IN INDIA V5 Telegram UI started.")
+    asyncio.set_event_loop(asyncio.new_event_loop())
     app.run_polling()
 
 if __name__=="__main__": main()

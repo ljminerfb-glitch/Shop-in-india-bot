@@ -26,7 +26,8 @@ def level_kb():
 
 def owner_kb():
     return InlineKeyboardMarkup([
-      [InlineKeyboardButton("🛍 Marketplace",callback_data="m:market"),InlineKeyboardButton("💳 Deposit",callback_data="m:deposit")],
+      [InlineKeyboardButton("🛍 Level 1 Central Catalogue",callback_data="m:market")],
+      [InlineKeyboardButton("🏬 Seller Marketplace",callback_data="m:sellermarket"),InlineKeyboardButton("💳 Deposit",callback_data="m:deposit")],
       [InlineKeyboardButton("💸 Withdraw",callback_data="m:withdraw"),InlineKeyboardButton("👛 Wallet",callback_data="m:wallet")],
       [InlineKeyboardButton("📦 My Products",callback_data="m:products"),InlineKeyboardButton("🧾 My Orders",callback_data="m:orders")],
       [InlineKeyboardButton("📊 Profit & History",callback_data="m:history"),InlineKeyboardButton("👤 My Account",callback_data="m:profile")],
@@ -283,6 +284,16 @@ async def menu_callback(update,ctx):
             reply_markup=back_dashboard_kb())
     elif action=="market":
         await central.owner_market(update,ctx,s)
+    elif action=="sellermarket":
+        c=v4.db()
+        rows=c.execute("""SELECT p.id,p.title,p.description,p.price,p.currency,p.stock,s.shop_name
+          FROM products p JOIN shops s ON s.id=p.shop_id
+          WHERE p.active=1 AND p.stock>0 AND s.status='approved' AND p.shop_id<>?
+          ORDER BY p.id DESC LIMIT 30""",(s["id"],)).fetchall()
+        c.close()
+        body="🏬 SELLER MARKETPLACE\\n━━━━━━━━━━━━━━━━━━\\nExisting shop-owner products remain separate from the central USDT catalogue.\\n\\n"
+        body += ("\\n\\n".join(f"#{r['id']} {r['title']}\\nShop: {r['shop_name']}\\n{r['currency']} {float(r['price']):g} | Stock: {r['stock']}\\nBuy: /buy {r['id']} QUANTITY" for r in rows) if rows else "No seller products available right now.")
+        await q.message.reply_text(body[:4000],reply_markup=back_dashboard_kb())
     elif action=="products":
         c=v4.db()
         rows=c.execute("SELECT id,title,price,currency,stock,active FROM products WHERE shop_id=? ORDER BY id DESC LIMIT 20",(s["id"],)).fetchall()
@@ -684,7 +695,7 @@ def main():
     app.add_handler(CallbackQueryHandler(level_pay_callback,pattern=r"^lvpay:[1-5]$"))
     app.add_handler(CallbackQueryHandler(level_back_callback,pattern=r"^lvback$"))
     app.add_handler(CallbackQueryHandler(network_callback,pattern=r"^net:[0-9]+:(trc|bep)$"))
-    app.add_handler(CallbackQueryHandler(menu_callback,pattern=r"^m:(market|deposit|withdraw|wallet|products|orders|history|profile|dashboard|support)$"))
+    app.add_handler(CallbackQueryHandler(menu_callback,pattern=r"^m:(market|sellermarket|deposit|withdraw|wallet|products|orders|history|profile|dashboard|support)$"))
     app.add_handler(CallbackQueryHandler(admin_panel_callback,pattern=r"^adm:(home|owners|shops|payments|levelpayments|withdrawals|products|orders|levels|settings|central|back)$"))
     app.add_handler(CallbackQueryHandler(delivered_callback,pattern=r"^order:delivered:[0-9]+$"))
     app.add_handler(CallbackQueryHandler(v4.payment_review,pattern=r"^pay:(approve|reject):[0-9]+$"))

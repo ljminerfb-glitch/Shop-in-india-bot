@@ -391,28 +391,33 @@ async def admin_panel(update,ctx):
 async def send_admin_panel(bot, chat_id):
     c=v4.db()
     counts={}
-    for table in ("shops","products","v4_orders","payment_requests","withdrawals"):
+    for table in ("shops","products","v4_orders","withdrawals"):
         try: counts[table]=c.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
         except Exception: counts[table]="N/A"
-    try: pending_pay=c.execute("SELECT COUNT(*) FROM payment_requests WHERE status='pending'").fetchone()[0]
-    except Exception: pending_pay="N/A"
+    try:
+        pending_deposits=c.execute("SELECT COUNT(*) FROM payment_requests WHERE status='pending' AND payment_type='wallet_deposit'").fetchone()[0]
+        pending_levels=c.execute("SELECT COUNT(*) FROM payment_requests WHERE status='pending' AND payment_type='level_activation'").fetchone()[0]
+    except Exception:
+        pending_deposits=pending_levels="N/A"
     try: pending_wd=c.execute("SELECT COUNT(*) FROM withdrawals WHERE status='pending'").fetchone()[0]
     except Exception: pending_wd="N/A"
     c.close()
     kb=InlineKeyboardMarkup([
       [InlineKeyboardButton("👥 Owner Control Panel",callback_data="adm:owners")],
       [InlineKeyboardButton("🏪 All Shops",callback_data="adm:shops"),InlineKeyboardButton("🛍 Products",callback_data="adm:products")],
-      [InlineKeyboardButton(f"💳 Pending Deposits ({pending_pay})",callback_data="adm:payments")],
+      [InlineKeyboardButton(f"💳 Pending Deposits ({pending_deposits})",callback_data="adm:payments")],
+      [InlineKeyboardButton(f"🎚 Pending Level Payments ({pending_levels})",callback_data="adm:levelpayments")],
       [InlineKeyboardButton(f"💸 Pending Withdrawals ({pending_wd})",callback_data="adm:withdrawals")],
       [InlineKeyboardButton(f"📦 Orders ({counts['v4_orders']})",callback_data="adm:orders"),InlineKeyboardButton("🎚 Levels",callback_data="adm:levels")],
       [InlineKeyboardButton("⚙️ Settings & Commands",callback_data="adm:settings"),InlineKeyboardButton("🔄 Refresh",callback_data="adm:home")]
     ])
     await bot.send_message(chat_id,
-      "🛡️ SHOP IN INDIA — ADMIN CONTROL PANEL\n━━━━━━━━━━━━━━━━━━\n"
-      f"🏪 Shops: {counts['shops']}\n🛍 Products: {counts['products']}\n"
-      f"📦 Orders: {counts['v4_orders']}\n💳 Payment requests: {counts['payment_requests']} (Pending: {pending_pay})\n"
-      f"💸 Withdrawals: {counts['withdrawals']} (Pending: {pending_wd})\n"
-      f"💱 Rate: 1 USDT = INR {v4.usdt_inr_rate():,.2f}\n\n"
+      "🛡️ SHOP IN INDIA — ADMIN CONTROL PANEL\\n━━━━━━━━━━━━━━━━━━\\n"
+      f"🏪 Shops: {counts['shops']}\\n🛍 Products: {counts['products']}\\n"
+      f"📦 Orders: {counts['v4_orders']}\\n💳 Pending deposits: {pending_deposits}\\n"
+      f"🎚 Pending level payments: {pending_levels}\\n"
+      f"💸 Withdrawals: {counts['withdrawals']} (Pending: {pending_wd})\\n"
+      f"💱 Rate: 1 USDT = INR {v4.usdt_inr_rate():,.2f}\\n\\n"
       "Select a control below. All screens are sent as new messages; previous messages remain.",
       reply_markup=kb)
 
@@ -440,11 +445,13 @@ async def admin_panel_callback(update,ctx):
             rows=c.execute("SELECT id,shop_name,owner_id,status,level FROM shops ORDER BY id DESC LIMIT 40").fetchall()
             await q.message.reply_text("🏪 SHOPS\n\n"+("\n".join(f"#{r['id']} {r['shop_name']} | Owner {r['owner_id']} | {r['status']} | L{r['level']}" for r in rows) if rows else "No shops."),
               reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]))
-        elif action=="payments":
-            rows=c.execute("SELECT id,owner_id,payment_type,amount,currency,network,status,screenshot_file_id,shop_id FROM payment_requests WHERE status='pending' ORDER BY id DESC LIMIT 25").fetchall()
-            await q.message.reply_text("💳 DEPOSIT & LEVEL PAYMENT REVIEW\\nEach request is reviewed separately. Verify the transaction on the blockchain before approving.")
+        elif action in ("payments","levelpayments"):
+            payment_type="wallet_deposit" if action=="payments" else "level_activation"
+            section_title="PENDING DEPOSITS" if action=="payments" else "PENDING LEVEL PAYMENTS"
+            rows=c.execute("SELECT id,owner_id,payment_type,amount,currency,network,status,screenshot_file_id,shop_id FROM payment_requests WHERE status='pending' AND payment_type=? ORDER BY id DESC LIMIT 25",(payment_type,)).fetchall()
+            await q.message.reply_text(f"💳 {section_title}\\nEach request is reviewed separately. Verify the transaction on the blockchain before approving.")
             if not rows:
-                await q.message.reply_text("No pending payment requests.")
+                await q.message.reply_text(f"No pending { 'deposits' if action=='payments' else 'level payments' }.")
             for r in rows:
                 caption=(f"💳 PAYMENT REQUEST #{r['id']}\\nOwner: {r['owner_id']} | Shop: {r['shop_id']}\\nType: {r['payment_type']}\\nAmount: {r['amount']} {r['currency']}\\nNetwork: {r['network'] or 'Not selected'}\\nStatus: PENDING")
                 kb=InlineKeyboardMarkup([[InlineKeyboardButton("✅ APPROVE",callback_data=f"pay:approve:{r['id']}"),InlineKeyboardButton("❌ REJECT",callback_data=f"pay:reject:{r['id']}")],[InlineKeyboardButton("⬅️ Deposits",callback_data="adm:payments"),InlineKeyboardButton("🏠 Admin Panel",callback_data="adm:home")]])
@@ -666,7 +673,7 @@ def main():
     app.add_handler(CallbackQueryHandler(level_back_callback,pattern=r"^lvback$"))
     app.add_handler(CallbackQueryHandler(network_callback,pattern=r"^net:[0-9]+:(trc|bep)$"))
     app.add_handler(CallbackQueryHandler(menu_callback,pattern=r"^m:(market|deposit|withdraw|wallet|products|orders|history|profile|dashboard|support)$"))
-    app.add_handler(CallbackQueryHandler(admin_panel_callback,pattern=r"^adm:(home|owners|shops|payments|withdrawals|products|orders|levels|settings|back)$"))
+    app.add_handler(CallbackQueryHandler(admin_panel_callback,pattern=r"^adm:(home|owners|shops|payments|levelpayments|withdrawals|products|orders|levels|settings|back)$"))
     app.add_handler(CallbackQueryHandler(delivered_callback,pattern=r"^order:delivered:[0-9]+$"))
     app.add_handler(CallbackQueryHandler(v4.payment_review,pattern=r"^pay:(approve|reject):[0-9]+$"))
     app.add_handler(CallbackQueryHandler(v4.withdrawal_review,pattern=r"^wd:(paid|reject):[0-9]+$"))

@@ -12,8 +12,16 @@ log=logging.getLogger("shop_v5")
 v3.main_keyboard=lambda: ReplyKeyboardRemove()
 
 def level_kb():
-    c=v4.db(); rows=c.execute("SELECT level,activation_usdt,product_target FROM level_settings ORDER BY level").fetchall(); c.close()
-    return InlineKeyboardMarkup([[InlineKeyboardButton(f"L{r['level']} | {r['activation_usdt']:g} USDT | {r['product_target'] or 'Unlimited'} products",callback_data=f"lv:{r['level']}")] for r in rows])
+    c=v4.db()
+    rows=c.execute("SELECT level,activation_usdt,product_target FROM level_settings ORDER BY level").fetchall()
+    c.close()
+    buttons=[]
+    for r in rows:
+        target = "Unlimited" if not r["product_target"] else f"{r['product_target']} products"
+        buttons.append([InlineKeyboardButton(
+            f"🔵 LEVEL {r['level']}  •  {r['activation_usdt']:g} USDT  •  {target}",
+            callback_data=f"lv:{r['level']}")])
+    return InlineKeyboardMarkup(buttons)
 
 def owner_kb():
     return InlineKeyboardMarkup([
@@ -24,18 +32,39 @@ def owner_kb():
     ])
 
 async def levels(bot,uid):
-    await bot.send_message(uid,"🎯 CHOOSE YOUR SHOP LEVEL",reply_markup=level_kb())
+    await bot.send_message(
+        uid,
+        "🔷 SHOP IN INDIA\n━━━━━━━━━━━━━━━━━━\n"
+        "🎯 SELECT YOUR SHOP LEVEL\n\n"
+        "Choose the level you want to activate.\n"
+        "After selection, choose your USDT payment network.\n\n"
+        "🔵 Blue buttons = available levels",
+        reply_markup=level_kb())
 
 async def start(update,ctx):
-    ctx.user_data.clear(); s=v4.shop_for(update.effective_user.id)
+    ctx.user_data.clear()
+    s=v4.shop_for(update.effective_user.id)
     if not s:
-        await update.message.reply_text("🌍 SHOP IN INDIA\nRegister or login:",reply_markup=ReplyKeyboardMarkup([["🏪 Register Shop"],["🔐 Login"]],resize_keyboard=True))
+        await update.message.reply_text(
+            "🔷 SHOP IN INDIA\n━━━━━━━━━━━━━━━━━━\n"
+            "Welcome! Build and manage your online shop.\n\n"
+            "Choose an option to continue:",
+            reply_markup=ReplyKeyboardMarkup(
+                [["🏪 Register Shop"],["🔐 Login"]],
+                resize_keyboard=True))
     elif s["status"]!="approved":
-        await update.message.reply_text("⏳ Your shop application is waiting for Admin approval.")
+        await update.message.reply_text(
+            "🔷 SHOP IN INDIA\n━━━━━━━━━━━━━━━━━━\n"
+            "⏳ Your shop application is waiting for Admin approval.\n"
+            "You will receive a message when it is approved.")
     elif int(s["level"])<1:
         await levels(ctx.bot,update.effective_user.id)
     else:
-        await update.message.reply_text(f"🏪 SHOP IN INDIA\n{s['shop_name']} | L{s['level']}\nChoose an option:",reply_markup=owner_kb())
+        await update.message.reply_text(
+            f"🔷 SHOP IN INDIA\n━━━━━━━━━━━━━━━━━━\n"
+            f"🏪 {s['shop_name']}  •  LEVEL {s['level']}\n\n"
+            "Welcome to your Owner Dashboard. Select an option:",
+            reply_markup=owner_kb())
 
 async def approved_callback(update,ctx):
     q=update.callback_query
@@ -51,15 +80,43 @@ async def level_callback(update,ctx):
     lv=int(q.data.split(":")[1]); s=v4.shop_for(q.from_user.id)
     if not s or lv<=int(s["level"]): await q.edit_message_text("Registered shop and a higher level are required."); return
     c=v4.db(); cfg=c.execute("SELECT activation_usdt FROM level_settings WHERE level=?",(lv,)).fetchone()
-    pending=c.execute("SELECT id FROM payment_requests WHERE owner_id=? AND payment_type='level_activation' AND level=? AND status='pending'",(q.from_user.id,lv)).fetchone()
-    if pending: c.close(); await q.edit_message_text(f"Payment request #{pending['id']} is already pending."); return
-    amount=float(cfg["activation_usdt"]); rate=v4.usdt_inr_rate(c)
-    cur=c.execute("""INSERT INTO payment_requests(owner_id,shop_id,payment_type,level,amount,currency,network,status,created_at)
-      VALUES(?,?,'level_activation',?,?,'USDT','not_selected','pending',?)""",(q.from_user.id,s["id"],lv,amount,v4.now()))
-    rid=cur.lastrowid; c.commit(); c.close()
+    if not s or s["status"]!="approved":
+        await q.edit_message_text("Your shop must be approved before selecting a level.")
+        return
+    cfg=c.execute("SELECT activation_usdt FROM level_settings WHERE level=?",(lv,)).fetchone()
+    if not cfg:
+        c.close()
+        await q.edit_message_text("This level is not configured. Please contact Admin.")
+        return
+    pending=c.execute(
+        "SELECT id,amount FROM payment_requests WHERE owner_id=? "
+        "AND payment_type='level_activation' AND level=? AND status='pending' "
+        "ORDER BY id DESC LIMIT 1",(q.from_user.id,lv)).fetchone()
+    if pending:
+        rid=int(pending["id"])
+        amount=float(pending["amount"])
+    else:
+        amount=float(cfg["activation_usdt"])
+        cur=c.execute("""INSERT INTO payment_requests(owner_id,shop_id,payment_type,level,amount,currency,network,status,created_at)
+          VALUES(?,?,'level_activation',?,?,'USDT','not_selected','pending',?)""",
+          (q.from_user.id,s["id"],lv,amount,v4.now()))
+        rid=cur.lastrowid
+    rate=v4.usdt_inr_rate(c)
+    c.commit()
+    c.close()
     ctx.user_data.update({"state":"payment_proof","payment_request_id":rid})
-    kb=InlineKeyboardMarkup([[InlineKeyboardButton("USDT TRC20",callback_data=f"net:{rid}:trc"),InlineKeyboardButton("USDT BEP20",callback_data=f"net:{rid}:bep")]])
-    await q.edit_message_text(f"L{lv} activation | {amount:g} USDT\nRate: 1 USDT = INR {rate:,.2f}\nINR reference: {amount*rate:,.2f}\nChoose network:",reply_markup=kb)
+    kb=InlineKeyboardMarkup([[
+        InlineKeyboardButton("🔵 USDT TRC20",callback_data=f"net:{rid}:trc"),
+        InlineKeyboardButton("🔵 USDT BEP20",callback_data=f"net:{rid}:bep")
+    ]])
+    await q.edit_message_text(
+        f"🔷 LEVEL {lv} ACTIVATION\n━━━━━━━━━━━━━━━━━━\n"
+        f"Payment request: #{rid}\n"
+        f"Amount: {amount:g} USDT\n"
+        f"Rate: 1 USDT = INR {rate:,.2f}\n"
+        f"INR reference: {amount*rate:,.2f}\n\n"
+        "Choose your payment network:",
+        reply_markup=kb)
 
 async def network_callback(update,ctx):
     q=update.callback_query; await q.answer(); _,rid_s,net=q.data.split(":"); rid=int(rid_s)

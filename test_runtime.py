@@ -115,6 +115,7 @@ def fixture():
     CREATE TABLE orders(id INTEGER PRIMARY KEY AUTOINCREMENT,buyer_id INTEGER,product_id INTEGER,quantity INTEGER,status TEXT,created_at TEXT);
     CREATE TABLE payment_requests(id INTEGER PRIMARY KEY AUTOINCREMENT,owner_id INTEGER,shop_id INTEGER,payment_type TEXT,level INTEGER,amount REAL,currency TEXT,network TEXT,screenshot_file_id TEXT,tx_hash TEXT,status TEXT,admin_note TEXT,created_at TEXT,reviewed_at TEXT);
     CREATE TABLE withdrawals(id INTEGER PRIMARY KEY AUTOINCREMENT,owner_id INTEGER,shop_id INTEGER,amount REAL,currency TEXT,network TEXT,wallet_address TEXT,status TEXT,admin_note TEXT,created_at TEXT,reviewed_at TEXT);
+    CREATE TABLE owner_wallets(owner_id INTEGER PRIMARY KEY,network TEXT NOT NULL,address TEXT NOT NULL,updated_at TEXT NOT NULL,verified INTEGER NOT NULL DEFAULT 0);
     CREATE TABLE admin_audit(id INTEGER PRIMARY KEY AUTOINCREMENT,admin_id INTEGER,owner_id INTEGER,action TEXT,details TEXT,created_at TEXT);
     CREATE TABLE level_settings(level INTEGER PRIMARY KEY,activation_usdt REAL,product_target INTEGER,profit_min REAL,profit_max REAL);
     INSERT INTO shops(owner_id,shop_name,status,created_at,level) VALUES(101,'Seller L1','approved','2026-01-01',1);
@@ -402,38 +403,80 @@ def test_failed_central_purchases(pid):
 
 
 def test_usdt_trc20_withdrawal_flow():
-    # Two completed resale sales in the preceding integration tests created 6.8 USDT proceeds.
     available=v5.available_withdrawal_usdt(101)
     require(abs(available-6.8)<1e-8,"Withdrawable balance must use completed USDT resale proceeds only")
 
     owner_ctx=context()
-    update,menu_message,query=callback_update(101,"m:withdraw")
-    asyncio.run(v5.menu_callback(update,owner_ctx))
-    prompt=menu_message.replies[0]["text"]
-    require("WITHDRAW USDT" in prompt and "6.800000 USDT" in prompt,
-            "Withdrawal screen does not show USDT available amount")
-    require("INR" not in prompt,"Withdrawal screen still mentions INR")
+    no_wallet_update,no_wallet_message,no_wallet_query=callback_update(101,"m:withdraw")
+    asyncio.run(v5.menu_callback(no_wallet_update,owner_ctx))
+    require("WITHDRAW SETUP REQUIRED" in no_wallet_message.replies[0]["text"],
+            "Withdrawal was not gated on configured merchant wallet")
+    require("m:withdrawsetup" in callback_data(no_wallet_message.replies[0]),
+            "Withdraw setup shortcut is missing")
 
-    amount_update,amount_message=message_update(101,"2.5")
-    asyncio.run(v5.text_handler(amount_update,owner_ctx))
-    require(owner_ctx.user_data.get("state")=="withdraw_address",
-            "USDT amount step did not ask for the payout address")
-    require("USDT TRC20" in owner_ctx.bot.sent[-1]["kwargs"]["text"],
-            "TRC20 address instructions missing")
+    setup_update,setup_message,setup_query=callback_update(101,"m:withdrawsetup")
+    asyncio.run(v5.menu_callback(setup_update,owner_ctx))
+    require("No payout address saved" in setup_message.replies[0]["text"],
+            "New merchant does not see unset setup status")
+    require("m:withdrawsetupedit" in callback_data(setup_message.replies[0]),
+            "Set address button missing")
 
+    edit_update,edit_message,edit_query=callback_update(101,"m:withdrawsetupedit")
+    asyncio.run(v5.menu_callback(edit_update,owner_ctx))
+    require(owner_ctx.user_data.get("state")=="withdraw_setup_address",
+            "Withdraw Setup did not start address-entry state")
     bad_update,bad_message=message_update(101,"0x62eb80614112d7b6bdeacf07b745755605c4b7e0")
     asyncio.run(v5.text_handler(bad_update,owner_ctx))
     require("Invalid TRC20" in owner_ctx.bot.sent[-1]["kwargs"]["text"],
-            "Non-TRC20 address was not rejected")
+            "Non-TRC20 setup address was not rejected")
+    require(owner_ctx.user_data.get("state")=="withdraw_setup_address",
+            "Invalid address incorrectly cleared setup state")
 
     address="T"+"1"*33
     address_update,address_message=message_update(101,address)
     asyncio.run(v5.text_handler(address_update,owner_ctx))
-    submitted=owner_ctx.bot.sent[-2]["kwargs"]["text"]
+    require(owner_ctx.user_data.get("state") is None,
+            "Address setup state was not cleared after save")
+    c=v4.db()
+    wallet=c.execute("SELECT * FROM owner_wallets WHERE owner_id=101").fetchone()
+    require(wallet is not None and wallet["network"]=="USDT TRC20" and wallet["address"]==address,
+            "Merchant setup address was not stored")
+    require(wallet["verified"]==0,"Saved wallet verification state should reset on address change")
+    c.close()
+
+    setup_screen_update,setup_screen,setup_screen_query=callback_update(101,"m:withdrawsetup")
+    asyncio.run(v5.menu_callback(setup_screen_update,context()))
+    require(address in setup_screen.replies[0]["text"] and "address saved" in setup_screen.replies[0]["text"].lower(),
+            "Merchant cannot view their configured payout address")
+
+    admin_update,admin_message,admin_query=callback_update(999999,"adm:withdrawwallets")
+    asyncio.run(v5.admin_panel_callback(admin_update,context()))
+    admin_cards=[x for x in admin_message.replies if address in x["text"]]
+    require(admin_cards,"Admin Merchant Withdrawal Wallets screen does not show saved address")
+    admin_card=admin_cards[0]
+    require("Merchant ID: <code>101</code>" in admin_card["text"] and "USDT TRC20" in admin_card["text"],
+            "Admin saved-wallet card is missing merchant or network details")
+    copy_buttons=[button for row in admin_card["kwargs"]["reply_markup"].inline_keyboard for button in row]
+    require(any(getattr(btn,"copy_text",None) and btn.copy_text.text==address for btn in copy_buttons),
+            "Admin saved-wallet card has no copy-address button")
+
+    withdraw_ctx=context()
+    withdraw_update,withdraw_message,withdraw_query=callback_update(101,"m:withdraw")
+    asyncio.run(v5.menu_callback(withdraw_update,withdraw_ctx))
+    prompt=withdraw_message.replies[0]["text"]
+    require("WITHDRAW USDT" in prompt and "6.800000 USDT" in prompt,
+            "Withdrawal screen does not show available USDT balance")
+    require(address in prompt,"Withdrawal screen does not show configured payout address")
+    require("INR" not in prompt,"Withdrawal screen still mentions INR")
+
+    amount_update,amount_message=message_update(101,"2.5")
+    asyncio.run(v5.text_handler(amount_update,withdraw_ctx))
+    submitted=withdraw_ctx.bot.sent[-1]["kwargs"]["text"]
     require("2.500000 USDT" in submitted and "PENDING ADMIN REVIEW" in submitted,
             "USDT withdrawal confirmation missing")
-    require(owner_ctx.user_data.get("state") is None,
-            "Withdrawal conversation state was not cleared")
+    require(address in submitted,"Withdrawal request did not use saved address")
+    require(withdraw_ctx.user_data.get("state") is None,
+            "Withdrawal state was not cleared after submission")
 
     c=v4.db()
     row=c.execute("SELECT * FROM withdrawals WHERE owner_id=101 ORDER BY id DESC LIMIT 1").fetchone()
@@ -441,26 +484,25 @@ def test_usdt_trc20_withdrawal_flow():
             "Withdrawal was not stored as USDT TRC20")
     wid=int(row["id"])
     require(row["wallet_address"]==address and abs(float(row["amount"])-2.5)<1e-8,
-            "Payout address or USDT amount was not stored correctly")
+            "Withdrawal did not use configured address or USDT amount")
     require(abs(v5.available_withdrawal_usdt(101)-4.3)<1e-8,
             "Pending withdrawal did not reserve withdrawable proceeds")
     c.close()
 
-    admin_notices=[x for x in owner_ctx.bot.sent if x["args"] and x["args"][0]==999999]
+    admin_notices=[x for x in withdraw_ctx.bot.sent if x["args"] and x["args"][0]==999999]
     require(admin_notices and "2.500000 USDT" in admin_notices[-1]["args"][1]
             and address in admin_notices[-1]["args"][1],
-            "Admin did not receive amount and TRC20 address")
+            "Admin did not receive amount and configured TRC20 address")
 
-    admin_update,admin_message,admin_query=callback_update(999999,"adm:withdrawals")
-    asyncio.run(v5.admin_panel_callback(admin_update,context()))
-    card=admin_message.replies[1]["text"]
-    require("TRC20 address" in card and address in card and "2.500000 USDT" in card,
-            "Admin withdrawal dashboard card is missing amount or payout address")
+    admin_wd_update,admin_wd_message,admin_wd_query=callback_update(999999,"adm:withdrawals")
+    asyncio.run(v5.admin_panel_callback(admin_wd_update,context()))
+    card=next((x["text"] for x in admin_wd_message.replies if address in x["text"]), "")
+    require("TRC20 address" in card and "2.500000 USDT" in card,
+            "Admin withdrawal review card is missing amount or payout address")
     require("INR" not in card,"Admin withdrawal card still displays INR")
 
     paid_update,paid_message,paid_query=callback_update(999999,f"wd:paid:{wid}")
-    admin_ctx=context()
-    asyncio.run(v4.withdrawal_review(paid_update,admin_ctx))
+    asyncio.run(v4.withdrawal_review(paid_update,context()))
     c=v4.db()
     paid=c.execute("SELECT status FROM withdrawals WHERE id=?",(wid,)).fetchone()
     debit=c.execute("SELECT amount,currency FROM ledger WHERE owner_id=101 AND entry_type='withdrawal_debit' ORDER BY id DESC LIMIT 1").fetchone()
@@ -471,14 +513,11 @@ def test_usdt_trc20_withdrawal_flow():
     require(abs(v5.available_withdrawal_usdt(101)-4.3)<1e-8,
             "Paid withdrawal did not reduce available proceeds")
 
-    # A rejected request releases its reserved amount and does not debit the seller.
     reject_ctx=context()
     withdraw2_update,withdraw2_message,withdraw2_query=callback_update(101,"m:withdraw")
     asyncio.run(v5.menu_callback(withdraw2_update,reject_ctx))
     amount2_update,amount2_message=message_update(101,"1")
     asyncio.run(v5.text_handler(amount2_update,reject_ctx))
-    address2_update,address2_message=message_update(101,address)
-    asyncio.run(v5.text_handler(address2_update,reject_ctx))
     c=v4.db()
     wid2=int(c.execute("SELECT id FROM withdrawals WHERE owner_id=101 AND status='pending' ORDER BY id DESC LIMIT 1").fetchone()[0])
     c.close()
@@ -492,8 +531,7 @@ def test_usdt_trc20_withdrawal_flow():
     c.close()
     require(abs(v5.available_withdrawal_usdt(101)-4.3)<1e-8,
             "Rejected withdrawal did not release reserved amount")
-    print("PASS: USDT-only withdrawal, TRC20 address, admin review, paid debit and reject release")
-
+    print("PASS: Merchant Withdraw Setup, saved TRC20 wallet, Admin wallet directory and USDT withdrawal lifecycle")
 
 def main():
     fixture()

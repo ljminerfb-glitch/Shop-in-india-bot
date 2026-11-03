@@ -1,5 +1,5 @@
 """V5 Telegram-chat UI: inline level selection, owner panel and deposits."""
-import os, logging, asyncio
+import os, logging, asyncio, html
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove, CopyTextButton
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 import bot_v3 as v3
@@ -79,10 +79,10 @@ async def start(update,ctx):
         await levels(ctx.bot,update.effective_user.id)
     else:
         await update.message.reply_text(
-            f"🔷 SHOP IN INDIA\n━━━━━━━━━━━━━━━━━━\n"
-            f"🏪 {s['shop_name']}  •  LEVEL {s['level']}\n\n"
-            "Welcome to your Owner Dashboard. Select an option:",
-            reply_markup=owner_kb())
+            f"<b>🔷 SHOP IN INDIA</b>\n━━━━━━━━━━━━━━━━━━\n"
+            f"🏪 <b>{html.escape(str(s['shop_name']))}</b> • <b>LEVEL {s['level']}</b>\n\n"
+            "<b>OWNER DASHBOARD</b>\nWelcome back! Choose a section below.",
+            reply_markup=owner_kb(),parse_mode="HTML")
 
 async def approved_callback(update,ctx):
     q=update.callback_query
@@ -91,7 +91,7 @@ async def approved_callback(update,ctx):
     await v3.approval(update,ctx)
     if action=="approve" and row:
         if int(row["level"])<1: await levels(ctx.bot,row["owner_id"])
-        else: await ctx.bot.send_message(row["owner_id"],"🏪 Your shop is approved and level is active. Open /start for your owner panel.",reply_markup=owner_kb())
+        else: await ctx.bot.send_message(row["owner_id"],"<b>✅ SHOP APPROVED</b>\nYour shop is approved and its level is active. Open /start to access your owner dashboard.",reply_markup=owner_kb(),parse_mode="HTML")
 
 async def level_callback(update,ctx):
     q=update.callback_query
@@ -255,8 +255,8 @@ async def menu_callback(update,ctx):
         ctx.user_data["screen_message_id"]=q.message.message_id
         ctx.user_data["screen_chat_id"]=q.message.chat_id
         await q.message.reply_text(
-            f"🔷 SHOP IN INDIA\n━━━━━━━━━━━━━━━━━━\n🏪 {s['shop_name']} • LEVEL {s['level']}\n\nOWNER DASHBOARD\nSelect an option:",
-            reply_markup=owner_kb())
+            f"<b>🔷 SHOP IN INDIA</b>\n━━━━━━━━━━━━━━━━━━\n🏪 <b>{html.escape(str(s['shop_name']))}</b> • <b>LEVEL {s['level']}</b>\n\n<b>OWNER DASHBOARD</b>\nChoose a section below.",
+            reply_markup=owner_kb(),parse_mode="HTML")
         return
 
     if not s or s["status"]!="approved" or int(s["level"])<1:

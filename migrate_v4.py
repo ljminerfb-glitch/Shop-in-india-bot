@@ -34,6 +34,9 @@ def main():
             add(cur, "products", "updated_at", "TEXT")
             add(cur, "products", "created_at", "TEXT")
             add(cur, "products", "level_required", "INTEGER NOT NULL DEFAULT 1")
+        if "withdrawals" in {r[0] for r in cur.execute("SELECT name FROM sqlite_master WHERE type='table'")}:
+            add(cur, "withdrawals", "amount_inr", "REAL")
+            add(cur, "withdrawals", "exchange_rate", "REAL")
         if "transactions" in {r[0] for r in cur.execute("SELECT name FROM sqlite_master WHERE type='table'")}:
             for n, d in [
                 ("unit_price", "REAL"), ("seller_amount", "REAL"),

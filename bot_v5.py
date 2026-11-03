@@ -47,7 +47,7 @@ async def approved_callback(update,ctx):
 async def level_callback(update,ctx):
     q=update.callback_query; await q.answer()
     lv=int(q.data.split(":")[1]); s=v4.shop_for(q.from_user.id)
-    if not s or s["status"]!="approved" or lv<=int(s["level"]): await q.edit_message_text("Approved shop and a higher level are required."); return
+    if not s or lv<=int(s["level"]): await q.edit_message_text("Registered shop and a higher level are required."); return
     c=v4.db(); cfg=c.execute("SELECT activation_usdt FROM level_settings WHERE level=?",(lv,)).fetchone()
     pending=c.execute("SELECT id FROM payment_requests WHERE owner_id=? AND payment_type='level_activation' AND level=? AND status='pending'",(q.from_user.id,lv)).fetchone()
     if pending: c.close(); await q.edit_message_text(f"Payment request #{pending['id']} is already pending."); return
@@ -124,7 +124,11 @@ async def text_handler(update,ctx):
         await update.message.reply_text(f"Withdrawal #{wid} pending Admin review. INR ₹{amount:,.2f} | Rate ₹{rate:,.2f}/USDT | Equivalent {usdt:g} USDT.")
         await ctx.bot.send_message(ADMIN_ID,f"Withdrawal #{wid} from {update.effective_user.id}: INR ₹{amount:,.2f}, {usdt:g} USDT equivalent. Wallet {w['network']} {w['address']}. Send payout manually before marking paid.")
         ctx.user_data.clear()
-    else: await v3.handle_message(update,ctx)
+    else:
+        was_registering = state=="shop_password"
+        await v3.handle_message(update,ctx)
+        if was_registering and v4.shop_for(update.effective_user.id):
+            await levels(ctx.bot,update.effective_user.id)
 
 async def dashboard(update,ctx):
     if update.effective_user.id==ADMIN_ID: await v4.dashboard(update,ctx); return

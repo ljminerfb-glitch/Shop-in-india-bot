@@ -29,6 +29,7 @@ def owner_kb():
       [InlineKeyboardButton("💸 Withdraw",callback_data="m:withdraw"),InlineKeyboardButton("👛 Wallet",callback_data="m:wallet")],
       [InlineKeyboardButton("📦 My Products",callback_data="m:products"),InlineKeyboardButton("🧾 My Orders",callback_data="m:orders")],
       [InlineKeyboardButton("📊 Profit & History",callback_data="m:history"),InlineKeyboardButton("👤 My Account",callback_data="m:profile")],
+      [InlineKeyboardButton("💬 Support",callback_data="m:support")],
       [InlineKeyboardButton("💳 DEPOSIT FUNDS",callback_data="m:deposit")]
     ])
 
@@ -64,7 +65,7 @@ async def start(update,ctx):
             "Welcome! Build and manage your online shop.\n\n"
             "Choose an option to continue:",
             reply_markup=ReplyKeyboardMarkup(
-                [["🏪 Register Shop"],["🔐 Login"]],
+                [["🏪 Register Shop"],["🔐 Login"],["💬 Support"]],
                 resize_keyboard=True))
     elif s["status"]!="approved":
         await update.message.reply_text(
@@ -312,6 +313,8 @@ async def menu_callback(update,ctx):
         body=(f"👤 {s['shop_name']}\nShop ID: {s['id']}\nLevel: L{s['level']}\nWallet: {w['network']} — {'Verified' if w['verified'] else 'Pending'}"
               if w else f"👤 {s['shop_name']} | L{s['level']}\nWallet: Not saved")
         await q.message.reply_text(body,reply_markup=back_dashboard_kb())
+    elif action=="support":
+        await q.message.reply_text("💬 SUPPORT\nFor help with registration, payments, shop approval or account issues, contact the Shop in India administrator.",reply_markup=back_dashboard_kb())
 
 
 async def text_handler(update,ctx):
@@ -603,6 +606,41 @@ async def addproduct(update,ctx):
     try: await ctx.bot.send_message(shop["owner_id"],f"Admin added a marketplace product to your shop: #{pid} {title}")
     except Exception: pass
 
+async def support_command(update,ctx):
+    await update.message.reply_text(
+        "💬 SHOP IN INDIA SUPPORT\n\n"
+        "Registration, login, shop approval, deposits, withdrawals ya account issue ke liye administrator se rabta karein."
+    )
+
+async def help_command(update,ctx):
+    if update.effective_user.id == ADMIN_ID:
+        body = (
+            "🛠 ADMIN COMMANDS\n"
+            "/admin — Admin control panel\n"
+            "/orders — Pending orders\n"
+            "/products — Product list\n"
+            "/addproduct — Add product\n"
+            "/setlevel — Configure levels\n"
+            "/setfx — Update USDT/INR rate\n"
+            "/setfee — Update platform fee\n"
+            "/orderdone — Mark an order delivered\n"
+            "/orderreject — Reject an order\n"
+            "/verifywallet — Verify owner wallet\n"
+            "/help — This help"
+        )
+    else:
+        body = (
+            "🔷 SHOP IN INDIA — HELP\n"
+            "/start — Open registration or owner dashboard\n"
+            "/dashboard — Open your dashboard\n"
+            "/levels — View shop levels\n"
+            "/buy PRODUCT_ID QUANTITY — Place a product order\n"
+            "/verifywallet — Wallet verification help\n"
+            "/support — Contact administrator\n"
+            "/help — Show this help"
+        )
+    await update.message.reply_text(body)
+
 async def dashboard(update,ctx):
     if update.effective_user.id==ADMIN_ID:
         await send_admin_panel(ctx.bot,update.effective_chat.id); return
@@ -617,7 +655,7 @@ def main():
     v3.setup(); v3.ensure_catalog_schema()
     app=ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start",start)); app.add_handler(CommandHandler("dashboard",dashboard))
-    for cmd,fn in [("help",v3.help_command),("admin",admin_panel),("verifywallet",v3.verify_wallet),
+    for cmd,fn in [("help",help_command),("support",support_command),("admin",admin_panel),("verifywallet",v3.verify_wallet),
       ("buy",v4.buy),("addproduct",addproduct),("setlevel",v4.setlevel),("setfx",v4.setfx),("setfee",v4.setfee),
       ("products",v4.products),("setprice",lambda u,c:v4.edit_product(u,c,"setprice")),("setstock",lambda u,c:v4.edit_product(u,c,"setstock")),
       ("orders",admin_orders),("orderdone",v4.orderdone),("orderreject",v4.orderreject),("myproducts",v4.myproducts),("myorders",v4.myorders),("history",v4.history),("levels",v4.levels)]:
@@ -627,7 +665,7 @@ def main():
     app.add_handler(CallbackQueryHandler(level_pay_callback,pattern=r"^lvpay:[1-5]$"))
     app.add_handler(CallbackQueryHandler(level_back_callback,pattern=r"^lvback$"))
     app.add_handler(CallbackQueryHandler(network_callback,pattern=r"^net:[0-9]+:(trc|bep)$"))
-    app.add_handler(CallbackQueryHandler(menu_callback,pattern=r"^m:(market|deposit|withdraw|wallet|products|orders|history|profile|dashboard)$"))
+    app.add_handler(CallbackQueryHandler(menu_callback,pattern=r"^m:(market|deposit|withdraw|wallet|products|orders|history|profile|dashboard|support)$"))
     app.add_handler(CallbackQueryHandler(admin_panel_callback,pattern=r"^adm:(home|owners|shops|payments|withdrawals|products|orders|levels|settings|back)$"))
     app.add_handler(CallbackQueryHandler(delivered_callback,pattern=r"^order:delivered:[0-9]+$"))
     app.add_handler(CallbackQueryHandler(v4.payment_review,pattern=r"^pay:(approve|reject):[0-9]+$"))

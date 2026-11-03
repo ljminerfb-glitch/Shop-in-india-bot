@@ -63,7 +63,7 @@ def setup(c=None):
 def balance(c, owner_id):
     row=c.execute("""SELECT
       COALESCE(SUM(CASE WHEN currency='USDT' AND entry_type='deposit_credit' THEN amount ELSE 0 END),0) deposits,
-      COALESCE(SUM(CASE WHEN currency='USDT' AND entry_type IN ('central_purchase_debit','resale_purchase_debit') THEN amount ELSE 0 END),0) debits,
+      COALESCE(SUM(CASE WHEN currency='USDT' AND entry_type IN ('central_purchase_debit','resale_purchase_debit','withdrawal_debit') THEN amount ELSE 0 END),0) debits,
       COALESCE(SUM(CASE WHEN currency='USDT' AND entry_type IN ('central_purchase_refund_credit','resale_sale_credit','level_activation_wallet_credit') THEN amount ELSE 0 END),0) refunds
       FROM ledger WHERE owner_id=?""",(owner_id,)).fetchone()
     return round(float(row["deposits"] or 0)-float(row["debits"] or 0)+float(row["refunds"] or 0),6)

@@ -133,6 +133,86 @@ async def text_handler(update,ctx):
         if was_registering and v4.shop_for(update.effective_user.id):
             await levels(ctx.bot,update.effective_user.id)
 
+async def admin_orders(update,ctx):
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("Admin only.")
+        return
+    c=v4.db()
+    rows=c.execute("""SELECT o.id,o.product_id,o.quantity,o.total_amount,o.status,
+                             p.title,o.buyer_owner_id,o.seller_owner_id,
+                             bs.shop_name AS buyer_shop,ss.shop_name AS seller_shop
+                      FROM v4_orders o
+                      JOIN products p ON p.id=o.product_id
+                      JOIN shops bs ON bs.id=o.buyer_shop_id
+                      JOIN shops ss ON ss.id=o.seller_shop_id
+                      WHERE o.status NOT IN ('delivered','completed','rejected')
+                      ORDER BY o.id DESC LIMIT 25""").fetchall()
+    c.close()
+    if not rows:
+        await update.message.reply_text("No orders awaiting delivery.")
+        return
+    for r in rows:
+        kb=InlineKeyboardMarkup([[InlineKeyboardButton("✅ Mark Delivered",callback_data=f"order:delivered:{r['id']}")]])
+        await update.message.reply_text(
+            f"🛒 ORDER #{r['id']}\n{r['title']} × {r['quantity']}\n"
+            f"Buyer: {r['buyer_shop']} (ID {r['buyer_owner_id']})\n"
+            f"Seller: {r['seller_shop']} (ID {r['seller_owner_id']})\n"
+            f"Total: INR ₹{r['total_amount']:.2f}\nStatus: {r['status']}\n\n"
+            "Supplier se delivery confirm hone ke baad hi Delivered click karein.",
+            reply_markup=kb)
+
+async def delivered_callback(update,ctx):
+    q=update.callback_query
+    if q.from_user.id != ADMIN_ID:
+        await q.answer("Admin only",show_alert=True)
+        return
+    await q.answer()
+    try:
+        oid=int(q.data.rsplit(":",1)[1])
+    except (ValueError,IndexError):
+        await q.edit_message_text("Invalid order.")
+        return
+    c=v4.db()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        order=c.execute("SELECT * FROM v4_orders WHERE id=?",(oid,)).fetchone()
+        if not order:
+            c.rollback()
+            await q.edit_message_text("Order not found.")
+            return
+        if order["status"] in ("delivered","completed","rejected"):
+            c.rollback()
+            await q.edit_message_text(f"Order #{oid} is already {order['status']}.")
+            return
+        c.execute("UPDATE v4_orders SET status='delivered',completed_at=?,updated_at=? WHERE id=?",
+                  (v4.now(),v4.now(),oid))
+        c.execute("""INSERT INTO ledger(transaction_id,shop_id,owner_id,entry_type,amount,currency,note,created_at)
+                     VALUES(?,?,?,'sale_credit',?,'INR',?,?)""",
+                  (oid,order["seller_shop_id"],order["seller_owner_id"],order["seller_amount"],
+                   f"Delivered order #{oid}",v4.now()))
+        c.execute("""INSERT INTO admin_audit(admin_id,owner_id,action,details,created_at)
+                     VALUES(?,?,?,?,?)""",
+                  (ADMIN_ID,order["seller_owner_id"],"order_delivered",f"Order #{oid}",v4.now()))
+        c.commit()
+    except Exception:
+        c.rollback()
+        log.exception("Mark delivered failed")
+        await q.edit_message_text("Could not update order. No delivery credit was recorded.")
+        return
+    finally:
+        c.close()
+    await q.edit_message_text(
+        f"✅ Order #{oid} marked DELIVERED.\n"
+        f"Seller credit recorded: INR ₹{float(order['seller_amount']):.2f}")
+    for uid in {int(order["buyer_owner_id"]),int(order["seller_owner_id"])}:
+        try:
+            await ctx.bot.send_message(uid,
+                f"📦 Order #{oid} status: DELIVERED. "
+                + (f"Your sale credit is INR ₹{float(order['seller_amount']):.2f}."
+                   if uid==int(order["seller_owner_id"]) else ""))
+        except Exception:
+            log.exception("Delivered notification failed")
+
 async def addproduct(update,ctx):
     if update.effective_user.id!=ADMIN_ID:
         await update.message.reply_text("Admin only."); return
@@ -186,12 +266,13 @@ def main():
     for cmd,fn in [("help",v3.help_command),("admin",v3.admin),("verifywallet",v3.verify_wallet),
       ("buy",v4.buy),("addproduct",addproduct),("setlevel",v4.setlevel),("setfx",v4.setfx),("setfee",v4.setfee),
       ("products",v4.products),("setprice",lambda u,c:v4.edit_product(u,c,"setprice")),("setstock",lambda u,c:v4.edit_product(u,c,"setstock")),
-      ("orders",v4.orders),("orderdone",v4.orderdone),("orderreject",v4.orderreject),("myproducts",v4.myproducts),("myorders",v4.myorders),("history",v4.history),("levels",v4.levels)]:
+      ("orders",admin_orders),("orderdone",v4.orderdone),("orderreject",v4.orderreject),("myproducts",v4.myproducts),("myorders",v4.myorders),("history",v4.history),("levels",v4.levels)]:
         app.add_handler(CommandHandler(cmd,fn))
     app.add_handler(CallbackQueryHandler(approved_callback,pattern=r"^(approve|reject):[0-9]+$"))
     app.add_handler(CallbackQueryHandler(level_callback,pattern=r"^lv:[1-5]$"))
     app.add_handler(CallbackQueryHandler(network_callback,pattern=r"^net:[0-9]+:(trc|bep)$"))
     app.add_handler(CallbackQueryHandler(menu_callback,pattern=r"^m:(market|deposit|withdraw|wallet|products|orders|history|profile)$"))
+    app.add_handler(CallbackQueryHandler(delivered_callback,pattern=r"^order:delivered:[0-9]+$"))
     app.add_handler(CallbackQueryHandler(v4.payment_review,pattern=r"^pay:(approve|reject):[0-9]+$"))
     app.add_handler(CallbackQueryHandler(v4.withdrawal_review,pattern=r"^wd:(paid|reject):[0-9]+$"))
     app.add_handler(MessageHandler(filters.PHOTO,v4.payment_photo))

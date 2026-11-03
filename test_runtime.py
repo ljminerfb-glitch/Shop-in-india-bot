@@ -308,9 +308,10 @@ def test_admin_resale_flow(listing_id, inventory_id):
             "Admin offer text handler did not complete")
     seller_notifications = [x for x in admin_ctx.bot.sent
                             if x["args"] and x["args"][0] == 101]
-    require(seller_notifications and "Customer purchased your listing" in seller_notifications[-1]["kwargs"].get("text", ""),
+    notification_text = seller_notifications[-1]["args"][1] if seller_notifications and len(seller_notifications[-1]["args"]) > 1 else ""
+    require("Customer purchased your listing" in notification_text,
             "Seller notification did not use Customer wording")
-    require("Admin purchased your listing" not in seller_notifications[-1]["kwargs"].get("text", ""),
+    require("Admin purchased your listing" not in notification_text,
             "Seller notification still exposes Admin wording")
     c = v4.db()
     listing = c.execute("SELECT status,remaining_quantity FROM resale_listings WHERE id=?", (listing_id,)).fetchone()

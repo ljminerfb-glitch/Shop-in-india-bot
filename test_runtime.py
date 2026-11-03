@@ -471,7 +471,7 @@ def test_usdt_trc20_withdrawal_flow():
 
     amount_update,amount_message=message_update(101,"2.5")
     asyncio.run(v5.text_handler(amount_update,withdraw_ctx))
-    submitted=withdraw_ctx.bot.sent[-1]["kwargs"]["text"]
+    submitted=withdraw_ctx.bot.sent[-2]["kwargs"]["text"]
     require("2.500000 USDT" in submitted and "PENDING ADMIN REVIEW" in submitted,
             "USDT withdrawal confirmation missing")
     require(address in submitted,"Withdrawal request did not use saved address")

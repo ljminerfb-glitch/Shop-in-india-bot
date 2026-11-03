@@ -195,7 +195,7 @@ def test_seller_market_screen(listing_id):
     asyncio.run(v5.menu_callback(own_update, context()))
     own_screen = own_message.replies[0]["text"]
     require("MY ACTIVE USDT LISTINGS" in own_screen, "Seller's own USDT listing section missing")
-    require("#%d Printed T-Shirts" % listing_id in own_screen, "Seller cannot see their own listed product")
+    require("#%d Oxidised Jhumka Earrings" % listing_id in own_screen, "Seller cannot see their own listed product")
     require("Your remaining listing stock: 2" in own_screen, "Seller's own remaining listing quantity missing")
     require("3.3 USDT each" in own_screen, "Seller's own asking price missing")
     legacy_screen = own_message.replies[1]["text"]

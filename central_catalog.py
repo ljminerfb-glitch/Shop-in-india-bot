@@ -453,9 +453,13 @@ async def resale_callback(update,ctx):
             if not l or int(l["owner_id"])==q.from_user.id or qty<1 or qty>int(l["remaining_quantity"]): c.rollback(); await q.answer("Listing/quantity unavailable",show_alert=True); return
             total=round(float(l["ask_price_usdt"])*qty,6); bal=balance(c,q.from_user.id)
             if bal+1e-9<total: c.rollback(); await q.answer("Insufficient USDT balance",show_alert=True); return
-            c.execute("UPDATE resale_listings SET remaining_quantity=remaining_quantity-?,status=CASE WHEN remaining_quantity-?=0 THEN 'sold' ELSE status END WHERE id=? AND remaining_quantity>=?",(qty,qty,lid,qty))
+            changed=c.execute("UPDATE resale_listings SET remaining_quantity=remaining_quantity-?,status=CASE WHEN remaining_quantity-?=0 THEN 'sold' ELSE status END WHERE id=? AND status='active' AND remaining_quantity>=?",(qty,qty,lid,qty))
+            if changed.rowcount != 1:
+                c.rollback(); await q.answer("Listing stock changed. Please refresh the market.",show_alert=True); return
             cur=c.execute("""INSERT INTO central_orders(catalog_id,buyer_shop_id,buyer_owner_id,quantity,unit_price_usdt,total_usdt,status,created_at) VALUES(?,?,?,?,?,?,'paid',?)""",(l["catalog_id"],shop["id"],q.from_user.id,qty,l["ask_price_usdt"],total,v4.now())); oid=cur.lastrowid
-            c.execute("UPDATE central_inventory SET remaining_quantity=remaining_quantity-? WHERE id=? AND remaining_quantity>=?",(qty,l["inventory_id"],qty))
+            changed=c.execute("UPDATE central_inventory SET remaining_quantity=remaining_quantity-? WHERE id=? AND owner_id=? AND remaining_quantity>=?",(qty,l["inventory_id"],l["owner_id"],qty))
+            if changed.rowcount != 1:
+                raise RuntimeError("Seller inventory changed; resale purchase rolled back")
             c.execute("""INSERT INTO central_inventory(owner_id,shop_id,catalog_id,order_id,quantity,remaining_quantity,unit_cost_usdt,status,created_at) VALUES(?,?,?,?,?,?,?,'owned',?)""",(q.from_user.id,shop["id"],l["catalog_id"],oid,qty,qty,l["ask_price_usdt"],v4.now()))
             c.execute("""INSERT INTO ledger(transaction_id,shop_id,owner_id,entry_type,amount,currency,note,created_at) VALUES(?,?,?,'resale_purchase_debit',?,'USDT',?,?)""",(oid,shop["id"],q.from_user.id,total,f"Resale purchase listing #{lid}",v4.now()))
             profit=round((float(l["ask_price_usdt"])-float(l["unit_cost_usdt"]))*qty,6)
@@ -489,9 +493,13 @@ async def admin_resale_text(update,ctx):
         l=c.execute("SELECT * FROM resale_listings WHERE id=? AND status='active'",(lid,)).fetchone()
         if not l or qty>int(l["remaining_quantity"]): c.rollback(); await update.message.reply_text("Listing no longer available in that quantity."); return True
         total=round(price*qty,6); profit=round((price-float(l["unit_cost_usdt"]))*qty,6)
-        c.execute("UPDATE resale_listings SET remaining_quantity=remaining_quantity-?,status=CASE WHEN remaining_quantity-?=0 THEN 'sold' ELSE status END WHERE id=? AND remaining_quantity>=?",(qty,qty,lid,qty))
+        changed=c.execute("UPDATE resale_listings SET remaining_quantity=remaining_quantity-?,status=CASE WHEN remaining_quantity-?=0 THEN 'sold' ELSE status END WHERE id=? AND status='active' AND remaining_quantity>=?",(qty,qty,lid,qty))
+        if changed.rowcount != 1:
+            c.rollback(); await update.message.reply_text("Listing stock changed. Refresh the Admin Resale Market."); return True
         cur=c.execute("""INSERT INTO admin_resale_orders(listing_id,seller_owner_id,seller_shop_id,catalog_id,quantity,unit_price_usdt,total_usdt,status,created_at) VALUES(?,?,?,?,?,?,?,'purchased',?)""",(lid,l["owner_id"],l["shop_id"],l["catalog_id"],qty,price,total,v4.now())); oid=cur.lastrowid
-        c.execute("UPDATE central_inventory SET remaining_quantity=remaining_quantity-? WHERE id=? AND remaining_quantity>=?",(qty,l["inventory_id"],qty))
+        changed=c.execute("UPDATE central_inventory SET remaining_quantity=remaining_quantity-? WHERE id=? AND owner_id=? AND remaining_quantity>=?",(qty,l["inventory_id"],l["owner_id"],qty))
+        if changed.rowcount != 1:
+            raise RuntimeError("Seller inventory changed; Admin purchase rolled back")
         c.execute("""INSERT INTO admin_resale_inventory(admin_id,catalog_id,order_id,quantity,remaining_quantity,unit_cost_usdt,created_at) VALUES(?,?,?,?,?,?,?)""",(v4.ADMIN_ID,l["catalog_id"],oid,qty,qty,price,v4.now()))
         c.execute("""INSERT INTO ledger(transaction_id,shop_id,owner_id,entry_type,amount,currency,note,created_at) VALUES(?,?,?,'resale_sale_credit',?,'USDT',?,?)""",(oid,l["shop_id"],l["owner_id"],total,f"Admin purchase listing #{lid}",v4.now()))
         if profit>0: c.execute("""INSERT INTO ledger(transaction_id,shop_id,owner_id,entry_type,amount,currency,note,created_at) VALUES(?,?,?,'resale_profit_credit',?,'USDT',?,?)""",(oid,l["shop_id"],l["owner_id"],profit,f"Profit on Admin purchase #{oid}",v4.now()))

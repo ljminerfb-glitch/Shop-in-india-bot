@@ -164,7 +164,27 @@ async def buy(update,ctx):
         total=round(float(p["price_usdt"])*qty,6)
         available=balance(c,update.effective_user.id)
         if available+1e-9<total:
-            c.rollback(); await update.effective_message.reply_text(f"Insufficient USDT wallet balance.\nRequired: {total:g} USDT\nAvailable: {available:g} USDT\nPlease deposit USDT first."); return
+            c.rollback()
+            from telegram import InlineKeyboardMarkup, InlineKeyboardButton, CopyTextButton
+            tron=v4.PAY_TRON
+            bep=v4.PAY_BSC
+            deposit_text=(
+                f"Insufficient USDT wallet balance.\\n"
+                f"Required: {total:g} USDT\\n"
+                f"Available: {available:g} USDT\\n\\n"
+                "💳 DEPOSIT USDT TO TOP UP YOUR WALLET\\n"
+                "Choose the correct network. Do not send TRC20 to BEP20 or BEP20 to TRC20 address.\\n\\n"
+                f"🔵 TRC20 address:\\n{tron}\\n\\n"
+                f"🟡 BEP20 address:\\n{bep}\\n\\n"
+                "After sending, open Deposit and submit your transaction screenshot for Admin verification."
+            )
+            deposit_kb=InlineKeyboardMarkup([
+                [InlineKeyboardButton("📋 Copy TRC20 Address",copy_text=CopyTextButton(tron))],
+                [InlineKeyboardButton("📋 Copy BEP20 Address",copy_text=CopyTextButton(bep))],
+                [InlineKeyboardButton("💳 Open Deposit",callback_data="m:deposit")]
+            ])
+            await update.effective_message.reply_text(deposit_text,reply_markup=deposit_kb)
+            return
         c.execute("UPDATE central_catalog SET stock=stock-?,updated_at=? WHERE id=? AND stock>=?",(qty,v4.now(),pid,qty))
         if c.execute("SELECT changes()").fetchone()[0]!=1:
             c.rollback(); await update.effective_message.reply_text("Stock changed. Please retry."); return

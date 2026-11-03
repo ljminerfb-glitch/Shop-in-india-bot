@@ -334,38 +334,110 @@ async def payment_photo(update,ctx):
 
 async def payment_review(update,ctx):
     q=update.callback_query
-    if not admin(q.from_user.id): await q.answer("Admin only",show_alert=True); return
+    if not admin(q.from_user.id):
+        await q.answer("Admin only",show_alert=True)
+        return
     await q.answer()
-    _,action,rid_text=q.data.split(":"); rid=int(rid_text)
+    try:
+        _,action,rid_text=q.data.split(":")
+        rid=int(rid_text)
+        if action not in ("approve","reject"):
+            raise ValueError("Invalid payment action")
+    except (ValueError,IndexError):
+        await q.message.reply_text("Invalid payment review action.")
+        return
+
     c=db()
     try:
         c.execute("BEGIN IMMEDIATE")
         r=c.execute("SELECT * FROM payment_requests WHERE id=?",(rid,)).fetchone()
-        if not r or r["status"]!="pending" or not r["screenshot_file_id"]:
-            c.rollback(); await q.message.reply_text("Request missing, proof missing, or already reviewed."); return
+        if not r or r["status"]!="pending":
+            c.rollback()
+            await q.message.reply_text("Request missing or already reviewed.")
+            return
+        # A proof is mandatory for approval, but Admin must be able to reject
+        # an incomplete/invalid request that has no screenshot.
+        if action=="approve" and not r["screenshot_file_id"]:
+            c.rollback()
+            await q.message.reply_text("Cannot approve: payment screenshot is missing. You may reject this request.")
+            return
+
         status="approved" if action=="approve" else "rejected"
-        c.execute("UPDATE payment_requests SET status=?,reviewed_at=?,admin_note=? WHERE id=? AND status='pending'",(status,now(),"Admin verified manually" if action=="approve" else "Admin rejected proof",rid))
+        reviewed_at=now()
+        cur=c.execute(
+            "UPDATE payment_requests SET status=?,reviewed_at=?,admin_note=? "
+            "WHERE id=? AND status='pending'",
+            (status,reviewed_at,
+             "Admin verified manually" if action=="approve" else "Admin rejected proof",
+             rid))
+        if cur.rowcount != 1:
+            c.rollback()
+            await q.message.reply_text("This payment was already reviewed. Refresh Pending Payments.")
+            return
+
         c.execute("""INSERT INTO payment_history(owner_id,shop_id,payment_type,amount,currency,status,reference,admin_note,actor_id,created_at,reviewed_at)
-          VALUES(?,?,?,?,?,?,?,?,?,?,?)""",(r["owner_id"],r["shop_id"],r["payment_type"],r["amount"],r["currency"],status,f"payment_request:{rid}","Manually reviewed by admin",ADMIN_ID,r["created_at"],now()))
+          VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+          (r["owner_id"],r["shop_id"],r["payment_type"],r["amount"],r["currency"],
+           status,f"payment_request:{rid}","Manually reviewed by admin",ADMIN_ID,
+           r["created_at"],reviewed_at))
+
         if action=="approve" and r["payment_type"]=="level_activation":
-            shop=c.execute("SELECT level FROM shops WHERE id=? AND owner_id=?",(r["shop_id"],r["owner_id"])).fetchone()
-            if not shop: raise RuntimeError("Shop missing for payment request")
-            old=int(shop["level"]); new=int(r["level"])
+            shop=c.execute("SELECT level FROM shops WHERE id=? AND owner_id=?",
+                           (r["shop_id"],r["owner_id"])).fetchone()
+            if not shop:
+                raise RuntimeError("Shop missing for payment request")
+            old=int(shop["level"])
+            new=int(r["level"])
             if new>old:
                 c.execute("UPDATE shops SET level=? WHERE id=?",(new,r["shop_id"]))
-                c.execute("INSERT INTO level_history(shop_id,owner_id,old_level,new_level,reason,actor_id,created_at) VALUES(?,?,?,?,?,?,?)",(r["shop_id"],r["owner_id"],old,new,f"Approved activation payment #{rid}",ADMIN_ID,now()))
+                c.execute("INSERT INTO level_history(shop_id,owner_id,old_level,new_level,reason,actor_id,created_at) VALUES(?,?,?,?,?,?,?)",
+                          (r["shop_id"],r["owner_id"],old,new,
+                           f"Approved activation payment #{rid}",ADMIN_ID,reviewed_at))
                 audit_shop(c,r["shop_id"],r["owner_id"],ADMIN_ID,"level_activated",old,new)
+
         if action=="approve" and r["payment_type"]=="wallet_deposit":
             c.execute("INSERT INTO ledger(transaction_id,shop_id,owner_id,entry_type,amount,currency,note,created_at) VALUES(NULL,?,?, 'deposit_credit',?,'USDT',?,?)",
-                      (r["shop_id"],r["owner_id"],float(r["amount"]),f"Admin-approved deposit #{rid}",now()))
-        c.execute("INSERT INTO admin_audit(admin_id,owner_id,action,details,created_at) VALUES(?,?,?,?,?)",(ADMIN_ID,r["owner_id"],"payment_"+status,f"Payment request #{rid}",now()))
+                      (r["shop_id"],r["owner_id"],float(r["amount"]),
+                       f"Admin-approved deposit #{rid}",reviewed_at))
+
+        c.execute("INSERT INTO admin_audit(admin_id,owner_id,action,details,created_at) VALUES(?,?,?,?,?)",
+                  (ADMIN_ID,r["owner_id"],"payment_"+status,
+                   f"Payment request #{rid}",reviewed_at))
         c.commit()
     except Exception:
-        c.rollback(); log.exception("Payment review failed"); await q.message.reply_text("Review failed; no changes committed."); return
-    finally: c.close()
-    await q.message.reply_text(f"Payment request #{rid}: {status.upper()} (manual review).")
-    try: await ctx.bot.send_message(r["owner_id"],f"Payment request #{rid} {status.upper()}."+(f" Your shop level is now L{r['level']}." if status=="approved" and r["payment_type"]=="level_activation" else ""))
-    except Exception: pass
+        c.rollback()
+        log.exception("Payment review failed")
+        await q.message.reply_text("Review failed; no changes committed.")
+        return
+    finally:
+        c.close()
+
+    # Update the exact Telegram card used for the review so it no longer
+    # misleadingly displays PENDING or keeps active review buttons.
+    try:
+        result_line=f"\\n\\nREVIEW RESULT: {status.upper()}"
+        if q.message.photo:
+            old_caption=q.message.caption or ""
+            clean_caption=old_caption.split("\\n\\nREVIEW RESULT:",1)[0]
+            await q.message.edit_caption(caption=clean_caption+result_line,
+                                         reply_markup=None)
+        else:
+            old_text=q.message.text or ""
+            clean_text=old_text.split("\\n\\nREVIEW RESULT:",1)[0]
+            await q.message.edit_text(text=clean_text+result_line,
+                                      reply_markup=None)
+    except Exception:
+        log.exception("Could not update reviewed payment Telegram card")
+        await q.message.reply_text(f"Payment request #{rid}: {status.upper()}. Database status saved.")
+
+    try:
+        await ctx.bot.send_message(
+            r["owner_id"],
+            f"Payment request #{rid} {status.upper()}."+
+            (f" Your shop level is now L{r['level']}."
+             if status=="approved" and r["payment_type"]=="level_activation" else ""))
+    except Exception:
+        log.exception("Payment review owner notification failed")
 
 async def setshoplevel(update,ctx):
     if not admin(update.effective_user.id): return

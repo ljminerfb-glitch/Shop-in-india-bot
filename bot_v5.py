@@ -317,6 +317,7 @@ async def menu_callback(update,ctx):
         if legacy:
             body+="\n\nLEGACY SELLER LISTINGS (existing currency retained)\n"+"\n".join(f"#{r['id']} {r['title']} — {r['currency']} {r['price']} | stock {r['stock']}" for r in legacy)
         await q.message.reply_text(body[:4000],reply_markup=back_dashboard_kb())
+        await q.message.reply_text("USDT resale controls:",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏷️ List My Stock",callback_data="rs:listmenu")],[InlineKeyboardButton("🛍 USDT Resale Market",callback_data="rs:market")],[InlineKeyboardButton("⬅️ Dashboard",callback_data="m:dashboard")]]))
     elif action=="orders":
         c=v4.db()
         rows=c.execute("SELECT id,product_id,quantity,total_amount,status FROM v4_orders WHERE buyer_shop_id=? OR seller_shop_id=? ORDER BY id DESC LIMIT 20",(s["id"],s["id"])).fetchall()

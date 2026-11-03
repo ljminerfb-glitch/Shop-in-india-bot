@@ -156,7 +156,6 @@ def main():
     app.add_handler(CallbackQueryHandler(menu_callback,pattern=r"^m:(market|deposit|withdraw|wallet|products|orders|history|profile)$"))
     app.add_handler(CallbackQueryHandler(v4.payment_review,pattern=r"^pay:(approve|reject):[0-9]+$"))
     app.add_handler(CallbackQueryHandler(v4.withdrawal_review,pattern=r"^wd:(paid|reject):[0-9]+$"))
-    app.add_handler(CallbackQueryHandler(v3.product_review,pattern=r"^product:(approve|reject):[0-9]+$"))
     app.add_handler(MessageHandler(filters.PHOTO,v4.payment_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,text_handler))
     print("SHOP IN INDIA V5 Telegram UI started.")

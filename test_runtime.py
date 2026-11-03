@@ -546,9 +546,10 @@ def test_usdt_balance_reconciliation():
     # Mirrors the reported figures: deposits 50, catalogue investment 138.7,
     # resale proceeds 169.3, recorded profit 55.6 and paid withdrawals 150.
     c=v4.db()
-    c.execute("INSERT INTO shops(owner_id,shop_name,status,created_at,level) VALUES(404,'Reconciliation Shop','approved',?,1)",
-              (v4.now(),))
-    sid=c.execute("SELECT id FROM shops WHERE owner_id=404").fetchone()[0]
+    # Run this last against the existing approved test merchant, after all other tests.
+    c.execute("DELETE FROM ledger WHERE owner_id=101")
+    c.execute("DELETE FROM withdrawals WHERE owner_id=101")
+    sid=1
     for kind,amount in [
         ("deposit_credit",50.0),
         ("central_purchase_debit",138.7),
@@ -557,9 +558,9 @@ def test_usdt_balance_reconciliation():
         ("withdrawal_debit",150.0),
     ]:
         c.execute("""INSERT INTO ledger(shop_id,owner_id,entry_type,amount,currency,note,created_at)
-                     VALUES(?,404,?,?,'USDT','reconciliation test',?)""",
+                     VALUES(?,101,?,?,'USDT','reconciliation test',?)""",
                   (sid,kind,amount,v4.now()))
-    summary=v5.usdt_wallet_summary(c,404)
+    summary=v5.usdt_wallet_summary(c,101)
     require(abs(summary["earned"]-169.3)<1e-8,"Total sale proceeds were not calculated correctly")
     require(abs(summary["paid"]-150.0)<1e-8,"Paid withdrawals were not included")
     require(abs(summary["sale_remaining"]-19.3)<1e-8,"169.3 minus 150 should leave 19.3 in sale proceeds")
@@ -569,7 +570,7 @@ def test_usdt_balance_reconciliation():
             "An overdrawn wallet must not allow another withdrawal")
     c.close()
 
-    update,message,query=callback_update(404,"m:wallet")
+    update,message,query=callback_update(101,"m:wallet")
     asyncio.run(v5.menu_callback(update,context()))
     screen=message.replies[0]["text"]
     require("Wallet shortfall: 69.400000 USDT" in screen,
@@ -590,8 +591,8 @@ def main():
     test_resale_buyer_guards_and_sale(listing_id, inventory_id)
     test_admin_resale_flow(listing_id, inventory_id)
     test_usdt_trc20_withdrawal_flow()
-    test_usdt_balance_reconciliation()
     test_failed_central_purchases(pid)
+    test_usdt_balance_reconciliation()
     print("PASS: All isolated Telegram-handler end-to-end tests completed.")
 
 

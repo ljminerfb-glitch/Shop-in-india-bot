@@ -28,6 +28,13 @@ def setup(c=None):
           title TEXT NOT NULL, description TEXT, price_usdt REAL NOT NULL DEFAULT 0,
           stock INTEGER NOT NULL DEFAULT 0, image_path TEXT, active INTEGER NOT NULL DEFAULT 1,
           level_required INTEGER NOT NULL DEFAULT 1, created_at TEXT, updated_at TEXT)""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS ledger (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, transaction_id INTEGER, shop_id INTEGER NOT NULL,
+          owner_id INTEGER NOT NULL, entry_type TEXT NOT NULL, amount REAL NOT NULL,
+          currency TEXT NOT NULL, note TEXT, created_at TEXT NOT NULL)""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS admin_audit (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, admin_id INTEGER NOT NULL, owner_id INTEGER,
+          action TEXT NOT NULL, details TEXT, created_at TEXT NOT NULL)""")
         conn.execute("""CREATE TABLE IF NOT EXISTS central_orders (
           id INTEGER PRIMARY KEY AUTOINCREMENT, catalog_id INTEGER NOT NULL,
           buyer_shop_id INTEGER NOT NULL, buyer_owner_id INTEGER NOT NULL,
@@ -215,7 +222,7 @@ async def admin_callback(update,ctx):
     if action in ("price","stock"):
         pid=int(parts[2]); ctx.user_data["central_admin_edit"]={"field":action,"product_id":pid}
         prompt="new price in USDT" if action=="price" else "new shared stock quantity"
-        await q.message.reply_text(f"Product #{pid}: send the {prompt} as a number. Send /cancel to stop.")
+        await q.message.reply_text(f"Product #{pid}: send the {prompt} as a number. Type CANCEL to stop.")
         return
     if action=="toggle":
         pid=int(parts[2]); c=v4.db()

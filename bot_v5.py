@@ -279,9 +279,18 @@ async def menu_callback(update,ctx):
             "Enter withdrawal amount in INR. Only completed sale earnings are withdrawable.",
             reply_markup=back_dashboard_kb())
     elif action=="wallet":
-        ctx.user_data["state"]="wallet_network"
+        c=v4.db()
+        try:
+            bal=central.balance(c,q.from_user.id)
+            invested=c.execute("SELECT COALESCE(SUM(amount),0) FROM ledger WHERE owner_id=? AND currency='USDT' AND entry_type='central_purchase_debit'",(q.from_user.id,)).fetchone()[0]
+            profit=c.execute("SELECT COALESCE(SUM(amount),0) FROM ledger WHERE owner_id=? AND currency='USDT' AND entry_type IN ('sale_credit','central_sale_profit')",(q.from_user.id,)).fetchone()[0]
+            dep=c.execute("SELECT COALESCE(SUM(amount),0) FROM ledger WHERE owner_id=? AND currency='USDT' AND entry_type='deposit_credit'",(q.from_user.id,)).fetchone()[0]
+        finally: c.close()
         await q.message.reply_text(
-            "👛 WALLET SETTINGS\nWallet setup is managed through the wallet verification flow. Use /verifywallet or contact Admin.",
+            f"👛 USDT WALLET\nBalance: {bal:.6f} USDT\nDeposits: {float(dep):.6f} USDT\n"
+            f"Investment: {float(invested):.6f} USDT\nRecorded profit: {float(profit):.6f} USDT\n\n"
+            f"TRC20 deposit address: {v4.PAY_TRON}\nBEP20 deposit address: {v4.PAY_BSC}\n"
+            "Send only USDT on the selected network and submit payment proof for Admin verification.",
             reply_markup=back_dashboard_kb())
     elif action=="market":
         await central.owner_market(update,ctx,s)
@@ -297,9 +306,16 @@ async def menu_callback(update,ctx):
         await q.message.reply_text(body[:4000],reply_markup=back_dashboard_kb())
     elif action=="products":
         c=v4.db()
-        rows=c.execute("SELECT id,title,price,currency,stock,active FROM products WHERE shop_id=? ORDER BY id DESC LIMIT 20",(s["id"],)).fetchall()
-        c.close()
-        body="📦 MY PRODUCTS\n━━━━━━━━━━━━━━━━━━\n"+("\n".join(f"#{r['id']} {r['title']} — {r['currency']} {r['price']} | stock {r['stock']} | active {r['active']}" for r in rows) if rows else "No products assigned to your shop.")
+        try:
+            rows=c.execute("""SELECT i.catalog_id,i.quantity,i.remaining_quantity,i.unit_cost_usdt,i.status,
+                p.title FROM central_inventory i JOIN central_catalog p ON p.id=i.catalog_id
+                WHERE i.owner_id=? ORDER BY i.id DESC LIMIT 30""",(q.from_user.id,)).fetchall()
+            legacy=c.execute("SELECT id,title,price,currency,stock,active FROM products WHERE shop_id=? ORDER BY id DESC LIMIT 20",(s["id"],)).fetchall()
+        finally: c.close()
+        body="📦 MY PRODUCTS — USDT INVENTORY\n━━━━━━━━━━━━━━━━━━\n"
+        body+=("\n".join(f"{r['title']} ×{r['remaining_quantity']} | Cost {float(r['unit_cost_usdt']):g} USDT each | {r['status']}" for r in rows) if rows else "No central purchases yet.")
+        if legacy:
+            body+="\n\nLEGACY SELLER LISTINGS (existing currency retained)\n"+"\n".join(f"#{r['id']} {r['title']} — {r['currency']} {r['price']} | stock {r['stock']}" for r in legacy)
         await q.message.reply_text(body[:4000],reply_markup=back_dashboard_kb())
     elif action=="orders":
         c=v4.db()
@@ -743,6 +759,7 @@ def main():
     app.add_handler(CallbackQueryHandler(audit_callback,pattern=r"^audit:(all|payments|levels|wallet|orders|products):[0-9]+$"))
     app.add_handler(CallbackQueryHandler(delivered_callback,pattern=r"^order:delivered:[0-9]+$"))
     app.add_handler(CallbackQueryHandler(central.admin_callback,pattern=r"^cc:(view|orders|price|stock|toggle|fulfill|refund)(:[0-9]+)?$"))
+    app.add_handler(CallbackQueryHandler(central.owner_buy_callback,pattern=r"^ccbuy:[0-9]+:[0-9]+$"))
     app.add_handler(CallbackQueryHandler(v4.payment_review,pattern=r"^pay:(approve|reject):[0-9]+$"))
     app.add_handler(CallbackQueryHandler(v4.withdrawal_review,pattern=r"^wd:(paid|reject):[0-9]+$"))
     app.add_handler(MessageHandler(filters.PHOTO,v4.payment_photo))

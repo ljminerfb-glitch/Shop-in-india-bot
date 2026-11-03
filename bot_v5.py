@@ -380,6 +380,96 @@ async def text_handler(update,ctx):
             await levels(ctx.bot,update.effective_user.id)
 
 
+async def admin_panel(update,ctx):
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("Admin only."); return
+    await send_admin_panel(ctx.bot, update.effective_chat.id)
+
+async def send_admin_panel(bot, chat_id):
+    c=v4.db()
+    counts={}
+    for table in ("shops","products","v4_orders","payment_requests","withdrawals"):
+        try: counts[table]=c.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        except Exception: counts[table]="N/A"
+    try: pending_pay=c.execute("SELECT COUNT(*) FROM payment_requests WHERE status='pending'").fetchone()[0]
+    except Exception: pending_pay="N/A"
+    try: pending_wd=c.execute("SELECT COUNT(*) FROM withdrawals WHERE status='pending'").fetchone()[0]
+    except Exception: pending_wd="N/A"
+    c.close()
+    kb=InlineKeyboardMarkup([
+      [InlineKeyboardButton("👥 Owner Control Panel",callback_data="adm:owners")],
+      [InlineKeyboardButton("🏪 All Shops",callback_data="adm:shops"),InlineKeyboardButton("🛍 Products",callback_data="adm:products")],
+      [InlineKeyboardButton(f"💳 Pending Deposits ({pending_pay})",callback_data="adm:payments")],
+      [InlineKeyboardButton(f"💸 Pending Withdrawals ({pending_wd})",callback_data="adm:withdrawals")],
+      [InlineKeyboardButton(f"📦 Orders ({counts['v4_orders']})",callback_data="adm:orders"),InlineKeyboardButton("🎚 Levels",callback_data="adm:levels")],
+      [InlineKeyboardButton("⚙️ Settings & Commands",callback_data="adm:settings"),InlineKeyboardButton("🔄 Refresh",callback_data="adm:home")]
+    ])
+    await bot.send_message(chat_id,
+      "🛡️ SHOP IN INDIA — ADMIN CONTROL PANEL\n━━━━━━━━━━━━━━━━━━\n"
+      f"🏪 Shops: {counts['shops']}\n🛍 Products: {counts['products']}\n"
+      f"📦 Orders: {counts['v4_orders']}\n💳 Payment requests: {counts['payment_requests']} (Pending: {pending_pay})\n"
+      f"💸 Withdrawals: {counts['withdrawals']} (Pending: {pending_wd})\n"
+      f"💱 Rate: 1 USDT = INR {v4.usdt_inr_rate():,.2f}\n\n"
+      "Select a control below. All screens are sent as new messages; previous messages remain.",
+      reply_markup=kb)
+
+async def admin_panel_callback(update,ctx):
+    q=update.callback_query
+    if q.from_user.id != ADMIN_ID:
+        await q.answer("Admin only",show_alert=True); return
+    await q.answer()
+    action=q.data.split(":",1)[1]
+    if action in ("home","back"):
+        await send_admin_panel(ctx.bot,q.message.chat_id); return
+    c=v4.db()
+    try:
+        if action=="owners":
+            rows=c.execute("""SELECT s.id,s.shop_name,s.owner_id,s.status,s.level,
+                (SELECT COUNT(*) FROM products p WHERE p.shop_id=s.id) products,
+                (SELECT COUNT(*) FROM v4_orders o WHERE o.buyer_shop_id=s.id) buys,
+                (SELECT COUNT(*) FROM v4_orders o WHERE o.seller_shop_id=s.id) sells
+                FROM shops s ORDER BY s.id DESC LIMIT 40""").fetchall()
+            await q.message.reply_text("👥 OWNER CONTROL PANEL\n\n"+("\n\n".join(
+              f"🏪 {r['shop_name']} | Shop #{r['id']}\nOwner ID: {r['owner_id']}\nStatus: {r['status']} | Level: L{r['level']}\nProducts: {r['products']} | Buys: {r['buys']} | Sells: {r['sells']}\nDetails: /owner {r['owner_id']}"
+              for r in rows) if rows else "No owner shops found."),
+              reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]))
+        elif action=="shops":
+            rows=c.execute("SELECT id,shop_name,owner_id,status,level FROM shops ORDER BY id DESC LIMIT 40").fetchall()
+            await q.message.reply_text("🏪 SHOPS\n\n"+("\n".join(f"#{r['id']} {r['shop_name']} | Owner {r['owner_id']} | {r['status']} | L{r['level']}" for r in rows) if rows else "No shops."),
+              reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]))
+        elif action=="payments":
+            rows=c.execute("SELECT id,owner_id,payment_type,amount,currency,network,status FROM payment_requests WHERE status='pending' ORDER BY id DESC LIMIT 25").fetchall()
+            await q.message.reply_text("💳 PENDING DEPOSITS / LEVEL PAYMENTS\n\n"+("\n\n".join(
+              f"Request #{r['id']} | Owner {r['owner_id']}\n{r['payment_type']} | {r['amount']} {r['currency']} | {r['network']}\nUse existing Approve/Reject buttons on the submitted proof, or /admin to refresh."
+              for r in rows) if rows else "No pending payment requests."),
+              reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]))
+        elif action=="withdrawals":
+            rows=c.execute("SELECT id,owner_id,amount,currency,network,wallet_address,status FROM withdrawals WHERE status='pending' ORDER BY id DESC LIMIT 25").fetchall()
+            await q.message.reply_text("💸 PENDING WITHDRAWALS\n\n"+("\n\n".join(
+              f"Withdrawal #{r['id']} | Owner {r['owner_id']}\n{r['amount']} {r['currency']} | {r['network']}\nWallet: {r['wallet_address']}\nUse /withdraw review commands or payment notification."
+              for r in rows) if rows else "No pending withdrawals."),
+              reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]))
+        elif action=="products":
+            rows=c.execute("SELECT id,title,price,currency,stock,active,shop_id FROM products ORDER BY id DESC LIMIT 30").fetchall()
+            await q.message.reply_text("🛍 PRODUCTS\n\n"+("\n".join(f"#{r['id']} {r['title']} | Shop #{r['shop_id']} | {r['currency']} {r['price']} | Stock {r['stock']} | Active {r['active']}" for r in rows) if rows else "No products."),
+              reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]))
+        elif action=="orders":
+            await q.message.reply_text("📦 ORDER MANAGEMENT\nUse /orders to view pending orders and Mark Delivered controls.\nUse /orderdone ORDER_ID or /orderreject ORDER_ID REASON when appropriate.",
+              reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]))
+        elif action=="levels":
+            await v4.levels(update,ctx)
+            await q.message.reply_text("Edit: /setlevel LEVEL ACTIVATION_USDT PRODUCT_TARGET PROFIT_MIN PROFIT_MAX",
+              reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]))
+        elif action=="settings":
+            await q.message.reply_text("⚙️ ADMIN COMMANDS\n/addproduct SHOP_ID PRICE STOCK LEVEL Title | Description\n/setprice PRODUCT_ID INR_PRICE\n/setstock PRODUCT_ID QTY\n/setproductlevel PRODUCT_ID LEVEL\n/setfx INR_PER_USDT\n/setfee PERCENT\n/setlevel LEVEL ACTIVATION_USDT PRODUCT_TARGET PROFIT_MIN PROFIT_MAX\n/orders\n/owner OWNER_ID\n/shopaudit SHOP_ID\n/verifywallet OWNER_ID NETWORK ADDRESS",
+              reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]))
+    except Exception:
+        log.exception("Admin panel section failed")
+        await q.message.reply_text("Could not load this section. Check database migration and logs.",
+          reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]))
+    finally:
+        c.close()
+
 async def admin_orders(update,ctx):
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("Admin only.")
@@ -510,7 +600,7 @@ def main():
     v3.setup(); v3.ensure_catalog_schema()
     app=ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start",start)); app.add_handler(CommandHandler("dashboard",dashboard))
-    for cmd,fn in [("help",v3.help_command),("admin",v3.admin),("verifywallet",v3.verify_wallet),
+    for cmd,fn in [("help",v3.help_command),("admin",admin_panel),("verifywallet",v3.verify_wallet),
       ("buy",v4.buy),("addproduct",addproduct),("setlevel",v4.setlevel),("setfx",v4.setfx),("setfee",v4.setfee),
       ("products",v4.products),("setprice",lambda u,c:v4.edit_product(u,c,"setprice")),("setstock",lambda u,c:v4.edit_product(u,c,"setstock")),
       ("orders",admin_orders),("orderdone",v4.orderdone),("orderreject",v4.orderreject),("myproducts",v4.myproducts),("myorders",v4.myorders),("history",v4.history),("levels",v4.levels)]:
@@ -521,6 +611,7 @@ def main():
     app.add_handler(CallbackQueryHandler(level_back_callback,pattern=r"^lvback$"))
     app.add_handler(CallbackQueryHandler(network_callback,pattern=r"^net:[0-9]+:(trc|bep)$"))
     app.add_handler(CallbackQueryHandler(menu_callback,pattern=r"^m:(market|deposit|withdraw|wallet|products|orders|history|profile|dashboard)$"))
+    app.add_handler(CallbackQueryHandler(admin_panel_callback,pattern=r"^adm:(home|owners|shops|payments|withdrawals|products|orders|levels|settings|back)$"))
     app.add_handler(CallbackQueryHandler(delivered_callback,pattern=r"^order:delivered:[0-9]+$"))
     app.add_handler(CallbackQueryHandler(v4.payment_review,pattern=r"^pay:(approve|reject):[0-9]+$"))
     app.add_handler(CallbackQueryHandler(v4.withdrawal_review,pattern=r"^wd:(paid|reject):[0-9]+$"))

@@ -41,7 +41,7 @@ def main():
     print("No database rows are inserted, updated, or deleted.")
     print("=" * 68)
 
-    for filename in ("bot_v3.py", "bot_v4.py", "bot_v5.py", "central_catalog.py"):
+    for filename in ("bot_v3.py", "bot_v4.py", "bot_v5.py", "central_catalog.py", "audit_dashboard.py"):
         check_file_syntax(filename)
 
     try:
@@ -53,7 +53,8 @@ def main():
     try:
         import bot_v4
         import central_catalog
-        report("PASS", "bot_v4 and central_catalog imports")
+        import audit_dashboard
+        report("PASS", "bot_v4, central_catalog and audit_dashboard imports")
     except Exception as exc:
         report("FAIL", "application imports", repr(exc))
         print(traceback.format_exc())
@@ -148,6 +149,14 @@ def main():
                "central callback references in bot_v5")
         report("PASS" if "central_admin_edit" in v5 else "FAIL",
                "admin price/stock edit state in bot_v5")
+        report("PASS" if "import audit_dashboard as audit" in v5 and "FULL AUDIT LOG" in v5 else "FAIL",
+               "full audit dashboard integration in bot_v5")
+        audit_source = (ROOT / "audit_dashboard.py").read_text(encoding="utf-8")
+        audit_sources = ("admin_audit", "shop_audit", "product_audit", "level_history", "payment_history", "withdrawals", "ledger", "v4_orders", "central_orders")
+        report("PASS" if all(x in audit_source for x in audit_sources) else "FAIL",
+               "unified audit data sources")
+        report("PASS" if "audit_callback" in v5 and "audit:(all|payments|levels|wallet|orders|products)" in v5 else "FAIL",
+               "audit filters and pagination callbacks")
     except Exception as exc:
         report("FAIL", "bot_v5 integration scan", repr(exc))
 

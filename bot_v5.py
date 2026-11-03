@@ -5,6 +5,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandle
 import bot_v3 as v3
 import bot_v4 as v4
 import central_catalog as central
+import audit_dashboard as audit
 
 TOKEN=os.getenv("BOT_TOKEN")
 ADMIN_ID=int(os.getenv("ADMIN_ID","0"))
@@ -438,6 +439,7 @@ async def send_admin_panel(bot, chat_id):
     kb=InlineKeyboardMarkup([
       [InlineKeyboardButton("👥 Owner Control Panel",callback_data="adm:owners")],
       [InlineKeyboardButton("🛒 Central Catalogue (USDT)",callback_data="adm:central")],
+      [InlineKeyboardButton("🧾 FULL AUDIT LOG",callback_data="adm:audit")],
       [InlineKeyboardButton("🏪 All Shops",callback_data="adm:shops"),InlineKeyboardButton("🛍 Products",callback_data="adm:products")],
       [InlineKeyboardButton(f"💳 Pending Deposits ({pending_deposits})",callback_data="adm:payments")],
       [InlineKeyboardButton(f"🎚 Pending Level Payments ({pending_levels})",callback_data="adm:levelpayments")],
@@ -461,6 +463,8 @@ async def admin_panel_callback(update,ctx):
         await q.answer("Admin only",show_alert=True); return
     await q.answer()
     action=q.data.split(":",1)[1]
+    if action=="audit":
+        await audit.show(update,"all",0); return
     if action in ("home","back"):
         await send_admin_panel(ctx.bot,q.message.chat_id); return
     c=v4.db()
@@ -545,6 +549,18 @@ async def admin_panel_callback(update,ctx):
           reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]))
     finally:
         c.close()
+
+async def audit_callback(update,ctx):
+    q=update.callback_query
+    if q.from_user.id!=ADMIN_ID:
+        await q.answer("Admin only",show_alert=True); return
+    await q.answer()
+    try:
+        _,category,page=q.data.split(":")
+        await audit.show(update,category,int(page))
+    except Exception:
+        log.exception("Audit screen failed")
+        await q.message.reply_text("Audit log could not be loaded.")
 
 async def admin_orders(update,ctx):
     if update.effective_user.id != ADMIN_ID:
@@ -723,7 +739,8 @@ def main():
     app.add_handler(CallbackQueryHandler(level_back_callback,pattern=r"^lvback$"))
     app.add_handler(CallbackQueryHandler(network_callback,pattern=r"^net:[0-9]+:(trc|bep)$"))
     app.add_handler(CallbackQueryHandler(menu_callback,pattern=r"^m:(market|sellermarket|deposit|withdraw|wallet|products|orders|history|profile|dashboard|support)$"))
-    app.add_handler(CallbackQueryHandler(admin_panel_callback,pattern=r"^adm:(home|owners|shops|payments|levelpayments|withdrawals|products|orders|levels|settings|central|back)$"))
+    app.add_handler(CallbackQueryHandler(admin_panel_callback,pattern=r"^adm:(home|owners|shops|payments|levelpayments|withdrawals|products|orders|levels|settings|central|audit|back)$"))
+    app.add_handler(CallbackQueryHandler(audit_callback,pattern=r"^audit:(all|payments|levels|wallet|orders|products):[0-9]+$"))
     app.add_handler(CallbackQueryHandler(delivered_callback,pattern=r"^order:delivered:[0-9]+$"))
     app.add_handler(CallbackQueryHandler(central.admin_callback,pattern=r"^cc:(view|orders|price|stock|toggle|fulfill|refund)(:[0-9]+)?$"))
     app.add_handler(CallbackQueryHandler(v4.payment_review,pattern=r"^pay:(approve|reject):[0-9]+$"))

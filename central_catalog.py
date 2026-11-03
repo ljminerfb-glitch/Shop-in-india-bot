@@ -168,6 +168,13 @@ async def orders(update,ctx):
 
 
 async def owner_market(update,ctx,shop):
+    if not shop or shop["status"] != "approved" or int(shop["level"]) != 1:
+        await update.callback_query.message.reply_text(
+            "This central catalogue is available only to approved Level 1 shops.",
+            reply_markup=__import__("telegram").InlineKeyboardMarkup([[
+                __import__("telegram").InlineKeyboardButton("⬅️ Back to Dashboard",callback_data="m:dashboard")
+            ]]))
+        return
     setup()
     c=v4.db()
     rows=c.execute("SELECT * FROM central_catalog WHERE active=1 AND stock>0 AND price_usdt>0 ORDER BY id").fetchall()

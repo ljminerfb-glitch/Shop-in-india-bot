@@ -502,7 +502,16 @@ def test_usdt_trc20_withdrawal_flow():
     require("INR" not in card,"Admin withdrawal card still displays INR")
 
     paid_update,paid_message,paid_query=callback_update(999999,f"wd:paid:{wid}")
-    asyncio.run(v4.withdrawal_review(paid_update,context()))
+    paid_ctx=context()
+    asyncio.run(v5.withdrawal_review_callback(paid_update,paid_ctx))
+    require(any("POST-WITHDRAWAL WALLET SUMMARY" in x["text"] and
+                "Sale proceeds remaining: <b>4.300000 USDT</b>" in x["text"]
+                for x in paid_message.replies),
+            "Admin did not receive the post-payment remaining-balance summary")
+    require(any(x["args"] and x["args"][0]==101 and
+                "POST-WITHDRAWAL WALLET SUMMARY" in x["kwargs"].get("text","")
+                for x in paid_ctx.bot.sent),
+            "Merchant did not receive the post-payment wallet summary")
     c=v4.db()
     paid=c.execute("SELECT status FROM withdrawals WHERE id=?",(wid,)).fetchone()
     debit=c.execute("SELECT amount,currency FROM ledger WHERE owner_id=101 AND entry_type='withdrawal_debit' ORDER BY id DESC LIMIT 1").fetchone()
@@ -533,6 +542,45 @@ def test_usdt_trc20_withdrawal_flow():
             "Rejected withdrawal did not release reserved amount")
     print("PASS: Merchant Withdraw Setup, saved TRC20 wallet, Admin wallet directory and USDT withdrawal lifecycle")
 
+def test_usdt_balance_reconciliation():
+    # Mirrors the reported figures: deposits 50, catalogue investment 138.7,
+    # resale proceeds 169.3, recorded profit 55.6 and paid withdrawals 150.
+    c=v4.db()
+    c.execute("INSERT INTO shops(owner_id,shop_name,status,created_at,level) VALUES(404,'Reconciliation Shop','approved',?,1)",
+              (v4.now(),))
+    sid=c.execute("SELECT id FROM shops WHERE owner_id=404").fetchone()[0]
+    for kind,amount in [
+        ("deposit_credit",50.0),
+        ("central_purchase_debit",138.7),
+        ("resale_sale_credit",169.3),
+        ("resale_profit_credit",55.6),
+        ("withdrawal_debit",150.0),
+    ]:
+        c.execute("""INSERT INTO ledger(shop_id,owner_id,entry_type,amount,currency,note,created_at)
+                     VALUES(?,404,?,?,'USDT','reconciliation test',?)""",
+                  (sid,kind,amount,v4.now()))
+    summary=v5.usdt_wallet_summary(c,404)
+    require(abs(summary["earned"]-169.3)<1e-8,"Total sale proceeds were not calculated correctly")
+    require(abs(summary["paid"]-150.0)<1e-8,"Paid withdrawals were not included")
+    require(abs(summary["sale_remaining"]-19.3)<1e-8,"169.3 minus 150 should leave 19.3 in sale proceeds")
+    require(abs(summary["ledger_balance"]+69.4)<1e-8,
+            "Net wallet ledger should reflect the 50 - 138.7 + 169.3 - 150 calculation")
+    require(summary["available"]==0,
+            "An overdrawn wallet must not allow another withdrawal")
+    c.close()
+
+    update,message,query=callback_update(404,"m:wallet")
+    asyncio.run(v5.menu_callback(update,context()))
+    screen=message.replies[0]["text"]
+    require("Wallet shortfall: 69.400000 USDT" in screen,
+            "Merchant wallet did not show the net wallet shortfall")
+    require("Sale proceeds remaining: 19.300000 USDT" in screen,
+            "Merchant wallet did not show 169.3 minus 150 = 19.3")
+    require("Available to withdraw: <b>0.000000 USDT</b>" in screen,
+            "Merchant was shown withdrawable funds despite a negative net wallet")
+    print("PASS: Wallet reconciliation distinguishes remaining sale proceeds from net withdrawable balance")
+
+
 def main():
     fixture()
     pid, listing_id, inventory_id = test_central_purchase_and_auto_listing()
@@ -542,6 +590,7 @@ def main():
     test_resale_buyer_guards_and_sale(listing_id, inventory_id)
     test_admin_resale_flow(listing_id, inventory_id)
     test_usdt_trc20_withdrawal_flow()
+    test_usdt_balance_reconciliation()
     test_failed_central_purchases(pid)
     print("PASS: All isolated Telegram-handler end-to-end tests completed.")
 

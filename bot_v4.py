@@ -58,7 +58,7 @@ async def dashboard(update,ctx):
           f"🏪 OWNER DASHBOARD — {s['shop_name']}\nShop ID: {s['id']} | Level: {s['level']}\n"
           f"Products: {stats['products']} | Buy orders: {stats['buys']} | Sell orders: {stats['sells']}\n"
           f"Recorded sale credits: INR {stats['profit']:.2f}\n\n"
-          "Use /myproducts, /myorders, /history, /mylevels and /mywallet.")
+          "Use /myproducts, /myorders, /history and /mylevels. Wallet: tap Withdrawal Wallet in the main menu.")
         c.close()
 
 async def levels(update,ctx):
@@ -135,6 +135,7 @@ async def history(update,ctx):
       ("LEDGER", "SELECT entry_type,amount,currency,note,created_at FROM ledger WHERE owner_id=? ORDER BY id DESC LIMIT 10",(uid,)),
       ("LEVEL", "SELECT old_level,new_level,reason,created_at FROM level_history WHERE owner_id=? ORDER BY id DESC LIMIT 8",(uid,)),
       ("PAYMENTS", "SELECT payment_type,amount,currency,status,created_at FROM payment_history WHERE owner_id=? ORDER BY id DESC LIMIT 8",(uid,)),
+      ("LEGACY PAYMENT REQUESTS", "SELECT payment_type,amount,currency,status,created_at FROM payment_requests WHERE owner_id=? ORDER BY id DESC LIMIT 8",(uid,)),
       ("WITHDRAWALS", "SELECT amount,currency,status,created_at FROM withdrawals WHERE owner_id=? ORDER BY id DESC LIMIT 8",(uid,))]:
         rows=c.execute(sql,args).fetchall()
         sections.append(title+": "+("; ".join(" | ".join(str(v) for v in r) for r in rows) if rows else "No records"))

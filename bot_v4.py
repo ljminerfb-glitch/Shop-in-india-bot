@@ -239,7 +239,7 @@ async def orderdone(update,ctx):
         c.commit()
     except Exception: c.rollback(); log.exception("Complete order failed"); await update.message.reply_text("Could not complete order."); return
     finally: c.close()
-    await update.message.reply_text(f"Order #{oid} marked completed. Seller credit recorded as INR {r['seller_amount']:.2f}.")
+    await update.message.reply_text(f"✅ ORDER #{oid} COMPLETED. Seller credit recorded as INR {r['seller_amount']:.2f}.")
     for target in [r["buyer_owner_id"],r["seller_owner_id"]]:
         try: await ctx.bot.send_message(target,f"Order #{oid} marked completed by Admin.")
         except Exception: pass
@@ -257,7 +257,7 @@ async def orderreject(update,ctx):
         c.commit()
     except Exception: c.rollback(); await update.message.reply_text("Could not reject order."); return
     finally: c.close()
-    await update.message.reply_text(f"Order #{oid} rejected and reserved stock restored.")
+    await update.message.reply_text(f"❌ ORDER #{oid} REJECTED. Reserved stock restored.")
 
 
 
@@ -424,7 +424,8 @@ async def payment_review(update,ctx):
     # Update the exact Telegram card used for the review so it no longer
     # misleadingly displays PENDING or keeps active review buttons.
     try:
-        result_line=f"\n\nREVIEW RESULT: {status.upper()}"
+        result_label = "✅ APPROVED" if status == "approved" else "❌ REJECTED"
+        result_line=f"\n\nREVIEW RESULT: {result_label}"
         if q.message.photo:
             old_caption=q.message.caption or ""
             clean_caption=old_caption.split("\n\nREVIEW RESULT:",1)[0]
@@ -442,7 +443,7 @@ async def payment_review(update,ctx):
     try:
         await ctx.bot.send_message(
             r["owner_id"],
-            f"Payment request #{rid} {status.upper()}."+
+            f"{'✅ APPROVED' if status == 'approved' else '❌ REJECTED'} — Payment request #{rid}."+
             (f" Your shop level is now L{r['level']}. {cashback_amount:g} USDT (50% of activation fee) has been credited to your wallet."
              if status=="approved" and r["payment_type"]=="level_activation" else ""))
     except Exception:
@@ -525,7 +526,7 @@ async def withdrawal_review(update,ctx):
             await q.message.edit_caption((q.message.caption or f"WITHDRAWAL #{wid}")+f"\\n\\nREVIEW RESULT: {status.upper()}",reply_markup=None)
         except Exception:
             log.exception("Could not update reviewed withdrawal card")
-    await q.message.reply_text(f"Withdrawal #{wid}: {status.upper()}\\nINR: ₹{float(r['amount']):,.2f} | Rate: 1 USDT = ₹{rate:,.2f} | USDT equivalent: {usdt_amount:g}")
+    await q.message.reply_text(f"Withdrawal #{wid}: {'✅ PAID' if status == 'paid' else '❌ REJECTED'}\\nINR: ₹{float(r['amount']):,.2f} | Rate: 1 USDT = ₹{rate:,.2f} | USDT equivalent: {usdt_amount:g}")
     try: await ctx.bot.send_message(r["owner_id"],f"Withdrawal #{wid}: {status.upper()}\nINR: ₹{float(r['amount']):,.2f} | Rate: 1 USDT = ₹{rate:,.2f} | USDT equivalent: {usdt_amount:g}")
     except Exception: pass
 

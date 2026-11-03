@@ -560,6 +560,7 @@ def test_usdt_balance_reconciliation():
         c.execute("""INSERT INTO ledger(shop_id,owner_id,entry_type,amount,currency,note,created_at)
                      VALUES(?,101,?,?,'USDT','reconciliation test',?)""",
                   (sid,kind,amount,v4.now()))
+    c.commit()
     summary=v5.usdt_wallet_summary(c,101)
     require(abs(summary["earned"]-169.3)<1e-8,"Total sale proceeds were not calculated correctly")
     require(abs(summary["paid"]-150.0)<1e-8,"Paid withdrawals were not included")

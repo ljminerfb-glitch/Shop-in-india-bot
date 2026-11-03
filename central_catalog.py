@@ -349,15 +349,17 @@ async def owner_market(update,ctx,shop):
         c.commit()
     finally: c.close()
     await update.callback_query.message.reply_text(
-        f"🛍 CENTRAL LEVEL 1 CATALOGUE\n12 products | Unique visitors: {total_visitors}\n"
-        "Potential resale margin reference: 1.5–2 USDT per item; this is not guaranteed income. "
-        "Actual profit is recorded only after a completed sale.")
+        f"<b>🛍 CENTRAL LEVEL 1 CATALOGUE</b>\n━━━━━━━━━━━━━━━━━━\n"
+        f"12 products • {total_visitors} unique visitors\n"
+        "<i>Margin figures are references, not guaranteed income. Actual profit is recorded after a completed sale.</i>",
+        parse_mode="HTML")
     for p in rows:
         price=float(p["price_usdt"] or 0); stock=int(p["stock"] or 0)
-        caption=(f"#{p['id']} {p['title']}\n{p['description'] or ''}\n"
-                 f"Price: {price:g} USDT\nPotential margin: 1.5–2 USDT (reference only)\n"
-                 f"Available stock: {stock}\n"+
-                 ("Select quantity below to buy." if price>0 and stock>0 else "Currently unavailable — Admin must set price and stock."))
+        caption=(f"<b>#{p['id']} {html.escape(str(p['title']))}</b>\n"
+                 f"{html.escape(str(p['description'] or ''))}\n\n"
+                 f"Price: <b>{price:g} USDT</b>\n"
+                 f"Available stock: <b>{stock}</b>\n"+
+                 ("Select a quantity below to buy." if price>0 and stock>0 else "🔴 Unavailable — Admin must set price and stock."))
         quantities=[n for n in (1,2,5) if n<=stock] or [1]
         buttons=[[InlineKeyboardButton(f"🛒 Buy × {n}",callback_data=f"ccbuy:{p['id']}:{n}")
                   for n in quantities]]
@@ -367,12 +369,12 @@ async def owner_market(update,ctx,shop):
         try:
             if image_path.is_file():
                 with image_path.open("rb") as photo:
-                    await ctx.bot.send_photo(update.effective_chat.id,photo=photo,caption=caption[:1024],reply_markup=kb)
+                    await ctx.bot.send_photo(update.effective_chat.id,photo=photo,caption=caption[:1024],reply_markup=kb,parse_mode="HTML")
             else:
-                await ctx.bot.send_message(update.effective_chat.id,caption+"\n⚠️ Product photo unavailable.",reply_markup=kb)
+                await ctx.bot.send_message(update.effective_chat.id,caption+"\n⚠️ Product photo unavailable.",reply_markup=kb,parse_mode="HTML")
         except Exception:
             log.exception("Could not send catalogue item")
-            await ctx.bot.send_message(update.effective_chat.id,caption,reply_markup=kb)
+            await ctx.bot.send_message(update.effective_chat.id,caption,reply_markup=kb,parse_mode="HTML")
 
 
 async def owner_buy_callback(update,ctx):

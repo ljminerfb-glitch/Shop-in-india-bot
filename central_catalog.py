@@ -45,7 +45,7 @@ def setup(c=None):
             conn.execute("""INSERT OR IGNORE INTO central_catalog
               (product_key,title,description,price_usdt,stock,image_path,active,level_required,created_at,updated_at)
               VALUES(?,?,?,0,0,?,1,1,?,?)""",(key,title,desc,img,v4.now(),v4.now()))
-        if own: conn.commit()
+        conn.commit()
     finally:
         if own: conn.close()
 

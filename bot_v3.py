@@ -23,8 +23,8 @@ log = logging.getLogger(__name__)
 MENU = [
     ["🏪 Register Shop", "🔐 Login"],
     ["👤 My Profile", "💳 Withdrawal Wallet"],
-    ["🛍️ Marketplace", "📝 Suggest Product"],
-    ["📋 My Suggestions", "💬 Support"]
+    ["🛍️ Marketplace"],
+    ["💬 Support"]
 ]
 
 def now():
@@ -881,12 +881,9 @@ async def handle_message(update, context):
     msg = update.message.text.strip()
     state = context.user_data.get("state")
 
-    if state == "suggest_title":
-        await save_suggestion_title(update, context)
-    elif state == "suggest_description":
-        await save_suggestion_description(update, context)
-    elif state == "suggest_price":
-        await save_suggestion_price(update, context)
+    if state in ("suggest_title", "suggest_description", "suggest_price"):
+        context.user_data.clear()
+        await update.message.reply_text("Product suggestions are disabled. Only Admin can add or edit marketplace products.")
     elif state == "admin_product_price":
         await admin_product_price(update, context)
     elif state == "admin_product_stock":
@@ -909,10 +906,6 @@ async def handle_message(update, context):
         await profile(update, context)
     elif msg == "💳 Withdrawal Wallet":
         await wallet_start(update, context)
-    elif msg == "📝 Suggest Product":
-        await suggest_product_start(update, context)
-    elif msg == "📋 My Suggestions":
-        await my_suggestions(update, context)
     elif msg == "🛍️ Marketplace":
         shop = get_shop(update.effective_user.id)
         if shop and shop["status"] == "approved":

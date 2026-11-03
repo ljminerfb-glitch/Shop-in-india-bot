@@ -111,8 +111,8 @@ async def buy(update,ctx):
     if len(ctx.args)!=2:
         await update.effective_message.reply_text("Usage: /centralbuy PRODUCT_ID QUANTITY"); return
     shop=v4.shop_for(update.effective_user.id)
-    if not shop or shop["status"]!="approved" or int(shop["level"])<1:
-        await update.effective_message.reply_text("Approved Level 1 shop required."); return
+    if not shop or shop["status"]!="approved" or int(shop["level"])!=1:
+        await update.effective_message.reply_text("Approved Level 1 shop required. Higher and lower levels cannot use this catalogue."); return
     try:
         pid=int(ctx.args[0]); qty=int(ctx.args[1])
         if pid<1 or qty<1 or qty>1000: raise ValueError()
@@ -175,7 +175,7 @@ async def owner_market(update,ctx,shop):
     if not rows:
         await update.callback_query.message.reply_text("🛍 CENTRAL LEVEL 1 CATALOGUE\nNo products are currently available. Please check again later.")
         return
-    await update.callback_query.message.reply_text("🛍 CENTRAL LEVEL 1 CATALOGUE\nAll approved Level 1+ owners buy from shared central stock. Prices are in USDT.")
+    await update.callback_query.message.reply_text("🛍 CENTRAL LEVEL 1 CATALOGUE\nOnly approved Level 1 shop owners can buy here. All Level 1 owners share the same central stock. Prices are in USDT.")
     root=Path(__file__).resolve().parent
     for p in rows:
         caption=f"#{p['id']} {p['title']}\n{p['description'] or ''}\nPrice: {float(p['price_usdt']):g} USDT\nCentral stock: {p['stock']}\nBuy: /centralbuy {p['id']} QUANTITY"

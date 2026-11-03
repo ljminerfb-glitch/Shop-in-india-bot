@@ -479,15 +479,15 @@ async def admin_panel_callback(update,ctx):
             level_counts=c.execute("""SELECT COALESCE(level_required,1) AS lv,COUNT(*) AS total
                                       FROM products GROUP BY COALESCE(level_required,1)
                                       ORDER BY lv""").fetchall()
-            summary="\\n".join(f"L{r['lv']}: {r['total']} products" for r in level_counts)
-            details="\\n\\n".join(
-                f"#{r['id']} {r['title']} | L{r['level_required']} | Shop #{r['shop_id']}\\n"
-                f"{r['currency']} {r['price']} | Stock {r['stock']} | Active {r['active']}\\n"
+            summary="\n".join(f"L{r['lv']}: {r['total']} products" for r in level_counts)
+            details="\n\n".join(
+                f"#{r['id']} {r['title']} | L{r['level_required']} | Shop #{r['shop_id']}\n"
+                f"{r['currency']} {r['price']} | Stock {r['stock']} | Active {r['active']}\n"
                 f"Change level: /setproductlevel {r['id']} LEVEL"
                 for r in rows)
             await q.message.reply_text(
-                "🛍 PRODUCTS BY LEVEL\\n\\n"+(summary or "No products assigned.")+
-                "\\n\\nLATEST PRODUCTS\\n"+(details or "No products."),
+                "🛍 PRODUCTS BY LEVEL\n\n"+(summary or "No products assigned.")+
+                "\n\nLATEST PRODUCTS\n"+(details or "No products."),
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]))
         elif action=="orders":
             await q.message.reply_text("📦 ORDER MANAGEMENT\nUse /orders to view pending orders and Mark Delivered controls.\nUse /orderdone ORDER_ID or /orderreject ORDER_ID REASON when appropriate.",

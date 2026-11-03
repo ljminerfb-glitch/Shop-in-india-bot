@@ -303,9 +303,13 @@ async def menu_callback(update,ctx):
     elif action=="orders":
         c=v4.db()
         rows=c.execute("SELECT id,product_id,quantity,total_amount,status FROM v4_orders WHERE buyer_shop_id=? OR seller_shop_id=? ORDER BY id DESC LIMIT 20",(s["id"],s["id"])).fetchall()
+        central_rows=c.execute("""SELECT o.id,o.quantity,o.total_usdt,o.status,p.title FROM central_orders o
+          JOIN central_catalog p ON p.id=o.catalog_id WHERE o.buyer_shop_id=? ORDER BY o.id DESC LIMIT 20""",(s["id"],)).fetchall()
         c.close()
-        body="🧾 MY ORDERS\n━━━━━━━━━━━━━━━━━━\n"+("\n".join(f"#{r['id']} Product #{r['product_id']} ×{r['quantity']} — ₹{r['total_amount']:.2f} — {r['status']}" for r in rows) if rows else "No orders yet.")
-        await q.message.reply_text(body,reply_markup=back_dashboard_kb())
+        seller_body="\n".join(f"Seller order #{r['id']} — Product #{r['product_id']} ×{r['quantity']} — INR {r['total_amount']:.2f} — {r['status']}" for r in rows)
+        central_body="\n".join(f"Central order #{r['id']} — {r['title']} ×{r['quantity']} — {r['total_usdt']:g} USDT — {r['status']}" for r in central_rows)
+        body="🧾 MY ORDERS\n━━━━━━━━━━━━━━━━━━\nSELLER MARKETPLACE (INR)\n"+(seller_body or "No seller orders.")+"\n\nCENTRAL CATALOGUE (USDT)\n"+(central_body or "No central orders.")
+        await q.message.reply_text(body[:4000],reply_markup=back_dashboard_kb())
     elif action=="history":
         c=v4.db()
         rows=c.execute("SELECT entry_type,amount,currency,note,created_at FROM ledger WHERE owner_id=? ORDER BY id DESC LIMIT 20",(q.from_user.id,)).fetchall()
@@ -329,7 +333,7 @@ async def text_handler(update,ctx):
         if update.effective_user.id!=ADMIN_ID:
             ctx.user_data.pop("central_admin_edit",None); return
         raw=(update.message.text or "").strip()
-        if raw.lower()=="/cancel":
+        if raw.lower()=="cancel":
             ctx.user_data.pop("central_admin_edit",None)
             await update.message.reply_text("Central catalogue edit cancelled.",reply_markup=back_dashboard_kb()); return
         try:
@@ -342,7 +346,7 @@ async def text_handler(update,ctx):
                 if value<0: raise ValueError()
                 await central.set_stock(update, type("Args",(),{"args":[str(edit["product_id"]),str(value)]})())
         except (ValueError,TypeError):
-            await update.message.reply_text("Invalid value. Enter a non-negative number, or /cancel.")
+            await update.message.reply_text("Invalid value. Enter a non-negative number, or type CANCEL.")
             return
         ctx.user_data.pop("central_admin_edit",None)
         await central.admin_catalog(update,ctx)

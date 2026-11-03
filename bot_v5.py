@@ -592,7 +592,8 @@ async def addproduct(update,ctx):
     except Exception: pass
 
 async def dashboard(update,ctx):
-    if update.effective_user.id==ADMIN_ID: await v4.dashboard(update,ctx); return
+    if update.effective_user.id==ADMIN_ID:
+        await send_admin_panel(ctx.bot,update.effective_chat.id); return
     s=v4.shop_for(update.effective_user.id)
     if not s: await start(update,ctx)
     elif s["status"]!="approved": await update.message.reply_text("Awaiting Admin approval.")

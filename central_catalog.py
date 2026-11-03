@@ -169,13 +169,13 @@ async def buy(update,ctx):
             tron=v4.PAY_TRON
             bep=v4.PAY_BSC
             deposit_text=(
-                f"Insufficient USDT wallet balance.\\n"
-                f"Required: {total:g} USDT\\n"
-                f"Available: {available:g} USDT\\n\\n"
-                "💳 DEPOSIT USDT TO TOP UP YOUR WALLET\\n"
-                "Choose the correct network. Do not send TRC20 to BEP20 or BEP20 to TRC20 address.\\n\\n"
-                f"🔵 TRC20 address:\\n{tron}\\n\\n"
-                f"🟡 BEP20 address:\\n{bep}\\n\\n"
+                f"Insufficient USDT wallet balance.\n"
+                f"Required: {total:g} USDT\n"
+                f"Available: {available:g} USDT\n\n"
+                "💳 DEPOSIT USDT TO TOP UP YOUR WALLET\n"
+                "Choose the correct network. Do not send TRC20 to BEP20 or BEP20 to TRC20 address.\n\n"
+                f"🔵 TRC20 address:\n{tron}\n\n"
+                f"🟡 BEP20 address:\n{bep}\n\n"
                 "After sending, open Deposit and submit your transaction screenshot for Admin verification."
             )
             deposit_kb=InlineKeyboardMarkup([

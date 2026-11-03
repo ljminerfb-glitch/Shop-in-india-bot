@@ -100,6 +100,11 @@ def main():
             "Automatic resale listing quantity does not match purchased stock")
     c.close()
 
+    c = v4.db()
+    c.execute("""INSERT INTO ledger(shop_id,owner_id,entry_type,amount,currency,note,created_at)
+                 VALUES(1,101,'resale_purchase_debit',1,'USDT','test spend',?)""", (v4.now(),))
+    c.commit()
+    c.close()
     replies = run_buy(101, pid, 3)
     require(any("Insufficient USDT wallet balance" in x for x in replies),
             "Insufficient-balance purchase was not rejected")

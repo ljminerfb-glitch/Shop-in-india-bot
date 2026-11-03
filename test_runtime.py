@@ -406,18 +406,18 @@ def test_usdt_trc20_withdrawal_flow():
     asyncio.run(v5.text_handler(amount_update,owner_ctx))
     require(owner_ctx.user_data.get("state")=="withdraw_address",
             "USDT amount step did not ask for the payout address")
-    require("USDT TRC20" in amount_message.replies[-1]["text"],
+    require("USDT TRC20" in owner_ctx.bot.sent[-1]["kwargs"]["text"],
             "TRC20 address instructions missing")
 
     bad_update,bad_message=message_update(101,"0x62eb80614112d7b6bdeacf07b745755605c4b7e0")
     asyncio.run(v5.text_handler(bad_update,owner_ctx))
-    require("Invalid TRC20" in bad_message.replies[-1]["text"],
+    require("Invalid TRC20" in owner_ctx.bot.sent[-1]["kwargs"]["text"],
             "Non-TRC20 address was not rejected")
 
     address="T"+"1"*33
     address_update,address_message=message_update(101,address)
     asyncio.run(v5.text_handler(address_update,owner_ctx))
-    submitted=address_message.replies[-1]["text"]
+    submitted=owner_ctx.bot.sent[-2]["kwargs"]["text"]
     require("2.500000 USDT" in submitted and "PENDING ADMIN REVIEW" in submitted,
             "USDT withdrawal confirmation missing")
     require(owner_ctx.user_data.get("state") is None,

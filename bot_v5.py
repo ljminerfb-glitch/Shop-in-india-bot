@@ -324,6 +324,29 @@ async def menu_callback(update,ctx):
 
 
 async def text_handler(update,ctx):
+    edit=ctx.user_data.get("central_admin_edit")
+    if edit:
+        if update.effective_user.id!=ADMIN_ID:
+            ctx.user_data.pop("central_admin_edit",None); return
+        raw=(update.message.text or "").strip()
+        if raw.lower()=="/cancel":
+            ctx.user_data.pop("central_admin_edit",None)
+            await update.message.reply_text("Central catalogue edit cancelled.",reply_markup=back_dashboard_kb()); return
+        try:
+            if edit["field"]=="price":
+                value=round(float(raw),6)
+                if value<0: raise ValueError()
+                await central.set_price(update, type("Args",(),{"args":[str(edit["product_id"]),str(value)]})())
+            else:
+                value=int(raw)
+                if value<0: raise ValueError()
+                await central.set_stock(update, type("Args",(),{"args":[str(edit["product_id"]),str(value)]})())
+        except (ValueError,TypeError):
+            await update.message.reply_text("Invalid value. Enter a non-negative number, or /cancel.")
+            return
+        ctx.user_data.pop("central_admin_edit",None)
+        await central.admin_catalog(update,ctx)
+        return
     state=ctx.user_data.get("state")
     if state=="deposit_amount":
         try:
@@ -698,6 +721,7 @@ def main():
     app.add_handler(CallbackQueryHandler(menu_callback,pattern=r"^m:(market|sellermarket|deposit|withdraw|wallet|products|orders|history|profile|dashboard|support)$"))
     app.add_handler(CallbackQueryHandler(admin_panel_callback,pattern=r"^adm:(home|owners|shops|payments|levelpayments|withdrawals|products|orders|levels|settings|central|back)$"))
     app.add_handler(CallbackQueryHandler(delivered_callback,pattern=r"^order:delivered:[0-9]+$"))
+    app.add_handler(CallbackQueryHandler(central.admin_callback,pattern=r"^cc:(view|orders|price|stock|toggle|fulfill|refund)(:[0-9]+)?$"))
     app.add_handler(CallbackQueryHandler(v4.payment_review,pattern=r"^pay:(approve|reject):[0-9]+$"))
     app.add_handler(CallbackQueryHandler(v4.withdrawal_review,pattern=r"^wd:(paid|reject):[0-9]+$"))
     app.add_handler(MessageHandler(filters.PHOTO,v4.payment_photo))

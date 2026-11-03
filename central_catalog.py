@@ -194,6 +194,14 @@ async def buy(update,ctx):
         c.execute("""INSERT INTO central_inventory(owner_id,shop_id,catalog_id,order_id,quantity,remaining_quantity,unit_cost_usdt,status,created_at)
           VALUES(?,?,?,?,?,?,?,'owned',?)""",
           (update.effective_user.id,shop["id"],pid,oid,qty,qty,float(p["price_usdt"]),v4.now()))
+        inventory_id=c.execute("SELECT last_insert_rowid()").fetchone()[0]
+        # Every approved Level 1 buyer gets an automatic resale listing at cost + 0.8 USDT/item.
+        resale_setup(c)
+        ask_price=round(float(p["price_usdt"])+0.8,6)
+        c.execute("""INSERT INTO resale_listings(inventory_id,owner_id,shop_id,catalog_id,quantity,remaining_quantity,
+                     unit_cost_usdt,ask_price_usdt,status,created_at)
+                     VALUES(?,?,?,?,?,?,?,?, 'active',?)""",
+                  (inventory_id,update.effective_user.id,shop["id"],pid,qty,qty,float(p["price_usdt"]),ask_price,v4.now()))
         remaining_stock=int(p['stock'])-qty
         c.execute("""INSERT INTO ledger(transaction_id,shop_id,owner_id,entry_type,amount,currency,note,created_at)
           VALUES(?,?,?,'central_purchase_debit',?,'USDT',?,?)""",(oid,shop["id"],update.effective_user.id,total,f"Central catalogue order #{oid}",v4.now()))
@@ -390,7 +398,17 @@ def resale_setup(c=None):
           catalog_id INTEGER NOT NULL, order_id INTEGER NOT NULL,
           quantity INTEGER NOT NULL, remaining_quantity INTEGER NOT NULL,
           unit_cost_usdt REAL NOT NULL, created_at TEXT NOT NULL)""")
-        conn.commit()
+        if own:
+            # Idempotently publish remaining stock bought by every approved Level 1 merchant.
+            conn.execute("""INSERT INTO resale_listings
+              (inventory_id,owner_id,shop_id,catalog_id,quantity,remaining_quantity,unit_cost_usdt,ask_price_usdt,status,created_at)
+              SELECT i.id,i.owner_id,i.shop_id,i.catalog_id,i.remaining_quantity,i.remaining_quantity,
+                     i.unit_cost_usdt,ROUND(i.unit_cost_usdt+0.8,6),'active',?
+              FROM central_inventory i JOIN shops s ON s.id=i.shop_id
+              WHERE i.remaining_quantity>0 AND s.status='approved' AND s.level=1
+                AND NOT EXISTS (SELECT 1 FROM resale_listings l
+                                WHERE l.inventory_id=i.id AND l.status='active' AND l.remaining_quantity>0)""",(v4.now(),))
+            conn.commit()
     finally:
         if own: conn.close()
 
@@ -409,7 +427,7 @@ async def list_inventory(update,ctx):
         await update.effective_message.reply_text("No available USDT inventory to list.",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back",callback_data="m:dashboard")]])); return
     for r in rows:
         free=max(0,int(r["remaining_quantity"])-int(r["listed"]))
-        price=round(float(r["unit_cost_usdt"])+0.5,6)
+        price=round(float(r["unit_cost_usdt"])+0.8,6)
         kb=[[InlineKeyboardButton(f"List {free} at {price:g} USDT each",callback_data=f"rs:list:{r['id']}")] if free else []]
         kb.append([InlineKeyboardButton("⬅️ Back",callback_data="m:products"),InlineKeyboardButton("🏠 Dashboard",callback_data="m:dashboard")])
         await update.effective_message.reply_text(f"{r['title']}\nOwned remaining: {r['remaining_quantity']} | Already listed: {r['listed']}\nFixed resale price: {price:g} USDT each",reply_markup=InlineKeyboardMarkup([x for x in kb if x]))
@@ -429,7 +447,7 @@ async def resale_callback(update,ctx):
             listed=c.execute("SELECT COALESCE(SUM(remaining_quantity),0) FROM resale_listings WHERE inventory_id=? AND status='active'",(inv_id,)).fetchone()[0]
             qty=int(inv["remaining_quantity"])-int(listed)
             if qty<=0: c.rollback(); await q.answer("No unlisted stock left",show_alert=True); return
-            price=round(float(inv["unit_cost_usdt"])+0.5,6)
+            price=round(float(inv["unit_cost_usdt"])+0.8,6)
             c.execute("""INSERT INTO resale_listings(inventory_id,owner_id,shop_id,catalog_id,quantity,remaining_quantity,unit_cost_usdt,ask_price_usdt,status,created_at)
               VALUES(?,?,?,?,?,?,?,?, 'active',?)""",(inv_id,q.from_user.id,inv["shop_id"],inv["catalog_id"],qty,qty,inv["unit_cost_usdt"],price,v4.now()))
             lid=c.execute("SELECT last_insert_rowid()").fetchone()[0]

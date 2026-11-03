@@ -473,9 +473,22 @@ async def admin_panel_callback(update,ctx):
                 await q.message.reply_text(caption,reply_markup=kb)
             await q.message.reply_text("⬅️ Back options:",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]))
         elif action=="products":
-            rows=c.execute("SELECT id,title,price,currency,stock,active,shop_id FROM products ORDER BY id DESC LIMIT 30").fetchall()
-            await q.message.reply_text("🛍 PRODUCTS\n\n"+("\n".join(f"#{r['id']} {r['title']} | Shop #{r['shop_id']} | {r['currency']} {r['price']} | Stock {r['stock']} | Active {r['active']}" for r in rows) if rows else "No products."),
-              reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]))
+            rows=c.execute("""SELECT id,title,price,currency,stock,active,shop_id,
+                                     COALESCE(level_required,1) AS level_required
+                              FROM products ORDER BY level_required,id DESC LIMIT 50""").fetchall()
+            level_counts=c.execute("""SELECT COALESCE(level_required,1) AS lv,COUNT(*) AS total
+                                      FROM products GROUP BY COALESCE(level_required,1)
+                                      ORDER BY lv""").fetchall()
+            summary="\\n".join(f"L{r['lv']}: {r['total']} products" for r in level_counts)
+            details="\\n\\n".join(
+                f"#{r['id']} {r['title']} | L{r['level_required']} | Shop #{r['shop_id']}\\n"
+                f"{r['currency']} {r['price']} | Stock {r['stock']} | Active {r['active']}\\n"
+                f"Change level: /setproductlevel {r['id']} LEVEL"
+                for r in rows)
+            await q.message.reply_text(
+                "🛍 PRODUCTS BY LEVEL\\n\\n"+(summary or "No products assigned.")+
+                "\\n\\nLATEST PRODUCTS\\n"+(details or "No products."),
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]))
         elif action=="orders":
             await q.message.reply_text("📦 ORDER MANAGEMENT\nUse /orders to view pending orders and Mark Delivered controls.\nUse /orderdone ORDER_ID or /orderreject ORDER_ID REASON when appropriate.",
               reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]))
@@ -664,7 +677,7 @@ def main():
     app=ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start",start)); app.add_handler(CommandHandler("dashboard",dashboard))
     for cmd,fn in [("help",help_command),("support",support_command),("admin",admin_panel),("verifywallet",v3.verify_wallet),
-      ("buy",v4.buy),("addproduct",addproduct),("setlevel",v4.setlevel),("setfx",v4.setfx),("setfee",v4.setfee),
+      ("buy",v4.buy),("addproduct",v3.addproduct),("setproductlevel",v4.setproductlevel),("setlevel",v4.setlevel),("setfx",v4.setfx),("setfee",v4.setfee),
       ("products",v4.products),("setprice",lambda u,c:v4.edit_product(u,c,"setprice")),("setstock",lambda u,c:v4.edit_product(u,c,"setstock")),
       ("orders",admin_orders),("orderdone",v4.orderdone),("orderreject",v4.orderreject),("myproducts",v4.myproducts),("myorders",v4.myorders),("history",v4.history),("levels",v4.levels)]:
         app.add_handler(CommandHandler(cmd,fn))

@@ -438,17 +438,29 @@ async def admin_panel_callback(update,ctx):
             await q.message.reply_text("🏪 SHOPS\n\n"+("\n".join(f"#{r['id']} {r['shop_name']} | Owner {r['owner_id']} | {r['status']} | L{r['level']}" for r in rows) if rows else "No shops."),
               reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]))
         elif action=="payments":
-            rows=c.execute("SELECT id,owner_id,payment_type,amount,currency,network,status FROM payment_requests WHERE status='pending' ORDER BY id DESC LIMIT 25").fetchall()
-            await q.message.reply_text("💳 PENDING DEPOSITS / LEVEL PAYMENTS\n\n"+("\n\n".join(
-              f"Request #{r['id']} | Owner {r['owner_id']}\n{r['payment_type']} | {r['amount']} {r['currency']} | {r['network']}\nUse existing Approve/Reject buttons on the submitted proof, or /admin to refresh."
-              for r in rows) if rows else "No pending payment requests."),
-              reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]))
+            rows=c.execute("SELECT id,owner_id,payment_type,amount,currency,network,status,screenshot_file_id,shop_id FROM payment_requests WHERE status='pending' ORDER BY id DESC LIMIT 25").fetchall()
+            await q.message.reply_text("💳 DEPOSIT & LEVEL PAYMENT REVIEW\\nEach request is reviewed separately. Verify the transaction on the blockchain before approving.")
+            if not rows:
+                await q.message.reply_text("No pending payment requests.")
+            for r in rows:
+                caption=(f"💳 PAYMENT REQUEST #{r['id']}\\nOwner: {r['owner_id']} | Shop: {r['shop_id']}\\nType: {r['payment_type']}\\nAmount: {r['amount']} {r['currency']}\\nNetwork: {r['network'] or 'Not selected'}\\nStatus: PENDING")
+                kb=InlineKeyboardMarkup([[InlineKeyboardButton("✅ APPROVE",callback_data=f"pay:approve:{r['id']}"),InlineKeyboardButton("❌ REJECT",callback_data=f"pay:reject:{r['id']}")],[InlineKeyboardButton("⬅️ Deposits",callback_data="adm:payments"),InlineKeyboardButton("🏠 Admin Panel",callback_data="adm:home")]])
+                if r['screenshot_file_id']:
+                    await ctx.bot.send_photo(q.message.chat_id,r['screenshot_file_id'],caption=caption,reply_markup=kb)
+                else:
+                    await q.message.reply_text(caption+"\\n⚠️ No screenshot attached.",reply_markup=kb)
+            await q.message.reply_text("⬅️ Back options:",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]))
         elif action=="withdrawals":
-            rows=c.execute("SELECT id,owner_id,amount,currency,network,wallet_address,status FROM withdrawals WHERE status='pending' ORDER BY id DESC LIMIT 25").fetchall()
-            await q.message.reply_text("💸 PENDING WITHDRAWALS\n\n"+("\n\n".join(
-              f"Withdrawal #{r['id']} | Owner {r['owner_id']}\n{r['amount']} {r['currency']} | {r['network']}\nWallet: {r['wallet_address']}\nUse /withdraw review commands or payment notification."
-              for r in rows) if rows else "No pending withdrawals."),
-              reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]))
+            rows=c.execute("SELECT id,owner_id,amount,currency,network,wallet_address,status,amount_inr,exchange_rate FROM withdrawals WHERE status='pending' ORDER BY id DESC LIMIT 25").fetchall()
+            await q.message.reply_text("💸 WITHDRAWAL REVIEW\\nMark PAID only after you have actually sent the payout.")
+            if not rows:
+                await q.message.reply_text("No pending withdrawals.")
+            for r in rows:
+                rate=float(r['exchange_rate'] or 0)
+                caption=(f"💸 WITHDRAWAL #{r['id']}\\nOwner: {r['owner_id']}\\nAmount: ₹{float(r['amount_inr'] or r['amount']):,.2f}\\nNetwork: {r['network']}\\nWallet: {r['wallet_address']}\\nRate: ₹{rate:,.2f} per USDT\\nStatus: PENDING")
+                kb=InlineKeyboardMarkup([[InlineKeyboardButton("✅ MARK PAID",callback_data=f"wd:paid:{r['id']}"),InlineKeyboardButton("❌ REJECT",callback_data=f"wd:reject:{r['id']}")],[InlineKeyboardButton("⬅️ Withdrawals",callback_data="adm:withdrawals"),InlineKeyboardButton("🏠 Admin Panel",callback_data="adm:home")]])
+                await q.message.reply_text(caption,reply_markup=kb)
+            await q.message.reply_text("⬅️ Back options:",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]))
         elif action=="products":
             rows=c.execute("SELECT id,title,price,currency,stock,active,shop_id FROM products ORDER BY id DESC LIMIT 30").fetchall()
             await q.message.reply_text("🛍 PRODUCTS\n\n"+("\n".join(f"#{r['id']} {r['title']} | Shop #{r['shop_id']} | {r['currency']} {r['price']} | Stock {r['stock']} | Active {r['active']}" for r in rows) if rows else "No products."),

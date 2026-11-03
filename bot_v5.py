@@ -412,12 +412,12 @@ async def send_admin_panel(bot, chat_id):
       [InlineKeyboardButton("⚙️ Settings & Commands",callback_data="adm:settings"),InlineKeyboardButton("🔄 Refresh",callback_data="adm:home")]
     ])
     await bot.send_message(chat_id,
-      "🛡️ SHOP IN INDIA — ADMIN CONTROL PANEL\\n━━━━━━━━━━━━━━━━━━\\n"
-      f"🏪 Shops: {counts['shops']}\\n🛍 Products: {counts['products']}\\n"
-      f"📦 Orders: {counts['v4_orders']}\\n💳 Pending deposits: {pending_deposits}\\n"
-      f"🎚 Pending level payments: {pending_levels}\\n"
-      f"💸 Withdrawals: {counts['withdrawals']} (Pending: {pending_wd})\\n"
-      f"💱 Rate: 1 USDT = INR {v4.usdt_inr_rate():,.2f}\\n\\n"
+      "🛡️ SHOP IN INDIA — ADMIN CONTROL PANEL\n━━━━━━━━━━━━━━━━━━\n"
+      f"🏪 Shops: {counts['shops']}\n🛍 Products: {counts['products']}\n"
+      f"📦 Orders: {counts['v4_orders']}\n💳 Pending deposits: {pending_deposits}\n"
+      f"🎚 Pending level payments: {pending_levels}\n"
+      f"💸 Withdrawals: {counts['withdrawals']} (Pending: {pending_wd})\n"
+      f"💱 Rate: 1 USDT = INR {v4.usdt_inr_rate():,.2f}\n\n"
       "Select a control below. All screens are sent as new messages; previous messages remain.",
       reply_markup=kb)
 
@@ -449,25 +449,25 @@ async def admin_panel_callback(update,ctx):
             payment_type="wallet_deposit" if action=="payments" else "level_activation"
             section_title="PENDING DEPOSITS" if action=="payments" else "PENDING LEVEL PAYMENTS"
             rows=c.execute("SELECT id,owner_id,payment_type,amount,currency,network,status,screenshot_file_id,shop_id FROM payment_requests WHERE status='pending' AND payment_type=? ORDER BY id DESC LIMIT 25",(payment_type,)).fetchall()
-            await q.message.reply_text(f"💳 {section_title}\\nEach request is reviewed separately. Verify the transaction on the blockchain before approving.")
+            await q.message.reply_text(f"💳 {section_title}\nEach request is reviewed separately. Verify the transaction on the blockchain before approving.")
             if not rows:
                 await q.message.reply_text(f"No pending { 'deposits' if action=='payments' else 'level payments' }.")
             for r in rows:
-                caption=(f"💳 PAYMENT REQUEST #{r['id']}\\nOwner: {r['owner_id']} | Shop: {r['shop_id']}\\nType: {r['payment_type']}\\nAmount: {r['amount']} {r['currency']}\\nNetwork: {r['network'] or 'Not selected'}\\nStatus: PENDING")
+                caption=(f"💳 PAYMENT REQUEST #{r['id']}\nOwner: {r['owner_id']} | Shop: {r['shop_id']}\nType: {r['payment_type']}\nAmount: {r['amount']} {r['currency']}\nNetwork: {r['network'] or 'Not selected'}\nStatus: PENDING")
                 kb=InlineKeyboardMarkup([[InlineKeyboardButton("✅ APPROVE",callback_data=f"pay:approve:{r['id']}"),InlineKeyboardButton("❌ REJECT",callback_data=f"pay:reject:{r['id']}")],[InlineKeyboardButton("⬅️ Deposits",callback_data="adm:payments"),InlineKeyboardButton("🏠 Admin Panel",callback_data="adm:home")]])
                 if r['screenshot_file_id']:
                     await ctx.bot.send_photo(q.message.chat_id,r['screenshot_file_id'],caption=caption,reply_markup=kb)
                 else:
-                    await q.message.reply_text(caption+"\\n⚠️ No screenshot attached.",reply_markup=kb)
+                    await q.message.reply_text(caption+"\n⚠️ No screenshot attached.",reply_markup=kb)
             await q.message.reply_text("⬅️ Back options:",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]))
         elif action=="withdrawals":
             rows=c.execute("SELECT id,owner_id,amount,currency,network,wallet_address,status,amount_inr,exchange_rate FROM withdrawals WHERE status='pending' ORDER BY id DESC LIMIT 25").fetchall()
-            await q.message.reply_text("💸 WITHDRAWAL REVIEW\\nMark PAID only after you have actually sent the payout.")
+            await q.message.reply_text("💸 WITHDRAWAL REVIEW\nMark PAID only after you have actually sent the payout.")
             if not rows:
                 await q.message.reply_text("No pending withdrawals.")
             for r in rows:
                 rate=float(r['exchange_rate'] or 0)
-                caption=(f"💸 WITHDRAWAL #{r['id']}\\nOwner: {r['owner_id']}\\nAmount: ₹{float(r['amount_inr'] or r['amount']):,.2f}\\nNetwork: {r['network']}\\nWallet: {r['wallet_address']}\\nRate: ₹{rate:,.2f} per USDT\\nStatus: PENDING")
+                caption=(f"💸 WITHDRAWAL #{r['id']}\nOwner: {r['owner_id']}\nAmount: ₹{float(r['amount_inr'] or r['amount']):,.2f}\nNetwork: {r['network']}\nWallet: {r['wallet_address']}\nRate: ₹{rate:,.2f} per USDT\nStatus: PENDING")
                 kb=InlineKeyboardMarkup([[InlineKeyboardButton("✅ MARK PAID",callback_data=f"wd:paid:{r['id']}"),InlineKeyboardButton("❌ REJECT",callback_data=f"wd:reject:{r['id']}")],[InlineKeyboardButton("⬅️ Withdrawals",callback_data="adm:withdrawals"),InlineKeyboardButton("🏠 Admin Panel",callback_data="adm:home")]])
                 await q.message.reply_text(caption,reply_markup=kb)
             await q.message.reply_text("⬅️ Back options:",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]))
@@ -480,10 +480,10 @@ async def admin_panel_callback(update,ctx):
               reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]))
         elif action=="levels":
             level_rows=c.execute("SELECT level,activation_usdt,product_target,profit_min,profit_max FROM level_settings ORDER BY level").fetchall()
-            body="🎚 LEVEL SETTINGS\\n\\n"+("\\n".join(
+            body="🎚 LEVEL SETTINGS\n\n"+("\n".join(
               f"L{r['level']}: {r['activation_usdt']} USDT | target {r['product_target'] or 'Unlimited'} | margin reference {r['profit_min']}–{r['profit_max']}%"
               for r in level_rows) if level_rows else "No level settings found.")
-            body+="\\n\\nEdit: /setlevel LEVEL ACTIVATION_USDT PRODUCT_TARGET PROFIT_MIN PROFIT_MAX"
+            body+="\n\nEdit: /setlevel LEVEL ACTIVATION_USDT PRODUCT_TARGET PROFIT_MIN PROFIT_MAX"
             await q.message.reply_text(body,
               reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]))
         elif action=="settings":

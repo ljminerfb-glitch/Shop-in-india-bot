@@ -113,6 +113,7 @@ def main():
           VALUES (?, ?, ?, ?, ?)
         """, levels)
         cur.execute("INSERT OR IGNORE INTO platform_settings(setting_key,setting_value) VALUES('platform_fee_percent','5')")
+        cur.execute("INSERT OR IGNORE INTO platform_settings(setting_key,setting_value) VALUES('usdt_inr_rate','110')")
         src.commit()
         check = cur.execute("PRAGMA integrity_check").fetchone()[0]
         if check != "ok":

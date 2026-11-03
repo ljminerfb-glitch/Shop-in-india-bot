@@ -137,6 +137,7 @@ async def buy(update,ctx):
         cur=c.execute("""INSERT INTO central_orders(catalog_id,buyer_shop_id,buyer_owner_id,quantity,unit_price_usdt,total_usdt,status,created_at)
           VALUES(?,?,?,?,?,?,'paid',?)""",(pid,shop["id"],update.effective_user.id,qty,p["price_usdt"],total,v4.now()))
         oid=cur.lastrowid
+        remaining_stock=int(p['stock'])-qty
         c.execute("""INSERT INTO ledger(transaction_id,shop_id,owner_id,entry_type,amount,currency,note,created_at)
           VALUES(?,?,?,'central_purchase_debit',?,'USDT',?,?)""",(oid,shop["id"],update.effective_user.id,total,f"Central catalogue order #{oid}",v4.now()))
         c.execute("""INSERT INTO admin_audit(admin_id,owner_id,action,details,created_at)
@@ -147,7 +148,7 @@ async def buy(update,ctx):
         await update.effective_message.reply_text("Purchase failed safely. No wallet debit or stock deduction was committed.")
         return
     finally: c.close()
-    await update.effective_message.reply_text(f"✅ Purchase successful\nOrder #{oid}\n{p['title']} × {qty}\nTotal paid: {total:g} USDT\nRemaining USDT wallet: {balance_after_text(total,available)}")
+    await update.effective_message.reply_text(f"✅ Purchase successful\nOrder #{oid}\n{p['title']} × {qty}\nTotal paid: {total:g} USDT\nRemaining shared stock: {remaining_stock}\nRemaining USDT wallet: {balance_after_text(total,available)}")
     try:
         await ctx.bot.send_message(v4.ADMIN_ID,f"🛒 CENTRAL ORDER #{oid}\n{p['title']} × {qty}\nOwner: {update.effective_user.id} | Shop #{shop['id']}\nPaid: {total:g} USDT")
     except Exception: log.exception("Admin central order notification failed")

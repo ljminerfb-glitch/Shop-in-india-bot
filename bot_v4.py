@@ -518,17 +518,26 @@ async def withdrawal_review(update,ctx):
     finally: c.close()
     rate=float(r['exchange_rate'] or usdt_inr_rate()) if 'exchange_rate' in r.keys() else usdt_inr_rate()
     usdt_amount=inr_to_usdt(float(r['amount']),rate)
+    result_label="✅ PAID" if status=="paid" else "❌ REJECTED"
     try:
         old_text=q.message.text or q.message.caption or f"WITHDRAWAL #{wid}"
-        await q.message.edit_text(old_text.split("\\n\\nREVIEW RESULT:",1)[0]+f"\\n\\nREVIEW RESULT: {status.upper()}",reply_markup=None)
+        clean_text=old_text.split("\n\nREVIEW RESULT:",1)[0]
+        await q.message.edit_text(clean_text+f"\n\nREVIEW RESULT: {result_label}",reply_markup=None)
     except Exception:
         try:
-            await q.message.edit_caption((q.message.caption or f"WITHDRAWAL #{wid}")+f"\\n\\nREVIEW RESULT: {status.upper()}",reply_markup=None)
+            old_caption=(q.message.caption or f"WITHDRAWAL #{wid}")
+            clean_caption=old_caption.split("\n\nREVIEW RESULT:",1)[0]
+            await q.message.edit_caption(clean_caption+f"\n\nREVIEW RESULT: {result_label}",reply_markup=None)
         except Exception:
             log.exception("Could not update reviewed withdrawal card")
-    await q.message.reply_text(f"Withdrawal #{wid}: {'✅ PAID' if status == 'paid' else '❌ REJECTED'}\\nINR: ₹{float(r['amount']):,.2f} | Rate: 1 USDT = ₹{rate:,.2f} | USDT equivalent: {usdt_amount:g}")
-    try: await ctx.bot.send_message(r["owner_id"],f"Withdrawal #{wid}: {status.upper()}\nINR: ₹{float(r['amount']):,.2f} | Rate: 1 USDT = ₹{rate:,.2f} | USDT equivalent: {usdt_amount:g}")
-    except Exception: pass
+    result_text=(f"<b>WITHDRAWAL {result_label}</b>\n"
+                 f"INR: ₹{float(r['amount']):,.2f} | Rate: ₹{rate:,.2f} per USDT\n"
+                 f"USDT equivalent: {usdt_amount:g}")
+    await q.message.reply_text(result_text,parse_mode="HTML")
+    try:
+        await ctx.bot.send_message(r["owner_id"],result_text,parse_mode="HTML")
+    except Exception:
+        log.exception("Withdrawal owner notification failed")
 
 async def myproductaudit(update,ctx):
     s=shop_for(update.effective_user.id)

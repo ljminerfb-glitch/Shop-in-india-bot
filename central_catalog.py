@@ -164,3 +164,28 @@ async def orders(update,ctx):
     await update.effective_message.reply_text("📦 CENTRAL CATALOGUE ORDERS\n\n"+(
       "\n\n".join(f"#{r['id']} {r['title']} ×{r['quantity']}\nOwner {r['buyer_owner_id']} | Shop #{r['buyer_shop_id']}\n{r['total_usdt']:g} USDT | {r['status']} | {r['created_at']}" for r in rows)
       if rows else "No central orders yet."))
+
+
+async def owner_market(update,ctx,shop):
+    setup()
+    c=v4.db()
+    rows=c.execute("SELECT * FROM central_catalog WHERE active=1 AND stock>0 AND price_usdt>0 ORDER BY id").fetchall()
+    c.close()
+    if not rows:
+        await update.callback_query.message.reply_text("🛍 CENTRAL LEVEL 1 CATALOGUE\nNo products are currently available. Please check again later.")
+        return
+    await update.callback_query.message.reply_text("🛍 CENTRAL LEVEL 1 CATALOGUE\nAll approved Level 1+ owners buy from shared central stock. Prices are in USDT.")
+    root=Path(__file__).resolve().parent
+    for p in rows:
+        caption=f"#{p['id']} {p['title']}\n{p['description'] or ''}\nPrice: {float(p['price_usdt']):g} USDT\nCentral stock: {p['stock']}\nBuy: /centralbuy {p['id']} QUANTITY"
+        image_path=root / (p['image_path'] or "")
+        try:
+            if image_path.is_file():
+                with image_path.open("rb") as photo:
+                    await ctx.bot.send_photo(update.effective_chat.id,photo=photo,caption=caption[:1024])
+            else:
+                await ctx.bot.send_message(update.effective_chat.id,caption+"\n⚠️ Product photo file missing on bot server.")
+        except Exception:
+            log.exception("Could not send central catalogue item")
+            await ctx.bot.send_message(update.effective_chat.id,caption)
+    await update.callback_query.message.reply_text("⬅️ Back to Dashboard",reply_markup=__import__("telegram").InlineKeyboardMarkup([[__import__("telegram").InlineKeyboardButton("⬅️ Back to Dashboard",callback_data="m:dashboard")]]))

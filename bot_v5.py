@@ -100,7 +100,7 @@ async def level_callback(update,ctx):
 
     s=v4.shop_for(q.from_user.id)
     if not s:
-        await q.edit_message_text("Please register your shop first.")
+        await q.message.reply_text("Please register your shop first.")
         return
     if s["status"]!="approved":
         await q.edit_message_text("Your shop must be approved before selecting a level.")
@@ -226,10 +226,10 @@ async def network_callback(update,ctx):
         [InlineKeyboardButton("⬅️ Back to Dashboard",callback_data="m:dashboard")]
     ])
     await q.message.reply_text(
-        f"💳 <b>{network} DEPOSIT ADDRESS</b>\\n━━━━━━━━━━━━━━━━━━\\n\\n"
-        f"<b><i>Address:</i></b>\\n\\n<code>{address}</code>\\n\\n"
-        f"<b>Amount:</b> {float(r['amount']):g} USDT\\n"
-        f"<b>Rate:</b> 1 USDT = INR {rate:,.2f}\\n\\n"
+        f"💳 <b>{network} DEPOSIT ADDRESS</b>\n━━━━━━━━━━━━━━━━━━\n\n"
+        f"<b><i>Address:</i></b>\n\n<code>{address}</code>\n\n"
+        f"<b>Amount:</b> {float(r['amount']):g} USDT\n"
+        f"<b>Rate:</b> 1 USDT = INR {rate:,.2f}\n\n"
         "<i>Send USDT only on the selected network. After payment, upload your transaction screenshot. Admin will verify it manually.</i>",
         reply_markup=kb,parse_mode="HTML")
 

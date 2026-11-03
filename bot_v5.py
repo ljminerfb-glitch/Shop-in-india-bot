@@ -74,7 +74,8 @@ async def menu_callback(update,ctx):
     q=update.callback_query; await q.answer(); action=q.data[2:]; s=v4.shop_for(q.from_user.id)
     if not s or s["status"]!="approved" or int(s["level"])<1: await q.message.reply_text("Approve your shop and activate a level first."); return
     if action=="deposit":
-        ctx.user_data["state"]="deposit_amount"; await q.message.reply_text("💳 Deposit: enter amount in USDT.")
+        ctx.user_data["state"]="deposit_amount"
+        await q.message.reply_text("💳 USDT DEPOSIT\\n\\n1) USDT TRC20 — Tron network\\nAddress:\\nTDrWh8zrWDgB3uGeyBsWym9ATNVNDPjD7v\\n\\n2) USDT BEP20 — BNB Smart Chain\\nAddress:\\n0x62eb80614112d7b6bdeacf07b745755605c4b7e0\\n\\nChoose the correct network after entering your deposit amount. Send USDT only on the selected network. Admin will verify your screenshot manually.")
     elif action=="withdraw":
         ctx.user_data["state"]="withdraw_amount"; await q.message.reply_text("💸 Withdraw: enter amount in INR. Only completed sale earnings are withdrawable.")
     elif action=="wallet":

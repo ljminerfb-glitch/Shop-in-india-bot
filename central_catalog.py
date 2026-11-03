@@ -432,9 +432,23 @@ async def list_inventory(update,ctx):
     for r in rows:
         free=max(0,int(r["remaining_quantity"])-int(r["listed"]))
         price=round(float(r["unit_cost_usdt"])+0.8,6)
+        unit_cost=round(float(r["unit_cost_usdt"]),6)
+        profit_each=round(price-unit_cost,6)
+        listed_profit=round(profit_each*int(r["listed"]),6)
+        free_profit=round(profit_each*free,6)
         kb=[[InlineKeyboardButton(f"List {free} at {price:g} USDT each",callback_data=f"rs:list:{r['id']}")] if free else []]
         kb.append([InlineKeyboardButton("⬅️ Back",callback_data="m:products"),InlineKeyboardButton("🏠 Dashboard",callback_data="m:dashboard")])
-        await update.effective_message.reply_text(f"{r['title']}\nOwned remaining: {r['remaining_quantity']} | Already listed: {r['listed']}\nFixed resale price: {price:g} USDT each",reply_markup=InlineKeyboardMarkup([x for x in kb if x]))
+        details=(
+            f"{r['title']}\n"
+            f"Owned remaining: {r['remaining_quantity']} | Already listed: {r['listed']} | Free to list: {free}\n"
+            f"Your cost: {unit_cost:g} USDT each\n"
+            f"Fixed resale price: {price:g} USDT each\n"
+            f"💰 Expected profit per sold item: +{profit_each:g} USDT\n"
+            f"📈 Potential profit from already-listed stock: +{listed_profit:g} USDT\n"
+            f"📈 Potential extra profit if you list the free stock: +{free_profit:g} USDT\n"
+            "Note: Expected profit is credited only after a sale is completed."
+        )
+        await update.effective_message.reply_text(details,reply_markup=InlineKeyboardMarkup([x for x in kb if x]))
 
 async def resale_callback(update,ctx):
     from telegram import InlineKeyboardMarkup, InlineKeyboardButton

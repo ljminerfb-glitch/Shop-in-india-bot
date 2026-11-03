@@ -132,6 +132,43 @@ async def text_handler(update,ctx):
         if was_registering and v4.shop_for(update.effective_user.id):
             await levels(ctx.bot,update.effective_user.id)
 
+async def addproduct(update,ctx):
+    if update.effective_user.id!=ADMIN_ID:
+        await update.message.reply_text("Admin only."); return
+    raw=" ".join(ctx.args)
+    # Syntax: /addproduct SHOP_ID PRICE STOCK LEVEL Title | Description
+    try:
+        head,body=raw.split(" ",4)[0:4],None
+        parts=raw.split(maxsplit=4)
+        if len(parts)!=5: raise ValueError()
+        shop_id,price,stock,level=int(parts[0]),float(parts[1]),int(parts[2]),int(parts[3])
+        title_desc=parts[4]
+        if "|" not in title_desc: raise ValueError()
+        title,description=[x.strip() for x in title_desc.split("|",1)]
+        if not title or not description or price<=0 or stock<0 or level not in range(1,6): raise ValueError()
+    except Exception:
+        await update.message.reply_text("Usage:\n/addproduct SHOP_ID PRICE STOCK LEVEL Title | Full description"); return
+    c=v4.db()
+    shop=c.execute("SELECT id,owner_id,status FROM shops WHERE id=?",(shop_id,)).fetchone()
+    if not shop or shop["status"]!="approved":
+        c.close(); await update.message.reply_text("Approved seller shop ID not found."); return
+    cols={r["name"] for r in c.execute("PRAGMA table_info(products)").fetchall()}
+    required={"shop_id","title","description","price","currency","active","stock"}
+    if not required.issubset(cols):
+        c.close(); await update.message.reply_text("Products table schema mismatch; no product added."); return
+    fields=["shop_id","title","description","price","currency","active","stock"]
+    vals=[shop_id,title,description,price,"INR",1,stock]
+    if "level_required" in cols: fields.append("level_required"); vals.append(level)
+    if "created_at" in cols: fields.append("created_at"); vals.append(v4.now())
+    if "updated_at" in cols: fields.append("updated_at"); vals.append(v4.now())
+    marks=",".join("?" for _ in fields)
+    cur=c.execute(f"INSERT INTO products ({','.join(fields)}) VALUES ({marks})",vals)
+    pid=cur.lastrowid
+    c.commit(); c.close()
+    await update.message.reply_text(f"Product published by Admin. ID #{pid}\n{title}\nINR {price:,.2f} | Stock {stock} | Required level L{level}")
+    try: await ctx.bot.send_message(shop["owner_id"],f"Admin added a marketplace product to your shop: #{pid} {title}")
+    except Exception: pass
+
 async def dashboard(update,ctx):
     if update.effective_user.id==ADMIN_ID: await v4.dashboard(update,ctx); return
     s=v4.shop_for(update.effective_user.id)
@@ -146,7 +183,7 @@ def main():
     app=ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start",start)); app.add_handler(CommandHandler("dashboard",dashboard))
     for cmd,fn in [("help",v3.help_command),("admin",v3.admin),("verifywallet",v3.verify_wallet),
-      ("buy",v4.buy),("setlevel",v4.setlevel),("setfx",v4.setfx),("setfee",v4.setfee),
+      ("buy",v4.buy),("addproduct",addproduct),("setlevel",v4.setlevel),("setfx",v4.setfx),("setfee",v4.setfee),
       ("products",v4.products),("setprice",lambda u,c:v4.edit_product(u,c,"setprice")),("setstock",lambda u,c:v4.edit_product(u,c,"setstock")),
       ("orders",v4.orders),("orderdone",v4.orderdone),("orderreject",v4.orderreject),("myproducts",v4.myproducts),("myorders",v4.myorders),("history",v4.history),("levels",v4.levels)]:
         app.add_handler(CommandHandler(cmd,fn))

@@ -282,7 +282,7 @@ async def menu_callback(update,ctx):
             reply_markup=back_dashboard_kb())
     elif action=="market":
         c=v4.db()
-        rows=c.execute("SELECT id,title,description,price,currency,stock FROM products WHERE active=1 AND stock>0 AND level_required<=? ORDER BY id DESC LIMIT 20",(s["level"],)).fetchall()
+        rows=c.execute("SELECT id,title,description,price,currency,stock FROM products WHERE active=1 AND stock>0 AND level_required=? ORDER BY id DESC LIMIT 20",(s["level"],)).fetchall()
         c.close()
         body="🛍 MARKETPLACE\n━━━━━━━━━━━━━━━━━━\n"
         body += ("\n\n".join(f"#{r['id']} {r['title']}\n{(r['description'] or '')[:250]}\nPrice: {r['currency']} {r['price']} | Stock: {r['stock']}\nBuy: /buy {r['id']} 1" for r in rows)

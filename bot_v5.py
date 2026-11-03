@@ -347,6 +347,7 @@ async def menu_callback(update,ctx):
 
 
 async def text_handler(update,ctx):
+    if await central.admin_resale_text(update,ctx): return
     edit=ctx.user_data.get("central_admin_edit")
     if edit:
         if update.effective_user.id!=ADMIN_ID:
@@ -490,6 +491,8 @@ async def admin_panel_callback(update,ctx):
     try:
         if action=="central":
             await central.admin_catalog(update,ctx)
+        elif action=="resale":
+            await central.admin_resale_market(update,ctx)
         elif action=="owners":
             rows=c.execute("""SELECT s.id,s.shop_name,s.owner_id,s.status,s.level,
                 (SELECT COUNT(*) FROM products p WHERE p.shop_id=s.id) products,
@@ -744,7 +747,7 @@ async def dashboard(update,ctx):
 
 def main():
     if not TOKEN or not ADMIN_ID: raise RuntimeError("BOT_TOKEN and ADMIN_ID are required.")
-    v3.setup(); v3.ensure_catalog_schema(); central.setup()
+    v3.setup(); v3.ensure_catalog_schema(); central.setup(); central.resale_setup()
     app=ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start",start)); app.add_handler(CommandHandler("dashboard",dashboard))
     for cmd,fn in [("help",help_command),("support",support_command),("admin",admin_panel),("verifywallet",v3.verify_wallet),
@@ -758,7 +761,8 @@ def main():
     app.add_handler(CallbackQueryHandler(level_back_callback,pattern=r"^lvback$"))
     app.add_handler(CallbackQueryHandler(network_callback,pattern=r"^net:[0-9]+:(trc|bep)$"))
     app.add_handler(CallbackQueryHandler(menu_callback,pattern=r"^m:(market|sellermarket|deposit|withdraw|wallet|products|orders|history|profile|dashboard|support)$"))
-    app.add_handler(CallbackQueryHandler(admin_panel_callback,pattern=r"^adm:(home|owners|shops|payments|levelpayments|withdrawals|products|orders|levels|settings|central|audit|back)$"))
+    app.add_handler(CallbackQueryHandler(admin_panel_callback,pattern=r"^adm:(home|owners|shops|payments|levelpayments|withdrawals|products|orders|levels|settings|central|resale|audit|back)$"))
+    app.add_handler(CallbackQueryHandler(central.resale_callback,pattern=r"^rs:(list:[0-9]+|listmenu|market|review:[0-9]+|buy:[0-9]+:[0-9]+)$"))
     app.add_handler(CallbackQueryHandler(audit_callback,pattern=r"^audit:(all|payments|levels|wallet|orders|products):[0-9]+$"))
     app.add_handler(CallbackQueryHandler(delivered_callback,pattern=r"^order:delivered:[0-9]+$"))
     app.add_handler(CallbackQueryHandler(central.admin_callback,pattern=r"^cc:(view|orders|price|stock|toggle|fulfill|refund)(:[0-9]+)?$"))

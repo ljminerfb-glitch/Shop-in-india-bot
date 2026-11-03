@@ -415,15 +415,15 @@ async def payment_review(update,ctx):
     # Update the exact Telegram card used for the review so it no longer
     # misleadingly displays PENDING or keeps active review buttons.
     try:
-        result_line=f"\\n\\nREVIEW RESULT: {status.upper()}"
+        result_line=f"\n\nREVIEW RESULT: {status.upper()}"
         if q.message.photo:
             old_caption=q.message.caption or ""
-            clean_caption=old_caption.split("\\n\\nREVIEW RESULT:",1)[0]
+            clean_caption=old_caption.split("\n\nREVIEW RESULT:",1)[0]
             await q.message.edit_caption(caption=clean_caption+result_line,
                                          reply_markup=None)
         else:
             old_text=q.message.text or ""
-            clean_text=old_text.split("\\n\\nREVIEW RESULT:",1)[0]
+            clean_text=old_text.split("\n\nREVIEW RESULT:",1)[0]
             await q.message.edit_text(text=clean_text+result_line,
                                       reply_markup=None)
     except Exception:

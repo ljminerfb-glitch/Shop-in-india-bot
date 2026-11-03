@@ -21,6 +21,18 @@ def db():
     c.execute("PRAGMA foreign_keys=ON")
     return c
 def admin(uid): return uid == ADMIN_ID
+
+def usdt_inr_rate(c=None):
+    own = c is None
+    conn = c or db()
+    try:
+        row = conn.execute("SELECT setting_value FROM platform_settings WHERE setting_key='usdt_inr_rate'").fetchone()
+        return float(row['setting_value']) if row else 110.0
+    finally:
+        if own: conn.close()
+
+def inr_to_usdt(amount_inr, rate):
+    return round(float(amount_inr) / float(rate), 6)
 def shop_for(uid):
     c=db(); r=c.execute("SELECT * FROM shops WHERE owner_id=? ORDER BY id DESC LIMIT 1",(uid,)).fetchone(); c.close(); return r
 def audit_product(c,p,shop,owner,actor,action,old,new):
@@ -266,13 +278,16 @@ async def activate(update, ctx):
     pending=c.execute("SELECT id FROM payment_requests WHERE owner_id=? AND payment_type='level_activation' AND level=? AND status='pending'",(update.effective_user.id,target)).fetchone()
     if pending: c.close(); await update.message.reply_text(f"Is level ki payment request #{pending['id']} pehle se pending hai."); return
     amount=float(setting["activation_usdt"])
+    rate=usdt_inr_rate(c)
+    amount_inr=round(amount*rate,2)
     cur=c.execute("""INSERT INTO payment_requests(owner_id,shop_id,payment_type,level,amount,currency,network,status,created_at)
        VALUES(?,?,'level_activation',?,?,'USDT','not_selected','pending',?)""",(update.effective_user.id,shop["id"],target,amount,now()))
     rid=cur.lastrowid; c.commit(); c.close()
     ctx.user_data["payment_request_id"]=rid
     ctx.user_data["state"]="activation_network"
     await update.message.reply_text(
-      f"Level L{target} activation request #{rid}\nAmount: {amount:g} USDT\n\n"
+      f"Level L{target} activation request #{rid}\nAmount: {amount:g} USDT\n"
+      f"Conversion: 1 USDT = INR {rate:,.2f}\nPayable equivalent: INR {amount_inr:,.2f}\n\n"
       "Network choose karein: TRC20 ya BEP20. Payment sirf tab karein jab aap address/network verify kar lein.",
       reply_markup=__import__("telegram").ReplyKeyboardMarkup([["USDT TRC20","USDT BEP20"],["Cancel"]],resize_keyboard=True))
 
@@ -288,7 +303,11 @@ async def payment_network(update,ctx):
     address=PAY_TRON if value=="USDT TRC20" else PAY_BSC
     c=db(); c.execute("UPDATE payment_requests SET network=? WHERE id=? AND owner_id=? AND status='pending'",(value,rid,update.effective_user.id)); c.commit(); c.close()
     ctx.user_data["state"]="payment_proof"
-    await update.message.reply_text(f"Payment address ({value}):\n{address}\n\nPayment ke baad transaction screenshot/photo bhejein. Address aur network dobara check karein.")
+    c=db(); pr=c.execute("SELECT amount,currency FROM payment_requests WHERE id=? AND owner_id=?",(rid,update.effective_user.id)).fetchone(); rate=usdt_inr_rate(c); c.close()
+    inr_equiv=round(float(pr['amount'])*rate,2) if pr and pr['currency']=='USDT' else 0
+    await update.message.reply_text(f"Payment address ({value}):\n{address}\n\n"
+      f"Amount: {float(pr['amount']):g} USDT\nConversion: 1 USDT = INR {rate:,.2f}\nINR equivalent: ₹{inr_equiv:,.2f}\n\n"
+      "USDT payment isi network par bhejein. INR figure sirf reference conversion hai; actual crypto transfer USDT mein hoga. Payment ke baad transaction screenshot/photo bhejein.")
 
 async def payment_photo(update,ctx):
     rid=ctx.user_data.get("payment_request_id")
@@ -301,7 +320,10 @@ async def payment_photo(update,ctx):
     ctx.user_data.clear()
     kb=InlineKeyboardMarkup([[InlineKeyboardButton("Approve",callback_data=f"pay:approve:{rid}"),InlineKeyboardButton("Reject",callback_data=f"pay:reject:{rid}")]])
     try:
-        await ctx.bot.send_photo(ADMIN_ID,photo=photo,caption=f"PAYMENT PROOF #{rid}\nOwner: {row['owner_id']}\nShop: {row['shop_id']}\nType: {row['payment_type']} L{row['level']}\nAmount: {row['amount']} {row['currency']}\nNetwork: {row['network']}\nVerify transaction independently before approving.",reply_markup=kb)
+        rate=usdt_inr_rate()
+        inr_equiv=round(float(row['amount'])*rate,2) if row['currency']=='USDT' else None
+        conversion=f"\nRate: 1 USDT = INR {rate:,.2f}\nINR equivalent: ₹{inr_equiv:,.2f}" if inr_equiv is not None else ""
+        await ctx.bot.send_photo(ADMIN_ID,photo=photo,caption=f"PAYMENT PROOF #{rid}\nOwner: {row['owner_id']}\nShop: {row['shop_id']}\nType: {row['payment_type']} L{row['level']}\nAmount: {row['amount']} {row['currency']}{conversion}\nNetwork: {row['network']}\nVerify transaction independently before approving.",reply_markup=kb)
     except Exception:
         log.exception("Payment proof admin delivery failed")
         await update.message.reply_text("Proof save ho gaya, lekin Admin ko Telegram notification nahi ja saki. Admin se contact karein.")
@@ -371,12 +393,14 @@ async def withdraw(update,ctx):
     available=round(earned-paid-reserved,2)
     if amount>available:
         c.close(); await update.message.reply_text(f"Insufficient recorded balance. Available: INR {available:.2f}"); return
-    cur=c.execute("""INSERT INTO withdrawals(owner_id,shop_id,amount,currency,network,wallet_address,status,created_at)
-      VALUES(?,?,?,'INR',?,?,'pending',?)""",(update.effective_user.id,s["id"],amount,wallet["network"],wallet["address"],now()))
+    rate=usdt_inr_rate(c)
+    amount_usdt=inr_to_usdt(amount,rate)
+    cur=c.execute("""INSERT INTO withdrawals(owner_id,shop_id,amount,currency,network,wallet_address,status,created_at,amount_inr,exchange_rate)
+      VALUES(?,?,?,'INR',?,?,'pending',?,?,?)""",(update.effective_user.id,s["id"],amount,wallet["network"],wallet["address"],now(),amount,rate))
     wid=cur.lastrowid; c.commit(); c.close()
     kb=InlineKeyboardMarkup([[InlineKeyboardButton("Mark PAID",callback_data=f"wd:paid:{wid}"),InlineKeyboardButton("Reject",callback_data=f"wd:reject:{wid}")]])
-    await update.message.reply_text(f"Withdrawal request #{wid} submitted. Amount INR {amount:.2f}; pending Admin review.")
-    try: await ctx.bot.send_message(ADMIN_ID,f"WITHDRAWAL #{wid}\nOwner: {update.effective_user.id}\nAmount: INR {amount:.2f}\nWallet: {wallet['network']} {wallet['address']}\nVerify and actually send payment before Mark PAID.",reply_markup=kb)
+    await update.message.reply_text(f"Withdrawal request #{wid} submitted.\nINR amount: ₹{amount:,.2f}\nRate: 1 USDT = ₹{rate:,.2f}\nUSDT equivalent: {amount_usdt:g} USDT\nStatus: pending Admin review.")
+    try: await ctx.bot.send_message(ADMIN_ID,f"WITHDRAWAL #{wid}\nOwner: {update.effective_user.id}\nINR balance debit: ₹{amount:,.2f}\nConversion rate: 1 USDT = ₹{rate:,.2f}\nUSDT payout equivalent: {amount_usdt:g} USDT\nWallet: {wallet['network']} {wallet['address']}\nManually verify and actually send the USDT equivalent before Mark PAID.",reply_markup=kb)
     except Exception: log.exception("Withdrawal notification failed")
 
 async def withdrawal_review(update,ctx):
@@ -400,8 +424,10 @@ async def withdrawal_review(update,ctx):
     except Exception:
         c.rollback(); log.exception("Withdrawal review failed"); await q.edit_message_text("Withdrawal review failed."); return
     finally: c.close()
-    await q.edit_message_text(f"Withdrawal #{wid}: {status.upper()}.")
-    try: await ctx.bot.send_message(r["owner_id"],f"Withdrawal #{wid}: {status.upper()}.")
+    rate=float(r['exchange_rate'] or usdt_inr_rate()) if 'exchange_rate' in r.keys() else usdt_inr_rate()
+    usdt_amount=inr_to_usdt(float(r['amount']),rate)
+    await q.edit_message_text(f"Withdrawal #{wid}: {status.upper()}\nINR: ₹{float(r['amount']):,.2f} | Rate: 1 USDT = ₹{rate:,.2f} | USDT equivalent: {usdt_amount:g}")
+    try: await ctx.bot.send_message(r["owner_id"],f"Withdrawal #{wid}: {status.upper()}\nINR: ₹{float(r['amount']):,.2f} | Rate: 1 USDT = ₹{rate:,.2f} | USDT equivalent: {usdt_amount:g}")
     except Exception: pass
 
 async def myproductaudit(update,ctx):
@@ -409,6 +435,21 @@ async def myproductaudit(update,ctx):
     if not s: await update.message.reply_text("Shop not found."); return
     c=db(); rows=c.execute("SELECT * FROM product_audit WHERE shop_id=? ORDER BY id DESC LIMIT 20",(s["id"],)).fetchall(); c.close()
     await update.message.reply_text("YOUR PRODUCT AUDIT\n"+("\n".join(f"Product #{r['product_id']} {r['action']}: {r['old_value']} → {r['new_value']} | {r['created_at']}" for r in rows) if rows else "Abhi koi product changes record nahi hain."))
+
+async def setfx(update,ctx):
+    if not admin(update.effective_user.id): return
+    if len(ctx.args)!=1:
+        await update.message.reply_text("Usage: /setfx INR_PER_USDT (e.g. /setfx 110)"); return
+    try:
+        rate=float(ctx.args[0])
+        if not 0.000001 <= rate <= 1000000: raise ValueError()
+    except ValueError:
+        await update.message.reply_text("Valid positive conversion rate enter karein."); return
+    c=db(); old=usdt_inr_rate(c)
+    c.execute("INSERT INTO platform_settings(setting_key,setting_value,updated_by,updated_at) VALUES('usdt_inr_rate',?,?,?) ON CONFLICT(setting_key) DO UPDATE SET setting_value=excluded.setting_value,updated_by=excluded.updated_by,updated_at=excluded.updated_at",(str(rate),ADMIN_ID,now()))
+    c.execute("INSERT INTO admin_audit(admin_id,action,details,created_at) VALUES(?,?,?,?)",(ADMIN_ID,"usdt_inr_rate_changed",f"{old} -> {rate}",now()))
+    c.commit(); c.close()
+    await update.message.reply_text(f"Conversion rate updated: 1 USDT = ₹{rate:,.2f} INR.")
 
 async def setfee(update,ctx):
     if not admin(update.effective_user.id): return
@@ -432,7 +473,7 @@ def main():
       ("setproductlevel",setproductlevel),("myproducts",myproducts),("myorders",myorders),("history",history),
       ("mylevels",mylevels),("audit",lambda u,c:audit(u,c,"product")),("shopaudit",lambda u,c:audit(u,c,"shop")),
       ("owner",owner_audit),("buy",buy),("orders",orders),("orderdone",orderdone),("orderreject",orderreject),
-      ("activate",activate),("setshoplevel",setshoplevel),("withdraw",withdraw),("myproductaudit",myproductaudit),("setfee",setfee)]:
+      ("activate",activate),("setshoplevel",setshoplevel),("withdraw",withdraw),("myproductaudit",myproductaudit),("setfee",setfee),("setfx",setfx)]:
         app.add_handler(CommandHandler(cmd,fn))
     app.add_handler(CallbackQueryHandler(payment_review,pattern=r"^pay:(approve|reject):[0-9]+$"))
     app.add_handler(CallbackQueryHandler(withdrawal_review,pattern=r"^wd:(paid|reject):[0-9]+$"))

@@ -10,6 +10,7 @@ import bot_v3 as v3
 TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 DB = os.getenv("SHOP_DB", v3.DB)
+v3.DB = DB
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("shop_v4")
 
@@ -243,7 +244,7 @@ async def orderreject(update,ctx):
     finally: c.close()
     await update.message.reply_text(f"Order #{oid} rejected and reserved stock restored.")
 
-async def main():
+def main():
     if not TOKEN or not ADMIN_ID: raise RuntimeError("BOT_TOKEN and ADMIN_ID environment variables are required.")
     v3.setup(); v3.ensure_catalog_schema()
     app=ApplicationBuilder().token(TOKEN).build()
@@ -261,4 +262,4 @@ async def main():
     print("SHOP IN INDIA V4 ready; polling starts now.")
     app.run_polling()
 
-if __name__=="__main__": import asyncio; asyncio.run(main())
+if __name__=="__main__": main()

@@ -178,6 +178,31 @@ def test_central_purchase_and_auto_listing():
     return pid, listing_id, inventory_id
 
 
+def test_owner_wallet_and_inventory_design():
+    # Wallet screen: key totals and realised profit are clearly separated.
+    update, message, query = callback_update(101, "m:wallet")
+    asyncio.run(v5.menu_callback(update, context()))
+    wallet = message.replies[0]
+    require("<b>👛 USDT WALLET</b>" in wallet["text"], "Wallet heading is missing")
+    require("Available balance: <b>7.5" in wallet["text"], "Wallet balance is missing")
+    require(wallet["kwargs"].get("parse_mode") == "HTML", "Wallet is not using Telegram HTML")
+    require("💚 <b>Recorded profit:" in wallet["text"], "Green recorded profit label is missing")
+
+    # Inventory screen: sold/available stock and margin stay easy to scan.
+    update, message, query = callback_update(101, "m:products")
+    asyncio.run(v5.menu_callback(update, context()))
+    inventory = message.replies[0]
+    require("<b>📦 MY PRODUCTS & INVENTORY</b>" in inventory["text"],
+            "My Products heading is missing")
+    require("Available quantity: <b>2</b>" in inventory["text"],
+            "Available inventory quantity is missing")
+    require("💚 Expected margin: <b>+0.8 USDT / item</b>" in inventory["text"],
+            "Expected profit margin is missing from inventory")
+    require(inventory["kwargs"].get("parse_mode") == "HTML",
+            "My Products is not using Telegram HTML")
+    print("PASS: Owner wallet and My Products screens use readable Telegram HTML with profit status")
+
+
 def test_list_stock_profit_screen():
     update, message, query = callback_update(101, "rs:listmenu")
     asyncio.run(cc.resale_callback(update, context()))
@@ -367,6 +392,7 @@ def test_failed_central_purchases(pid):
 def main():
     fixture()
     pid, listing_id, inventory_id = test_central_purchase_and_auto_listing()
+    test_owner_wallet_and_inventory_design()
     test_list_stock_profit_screen()
     test_seller_market_screen(listing_id)
     test_resale_buyer_guards_and_sale(listing_id, inventory_id)

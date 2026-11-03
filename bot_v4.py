@@ -355,6 +355,9 @@ async def payment_review(update,ctx):
                 c.execute("UPDATE shops SET level=? WHERE id=?",(new,r["shop_id"]))
                 c.execute("INSERT INTO level_history(shop_id,owner_id,old_level,new_level,reason,actor_id,created_at) VALUES(?,?,?,?,?,?,?)",(r["shop_id"],r["owner_id"],old,new,f"Approved activation payment #{rid}",ADMIN_ID,now()))
                 audit_shop(c,r["shop_id"],r["owner_id"],ADMIN_ID,"level_activated",old,new)
+        if action=="approve" and r["payment_type"]=="wallet_deposit":
+            c.execute("INSERT INTO ledger(transaction_id,shop_id,owner_id,entry_type,amount,currency,note,created_at) VALUES(NULL,?,?, 'deposit_credit',?,'USDT',?,?)",
+                      (r["shop_id"],r["owner_id"],float(r["amount"]),f"Admin-approved deposit #{rid}",now()))
         c.execute("INSERT INTO admin_audit(admin_id,owner_id,action,details,created_at) VALUES(?,?,?,?,?)",(ADMIN_ID,r["owner_id"],"payment_"+status,f"Payment request #{rid}",now()))
         c.commit()
     except Exception:

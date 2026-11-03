@@ -1,6 +1,6 @@
 """V5 Telegram-chat UI: inline level selection, owner panel and deposits."""
 import os, logging
-from telegram import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove
+from telegram import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove, CopyTextButton
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 import bot_v3 as v3
 import bot_v4 as v4
@@ -34,25 +34,11 @@ def owner_kb():
 
 
 async def edit_screen(ctx, update, text, reply_markup=None):
-    """Keep navigation in one bot message; fall back safely if it cannot be edited."""
-    q = getattr(update, "callback_query", None)
-    if q:
-        chat_id = q.message.chat_id
-        message_id = q.message.message_id
-    else:
-        chat_id = update.effective_chat.id
-        message_id = ctx.user_data.get("screen_message_id")
-    if message_id:
-        try:
-            await ctx.bot.edit_message_text(
-                chat_id=chat_id, message_id=message_id,
-                text=text, reply_markup=reply_markup)
-            return
-        except Exception:
-            log.exception("Could not edit the current menu message")
-    sent = await ctx.bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
+    """Append a new screen; never overwrite earlier chat messages."""
+    sent = await ctx.bot.send_message(chat_id=update.effective_chat.id, text=text, reply_markup=reply_markup)
     ctx.user_data["screen_message_id"] = sent.message_id
-    ctx.user_data["screen_chat_id"] = chat_id
+    ctx.user_data["screen_chat_id"] = sent.chat_id
+    return sent
 
 
 def back_dashboard_kb():
@@ -109,7 +95,7 @@ async def level_callback(update,ctx):
     try:
         lv=int(q.data.split(":")[1])
     except (ValueError,IndexError):
-        await q.edit_message_text("Invalid level. Please open /start and try again.")
+        await q.message.reply_text("Invalid level. Please open /start and try again.")
         return
 
     s=v4.shop_for(q.from_user.id)
@@ -235,12 +221,18 @@ async def network_callback(update,ctx):
     c.close()
     ctx.user_data.update({"state":"payment_proof","payment_request_id":rid,
                           "screen_message_id":q.message.message_id,"screen_chat_id":q.message.chat_id})
-    kb=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back to Dashboard",callback_data="m:dashboard")]])
-    await q.edit_message_text(
-        f"{network}\n━━━━━━━━━━━━━━━━━━\nAddress:\n{address}\n"
-        f"Amount: {float(r['amount']):g} USDT\nRate: 1 USDT = INR {rate:,.2f}\n\n"
-        "Send the exact USDT amount on this network, then upload the payment screenshot here. Admin verifies manually.",
-        reply_markup=kb)
+    kb=InlineKeyboardMarkup([
+        [InlineKeyboardButton("📋 Copy Deposit Address",copy_text=CopyTextButton(text=address))],
+        [InlineKeyboardButton("⬅️ Back to Dashboard",callback_data="m:dashboard")]
+    ])
+    await q.message.reply_text(
+        f"💳 <b>{network} DEPOSIT ADDRESS</b>\\n━━━━━━━━━━━━━━━━━━\\n\\n"
+        f"<b><i>Address:</i></b>\\n\\n<code>{address}</code>\\n\\n"
+        f"<b>Amount:</b> {float(r['amount']):g} USDT\\n"
+        f"<b>Rate:</b> 1 USDT = INR {rate:,.2f}\\n\\n"
+        "<i>Send USDT only on the selected network. After payment, upload your transaction screenshot. Admin will verify it manually.</i>",
+        reply_markup=kb,parse_mode="HTML")
+
 
 
 async def menu_callback(update,ctx):

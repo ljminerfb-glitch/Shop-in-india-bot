@@ -6,6 +6,7 @@ import bot_v3 as v3
 import bot_v4 as v4
 import central_catalog as central
 import audit_dashboard as audit
+import runtime_schema
 
 TOKEN=os.getenv("BOT_TOKEN")
 ADMIN_ID=int(os.getenv("ADMIN_ID","0"))
@@ -224,6 +225,7 @@ async def network_callback(update,ctx):
                           "screen_message_id":q.message.message_id,"screen_chat_id":q.message.chat_id})
     rows=[[InlineKeyboardButton("📋 Copy Deposit Address",copy_text=CopyTextButton(text=address))]]
     if is_wallet_deposit:
+        rows.append([InlineKeyboardButton("➕ Add TXID (optional)",callback_data=f"txid:{rid}")])
         rows.append([InlineKeyboardButton("✅ I HAVE DEPOSITED",callback_data="m:depositdone")])
     rows.append([InlineKeyboardButton("⬅️ Back to Dashboard",callback_data="m:dashboard")])
     kb=InlineKeyboardMarkup(rows)
@@ -234,6 +236,34 @@ async def network_callback(update,ctx):
         f"<b>Rate:</b> 1 USDT = INR {rate:,.2f}\n\n"
         + ( "<i>Send USDT only on the selected network. After payment, tap I HAVE DEPOSITED below and upload your transaction screenshot. Admin will verify it manually.</i>" if is_wallet_deposit else "<i>Send USDT only on the selected network. Upload your payment screenshot; Admin will verify it manually.</i>" ),
         reply_markup=kb,parse_mode="HTML")
+
+
+async def txid_callback(update,ctx):
+    q=update.callback_query
+    await q.answer()
+    try:
+        rid=int(q.data.split(":",1)[1])
+    except (ValueError,IndexError):
+        await q.message.reply_text("Invalid deposit request.",reply_markup=back_dashboard_kb())
+        return
+    c=v4.db()
+    try:
+        row=c.execute("""SELECT id FROM payment_requests
+            WHERE id=? AND owner_id=? AND payment_type='wallet_deposit'
+              AND status='pending' AND network IN ('USDT TRC20','USDT BEP20')""",
+            (rid,q.from_user.id)).fetchone()
+    finally:
+        c.close()
+    if not row:
+        await q.message.reply_text("Pending wallet deposit with selected network was not found.",
+                                   reply_markup=back_dashboard_kb())
+        return
+    ctx.user_data.update({"state":"deposit_tx_hash","payment_request_id":rid})
+    await q.message.reply_text(
+        "<b>🔎 ENTER TRANSACTION HASH / TXID</b>\n"
+        "Send the full transaction hash from your wallet or blockchain explorer. "
+        "This step is optional; you can also upload your screenshot directly.",
+        reply_markup=back_dashboard_kb(),parse_mode="HTML")
 
 
 async def menu_callback(update,ctx):
@@ -1225,14 +1255,11 @@ async def dashboard(update,ctx):
 
 def main():
     if not TOKEN or not ADMIN_ID: raise RuntimeError("BOT_TOKEN and ADMIN_ID are required.")
-    v3.setup(); v3.ensure_catalog_schema(); central.setup(); central.resale_setup()
-    c=v4.db()
-    try:
-        columns={row["name"] for row in c.execute("PRAGMA table_info(payment_requests)").fetchall()}
-        if "transaction_hash" not in columns:
-            c.execute("ALTER TABLE payment_requests ADD COLUMN transaction_hash TEXT")
-            c.commit()
-    finally: c.close()
+    v3.setup()
+    v3.ensure_catalog_schema()
+    runtime_schema.ensure_schema(v4.DB)
+    central.setup()
+    central.resale_setup()
     app=ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start",start)); app.add_handler(CommandHandler("dashboard",dashboard))
     for cmd,fn in [("help",help_command),("support",support_command),("admin",admin_panel),("verifywallet",v3.verify_wallet),
@@ -1245,6 +1272,7 @@ def main():
     app.add_handler(CallbackQueryHandler(level_pay_callback,pattern=r"^lvpay:[1-5]$"))
     app.add_handler(CallbackQueryHandler(level_back_callback,pattern=r"^lvback$"))
     app.add_handler(CallbackQueryHandler(network_callback,pattern=r"^net:[0-9]+:(trc|bep)$"))
+    app.add_handler(CallbackQueryHandler(txid_callback,pattern=r"^txid:[0-9]+$"))
     app.add_handler(CallbackQueryHandler(menu_callback,pattern=r"^m:(market|level1|sellermarket|deposit|depositstart|depositfund|deposit_fund|deposit-fund|depositdone|deposits|withdraw|withdrawsetup|withdrawsetupedit|wallet|products|orders|history|profile|dashboard|support)$"))
     app.add_handler(CallbackQueryHandler(admin_panel_callback,pattern=r"^adm:(home|owners|shops|payments|levelpayments|withdrawals|withdrawwallets|products|orders|levels|settings|central|resale|audit|back)$"))
     app.add_handler(CallbackQueryHandler(central.resale_callback,pattern=r"^rs:(list:[0-9]+|listmenu|market|review:[0-9]+|buy:[0-9]+:[0-9]+)$"))

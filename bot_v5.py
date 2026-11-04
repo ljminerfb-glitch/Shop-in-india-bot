@@ -483,8 +483,11 @@ async def menu_callback(update,ctx):
         else:
             body+="No other merchant listings available at your level right now."
         await q.message.reply_text(body[:4000],reply_markup=InlineKeyboardMarkup(
-            [[InlineKeyboardButton(f"Buy #{r['id']} ×1",callback_data=f"rs:buy:{r['id']}:1"),
-              InlineKeyboardButton("Buy ×5",callback_data=f"rs:buy:{r['id']}:5")] for r in resale]+
+            [([InlineKeyboardButton(f"Buy #{r['id']} ×1",callback_data=f"rs:buy:{r['id']}:1"),
+               InlineKeyboardButton("Buy ×5",callback_data=f"rs:buy:{r['id']}:5")]
+              if int(r["remaining_quantity"])>=5 else
+              [InlineKeyboardButton(f"Buy #{r['id']} ×1",callback_data=f"rs:buy:{r['id']}:1")])
+             for r in resale]+
             [[InlineKeyboardButton("⬅️ Dashboard",callback_data="m:dashboard")]]),parse_mode="HTML")
         legacy_body="<b>LEGACY INR MARKETPLACE</b>\n<i>Separate from USDT resale listings</i>"
         legacy_body+="\n\n".join(
@@ -494,11 +497,19 @@ async def menu_callback(update,ctx):
             for r in rows) if rows else "\nNo INR products are published. Your USDT listings appear above."
         await q.message.reply_text(legacy_body[:4000],reply_markup=back_dashboard_kb(),parse_mode="HTML")
     elif action=="products":
+        central.resale_setup()
         c=v4.db()
         try:
             rows=c.execute("""SELECT i.catalog_id,i.quantity,i.remaining_quantity,i.unit_cost_usdt,i.status,
-                p.title FROM central_inventory i JOIN central_catalog p ON p.id=i.catalog_id
+                p.title,p.level_required,
+                (SELECT l.ask_price_usdt FROM resale_listings l
+                 WHERE l.inventory_id=i.id AND l.status='active' AND l.remaining_quantity>0
+                 ORDER BY l.id DESC LIMIT 1) current_ask
+                FROM central_inventory i JOIN central_catalog p ON p.id=i.catalog_id
                 WHERE i.owner_id=? ORDER BY i.id DESC LIMIT 30""",(q.from_user.id,)).fetchall()
+            level2_margin=c.execute(
+                "SELECT profit_min,profit_max FROM level_settings WHERE level=2"
+            ).fetchone()
             legacy=c.execute("SELECT id,title,price,currency,stock,active FROM products WHERE shop_id=? ORDER BY id DESC LIMIT 20",(s["id"],)).fetchall()
         finally: c.close()
         body="<b>📦 MY PRODUCTS & INVENTORY</b>\n━━━━━━━━━━━━━━━━━━\n"
@@ -509,11 +520,26 @@ async def menu_callback(update,ctx):
                 remaining=int(r["remaining_quantity"])
                 cost=float(r["unit_cost_usdt"])
                 state="🟢 IN STOCK" if remaining>0 else "🔴 SOLD OUT"
-                expected=round(remaining*0.8,6) if int(s["level"])==1 else 0
-                margin=(f"💚 Expected margin: <b>+0.8 USDT / item</b> | Potential: <b>+{expected:g} USDT</b>\n"
-                        if int(s["level"])==1 and remaining>0 else "")
+                item_level=int(r["level_required"])
+                if remaining>0 and item_level==1:
+                    expected=round(remaining*0.8,6)
+                    margin=(f"💚 Expected margin: <b>+0.8 USDT / item</b> | Potential: <b>+{expected:g} USDT</b>\n")
+                elif remaining>0 and item_level==2:
+                    ask=float(r["current_ask"] or 0)
+                    if ask>0 and cost>0:
+                        actual_profit=round(ask-cost,6)
+                        actual_pct=actual_profit/cost*100
+                        potential=round(actual_profit*remaining,6)
+                        margin=(f"💚 Resale price: <b>{ask:g} USDT / item</b> | Margin: <b>{actual_pct:.2f}%</b>\n"
+                                f"Potential profit if all remaining units sell: <b>+{potential:g} USDT</b>\n")
+                    else:
+                        low=float(level2_margin["profit_min"]) if level2_margin else 2.0
+                        high=float(level2_margin["profit_max"]) if level2_margin else 6.5
+                        margin=(f"💚 Resale margin reference: <b>{low:g}%–{high:g}%</b>\n")
+                else:
+                    margin=""
                 body+=(
-                    f"\n<b>{html.escape(str(r['title']))}</b>\n"
+                    f"\n<b>{html.escape(str(r['title']))}</b> • L{item_level}\n"
                     f"Available quantity: <b>{remaining}</b>\n"
                     f"Purchase cost: {cost:g} USDT / item\n"
                     f"{margin}Status: {state}\n"

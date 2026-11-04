@@ -123,11 +123,19 @@ async def level_callback(update,ctx):
         return
 
     target="Unlimited product access" if not cfg["product_target"] else f"Access to up to {cfg['product_target']} products"
-    benefits=(
-        f"📦 Product access: {target}\n"
-        f"📈 Profit/margin reference: {float(cfg['profit_min']):g}%–{float(cfg['profit_max']):g}%\n"
-        "🔓 Marketplace access according to this level"
-    )
+    if lv==2:
+        benefits=(
+            f"📦 Product access: {target}\n"
+            "💚 Resale formula: purchase cost + random margin of 2.00–3.00 USDT per item\n"
+            "🎯 Every merchant gets a different saved margin for each product\n"
+            "🔓 Level 2 resale marketplace access"
+        )
+    else:
+        benefits=(
+            f"📦 Product access: {target}\n"
+            f"📈 Profit/margin reference: {float(cfg['profit_min']):g}%–{float(cfg['profit_max']):g}%\n"
+            "🔓 Marketplace access according to this level"
+        )
     kb=InlineKeyboardMarkup([
         [InlineKeyboardButton(f"💳 Continue to payment • {float(cfg['activation_usdt']):g} USDT",callback_data=f"lvpay:{lv}")],
         [InlineKeyboardButton("⬅️ Back to all levels",callback_data="lvback")]
@@ -137,7 +145,7 @@ async def level_callback(update,ctx):
         f"Activation price: <b>{float(cfg['activation_usdt']):g} USDT</b>\n"
         f"INR reference: ₹{float(cfg['activation_usdt'])*v4.usdt_inr_rate():,.2f}\n\n"
         f"<b>LEVEL BENEFITS</b>\n{html.escape(benefits)}\n\n"
-        "<i>Profit figures are references, not guaranteed earnings. Level activates after Admin verifies payment.</i>",
+        "<i>Margins are expected resale amounts, not guaranteed earnings. Profit is recorded only after a completed sale. Level activates after Admin verifies payment.</i>",
         reply_markup=kb,parse_mode="HTML")
 
 async def level_pay_callback(update,ctx):

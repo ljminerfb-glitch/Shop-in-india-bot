@@ -323,7 +323,9 @@ async def payment_photo(update,ctx):
         c.execute("UPDATE payment_requests SET screenshot_file_id=?,transaction_hash=COALESCE(?,transaction_hash) WHERE id=?",(photo,tx_hash or None,rid))
     except Exception:
         c.execute("UPDATE payment_requests SET screenshot_file_id=? WHERE id=?",(photo,rid))
-    saved_hash=tx_hash or (row["transaction_hash"] if "transaction_hash" in row.keys() else (row["tx_hash"] if "tx_hash" in row.keys() else None))
+    saved_hash=(tx_hash or
+                 (row["transaction_hash"] if "transaction_hash" in row.keys() else None) or
+                 (row["tx_hash"] if "tx_hash" in row.keys() else None))
     c.commit(); c.close()
     ctx.user_data.clear()
     kb=InlineKeyboardMarkup([

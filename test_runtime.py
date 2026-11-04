@@ -462,7 +462,18 @@ def test_resale_buyer_guards_and_sale(listing_id, inventory_id):
 
 
 def test_level2_catalogue_and_purchase_flow():
+    settings_update,settings_message=message_update(999999,"/setlevel")
+    settings_ctx=context()
+    settings_ctx.args=["2","50","50","2.0","6.5"]
+    asyncio.run(v4.setlevel(settings_update,settings_ctx))
+    require(any("Saved L2 settings" in x["text"] for x in settings_message.replies),
+            "Admin /setlevel did not save Level 2 activation, target and margin settings")
     c=v4.db()
+    configured=c.execute(
+        "SELECT activation_usdt,product_target,profit_min,profit_max FROM level_settings WHERE level=2"
+    ).fetchone()
+    require(tuple(configured)==(50.0,50,2.0,6.5),
+            f"/setlevel did not persist requested Level 2 settings: {tuple(configured)!r}")
     rows=c.execute(
         "SELECT id,title,price_usdt,stock,image_path FROM central_catalog WHERE level_required=2 ORDER BY id"
     ).fetchall()
@@ -520,6 +531,13 @@ def test_level2_catalogue_and_purchase_flow():
             f"Level 2 resale margin is outside 2.0–6.5%: {margin_pct:.4f}%")
     listing_id=int(listing["id"])
     c.close()
+
+    # My Products displays the actual random resale price and percentage for Level 2 stock.
+    products_update,products_message,_=callback_update(303,"m:products")
+    asyncio.run(v5.menu_callback(products_update,context()))
+    require("Resale price:" in products_message.replies[0]["text"]
+            and "Margin:" in products_message.replies[0]["text"],
+            "Level 2 My Products screen does not show its actual resale price and margin")
 
     add_deposit(404,4,300)
     market_update,market_message,_=callback_update(404,"rs:market")

@@ -29,7 +29,6 @@ def owner_kb():
     return InlineKeyboardMarkup([
       [InlineKeyboardButton("🛍 Level 1 Central Catalogue",callback_data="m:market")],
       [InlineKeyboardButton("🏬 Seller Marketplace",callback_data="m:sellermarket"),InlineKeyboardButton("💳 Deposit",callback_data="m:deposit")],
-      [InlineKeyboardButton("🧾 Deposits",callback_data="m:deposits")],
       [InlineKeyboardButton("💸 Withdraw",callback_data="m:withdraw"),InlineKeyboardButton("👛 Wallet",callback_data="m:wallet")],
       [InlineKeyboardButton("📦 My Products",callback_data="m:products"),InlineKeyboardButton("🧾 My Orders",callback_data="m:orders")],
       [InlineKeyboardButton("📊 Profit & History",callback_data="m:history"),InlineKeyboardButton("👤 My Account",callback_data="m:profile")],
@@ -223,7 +222,7 @@ async def network_callback(update,ctx):
                           "screen_message_id":q.message.message_id,"screen_chat_id":q.message.chat_id})
     kb=InlineKeyboardMarkup([
         [InlineKeyboardButton("📋 Copy Deposit Address",copy_text=CopyTextButton(text=address))],
-        [InlineKeyboardButton("✅ I HAVE DONE DEPOSIT",callback_data="m:depositdone")],
+        [InlineKeyboardButton("✅ I HAVE DEPOSITED",callback_data="m:depositdone")],
         [InlineKeyboardButton("⬅️ Back to Dashboard",callback_data="m:dashboard")]
     ])
     await q.message.reply_text(
@@ -261,7 +260,16 @@ async def menu_callback(update,ctx):
                                   reply_markup=back_dashboard_kb())
         return
 
-    if action=="deposits":
+    if action=="deposit":
+        kb=InlineKeyboardMarkup([
+            [InlineKeyboardButton("➕ Make Deposit",callback_data="m:depositstart")],
+            [InlineKeyboardButton("🧾 Deposit History",callback_data="m:deposits")],
+            [InlineKeyboardButton("⬅️ Back to Dashboard",callback_data="m:dashboard")]
+        ])
+        await q.message.reply_text(
+            "<b>💳 DEPOSIT CENTER</b>\\n━━━━━━━━━━━━━━━━━━\\n\\nChoose an option below:",
+            reply_markup=kb,parse_mode="HTML")
+    elif action=="deposits":
         c=v4.db()
         try:
             rows=c.execute("""SELECT id,amount,currency,status,created_at,admin_note FROM payment_requests
@@ -283,22 +291,32 @@ async def menu_callback(update,ctx):
         await q.message.reply_text(body,reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back to Dashboard",callback_data="m:dashboard")]]),parse_mode="HTML")
     elif action=="depositdone":
         rid=ctx.user_data.get("payment_request_id")
-        if not rid:
-            await q.message.reply_text("Please open Deposit and create a deposit request first.",reply_markup=back_dashboard_kb()); return
+        if not rid or ctx.user_data.get("state")!="await_deposit_done":
+            await q.message.reply_text("Please complete the deposit amount and network selection first.",reply_markup=back_dashboard_kb()); return
         c=v4.db()
-        try: row=c.execute("SELECT id FROM payment_requests WHERE id=? AND owner_id=? AND payment_type='wallet_deposit' AND status='pending'",(rid,q.from_user.id)).fetchone()
-        finally: c.close()
+        try:
+            row=c.execute(
+                "SELECT id,payment_type FROM payment_requests WHERE id=? AND owner_id=? "
+                "AND payment_type IN ('wallet_deposit','level_activation') AND status='pending'",
+                (rid,q.from_user.id)).fetchone()
+        finally:
+            c.close()
         if not row:
-            await q.message.reply_text("This deposit request is no longer pending.",reply_markup=back_dashboard_kb()); return
-        ctx.user_data["state"]="deposit_tx_hash"
-        await q.message.reply_text("📸 <b>Send Payment Screenshot</b>\n━━━━━━━━━━━━━━━━━━\nFirst send your transaction hash (TXID), then upload the payment screenshot/photo.",reply_markup=back_dashboard_kb(),parse_mode="HTML")
-    elif action in ("deposit","depositfund","deposit_fund","deposit-fund"):
+            await q.message.reply_text("This payment request is no longer pending.",reply_markup=back_dashboard_kb()); return
+        ctx.user_data["state"]="payment_proof"
+        await q.message.reply_text(
+            "<b>📸 UPLOAD YOUR PAYMENT SCREENSHOT</b>\\n━━━━━━━━━━━━━━━━━━\\n"
+            "Send a clear screenshot of your completed USDT transfer. "
+            "Your proof will be sent to Admin for manual verification. "
+            "Your payment will be credited or activated only after Admin approves it.",
+            reply_markup=back_dashboard_kb(),parse_mode="HTML")
+    elif action=="depositstart" or action in ("depositfund","deposit_fund","deposit-fund"):
         ctx.user_data["state"]="deposit_amount"
         await q.message.reply_text(
-            "<b>💳 DEPOSIT USDT</b>\n━━━━━━━━━━━━━━━━━━\n"
-            "Enter the amount you want to add to your merchant wallet.\n"
-            "<i>Minimum amount must be greater than zero.</i>\n\n"
-            "Next, select TRC20 or BEP20 and upload your transaction proof for Admin verification.",
+            "<b>💳 DEPOSIT USDT</b>\\n━━━━━━━━━━━━━━━━━━\\n"
+            "Enter the amount you want to add to your merchant wallet.\\n"
+            "<i>Minimum amount must be greater than zero.</i>\\n\\n"
+            "Next, select TRC20 or BEP20. After sending payment, tap I HAVE DEPOSITED and upload your screenshot.",
             reply_markup=back_dashboard_kb(),parse_mode="HTML")
     elif action=="withdrawsetup":
         c=v4.db()
@@ -344,10 +362,13 @@ async def menu_callback(update,ctx):
         if not re.fullmatch(r"T[1-9A-HJ-NP-Za-km-z]{33}",address):
             ctx.user_data["state"]="withdraw_setup_address"
             await q.message.reply_text(
-                "<b>💸 WITHDRAW — ADD PAYOUT ADDRESS</b>\\n━━━━━━━━━━━━━━━━━━\\n"
-                "Apna USDT TRC20 (TRON) withdrawal address yahan send karein.\\n"
+                "<b>🔐 WITHDRAW SETUP REQUIRED</b>\\n━━━━━━━━━━━━━━━━━━\\n"
+                "Pehle apna USDT TRC20 withdrawal address save karein.\\n"
                 "<i>Address T se start hona chahiye. Sirf TRC20 accepted hai.</i>",
-                reply_markup=back_dashboard_kb(),parse_mode="HTML")
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔐 OPEN WITHDRAW SETUP",callback_data="m:withdrawsetupedit")],
+                    [InlineKeyboardButton("⬅️ Back to Dashboard",callback_data="m:dashboard")]]),
+                parse_mode="HTML")
             return
         available=available_withdrawal_usdt(q.from_user.id)
         ctx.user_data["state"]="withdraw_amount"
@@ -671,15 +692,9 @@ async def text_handler(update,ctx):
             return
         shop=v4.shop_for(update.effective_user.id)
         if not shop or shop["status"]!="approved":
-            available=available_withdrawal_usdt(update.effective_user.id)
-        ctx.user_data["state"]="withdraw_amount"
-        await edit_screen(ctx,update,
-            "<b>✅ WITHDRAW ADDRESS SAVED</b>\\n━━━━━━━━━━━━━━━━━━\\n"
-            f"Address: <code>{html.escape(address)}</code>\\n\\n"
-            f"Available sale earnings: <b>{available:.6f} USDT</b>\\n"
-            "Ab withdrawal amount USDT mein send karein.",
-            reply_markup=back_dashboard_kb())
-        return
+            ctx.user_data.pop("state",None)
+            await edit_screen(ctx,update,"Approved shop required.",reply_markup=back_dashboard_kb())
+            return
         c=v4.db()
         try:
             c.execute("""INSERT INTO owner_wallets(owner_id,network,address,updated_at,verified)
@@ -701,21 +716,22 @@ async def text_handler(update,ctx):
             return
         finally:
             c.close()
-        ctx.user_data.pop("state",None)
+        available=available_withdrawal_usdt(update.effective_user.id)
+        ctx.user_data["state"]="withdraw_amount"
         await edit_screen(ctx,update,
-            "<b>✅ WITHDRAW SETUP SAVED</b>\n━━━━━━━━━━━━━━━━━━\n"
-            "Network: <b>USDT TRC20</b>\n"
-            f"Address: <code>{html.escape(address)}</code>\n\n"
-            "Future withdrawal requests will automatically use this saved address.",
+            "<b>✅ WITHDRAW ADDRESS SAVED</b>\\n━━━━━━━━━━━━━━━━━━\\n"
+            f"Address: <code>{html.escape(address)}</code>\\n\\n"
+            f"Available sale earnings: <b>{available:.6f} USDT</b>\\n"
+            "Ab withdrawal amount USDT mein send karein.",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("💸 WITHDRAW NOW",callback_data="m:withdraw")],
                 [InlineKeyboardButton("⬅️ Dashboard",callback_data="m:dashboard")]]))
         try:
             await ctx.bot.send_message(ADMIN_ID,
-                f"<b>🔐 MERCHANT WITHDRAWAL ADDRESS SAVED</b>\n"
-                f"Merchant: <code>{update.effective_user.id}</code>\n"
-                f"Shop: <b>{html.escape(str(shop['shop_name']))}</b> • #{shop['id']}\n"
-                f"Network: <b>USDT TRC20</b>\nAddress: <code>{html.escape(address)}</code>",
+                f"<b>🔐 MERCHANT WITHDRAWAL ADDRESS SAVED</b>\\n"
+                f"Merchant: <code>{update.effective_user.id}</code>\\n"
+                f"Shop: <b>{html.escape(str(shop['shop_name']))}</b> • #{shop['id']}\\n"
+                f"Network: <b>USDT TRC20</b>\\nAddress: <code>{html.escape(address)}</code>",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("📋 COPY ADDRESS",copy_text=CopyTextButton(text=address))],
                     [InlineKeyboardButton("🔐 All Merchant Wallets",callback_data="adm:withdrawwallets")]]),

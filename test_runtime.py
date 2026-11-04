@@ -461,6 +461,71 @@ def test_resale_buyer_guards_and_sale(listing_id, inventory_id):
     print("PASS: Non-Level 1 seller listing blocked without stock change")
 
 
+def test_merchant_level_upgrade_option():
+    # Dashboard must expose a dedicated upgrade button for approved active shops.
+    dashboard_buttons=[
+        button.callback_data
+        for row in v5.owner_kb().inline_keyboard
+        for button in row
+        if getattr(button,"callback_data",None)
+    ]
+    require("m:upgrade" in dashboard_buttons,
+            "Merchant dashboard is missing the Upgrade Shop Level button")
+
+    update,message,query=callback_update(101,"m:upgrade")
+    ctx=context()
+    asyncio.run(v5.menu_callback(update,ctx))
+    require(len(message.replies)==1, "Upgrade menu did not open")
+    require("Current active level: <b>LEVEL 1</b>" in message.replies[0]["text"],
+            "Upgrade menu does not show the merchant's active Level 1")
+    upgrade_buttons=callback_data(message.replies[0])
+    require("lv:2" in upgrade_buttons,
+            "Level 1 merchant cannot choose Level 2 from upgrade menu")
+    require("lv:1" not in upgrade_buttons,
+            "Upgrade menu must not offer the already-active Level 1")
+
+    # Choosing Level 2 displays the correct activation amount and payment action.
+    detail_update,detail_message,_=callback_update(101,"lv:2")
+    asyncio.run(v5.level_callback(detail_update,ctx))
+    require("Activation price: <b>50 USDT</b>" in detail_message.replies[0]["text"],
+            "Level 2 upgrade screen does not show the 50 USDT fee")
+    require("lvpay:2" in callback_data(detail_message.replies[0]),
+            "Level 2 upgrade screen is missing Continue to Payment")
+
+    # Continue to payment creates one pending activation request, without duplicates.
+    pay_update,pay_message,_=callback_update(101,"lvpay:2")
+    asyncio.run(v5.level_pay_callback(pay_update,ctx))
+    require("Amount: <b>50 USDT</b>" in pay_message.replies[0]["text"],
+            "Level 2 payment screen does not request 50 USDT")
+    require("net:" in " ".join(callback_data(pay_message.replies[0])),
+            "Level 2 payment screen is missing TRC20/BEP20 choices")
+    c=v4.db()
+    requests=c.execute(
+        "SELECT id,amount,status FROM payment_requests WHERE owner_id=101 AND payment_type='level_activation' AND level=2"
+    ).fetchall()
+    require(len(requests)==1 and float(requests[0]["amount"])==50.0 and requests[0]["status"]=="pending",
+            "Level 2 upgrade payment request was not saved correctly")
+    request_id=int(requests[0]["id"])
+    c.close()
+
+    duplicate_update,_,_=callback_update(101,"lvpay:2")
+    asyncio.run(v5.level_pay_callback(duplicate_update,ctx))
+    c=v4.db()
+    count=c.execute(
+        "SELECT COUNT(*) FROM payment_requests WHERE owner_id=101 AND payment_type='level_activation' AND level=2 AND status='pending'"
+    ).fetchone()[0]
+    c.close()
+    require(count==1,"Repeated Level 2 payment tap created duplicate pending requests")
+
+    # Back from the Level 2 detail must return to upgrade choices, not the all-level onboarding menu.
+    back_update,back_message,_=callback_update(101,"lvback")
+    asyncio.run(v5.level_back_callback(back_update,ctx))
+    back_buttons=callback_data(back_message.replies[0])
+    require("lv:2" in back_buttons and "lv:1" not in back_buttons,
+            "Upgrade Back button did not return to higher levels only")
+    print("PASS: Merchant dashboard Level 2 upgrade option, 50 USDT payment request and Back navigation")
+
+
 def test_level2_catalogue_and_purchase_flow():
     settings_update,settings_message=message_update(999999,"/setlevel")
     settings_ctx=context()
@@ -1133,6 +1198,7 @@ def main():
     test_list_stock_profit_screen()
     test_seller_market_screen(listing_id)
     test_resale_buyer_guards_and_sale(listing_id, inventory_id)
+    test_merchant_level_upgrade_option()
     test_level2_catalogue_and_purchase_flow()
     test_admin_resale_flow(listing_id, inventory_id)
     test_merchant_deposit_screenshot_and_admin_approval()

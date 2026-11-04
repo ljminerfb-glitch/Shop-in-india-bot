@@ -773,7 +773,7 @@ async def text_handler(update,ctx):
         rate=v4.usdt_inr_rate(c)
         c.commit()
         c.close()
-        ctx.user_data.update({"state":"payment_proof","payment_request_id":rid})
+        ctx.user_data.update({"state":"await_deposit_done","payment_request_id":rid})
         kb=InlineKeyboardMarkup([
             [InlineKeyboardButton("🔵 USDT TRC20",callback_data=f"net:{rid}:trc"),
              InlineKeyboardButton("🔵 USDT BEP20",callback_data=f"net:{rid}:bep")],

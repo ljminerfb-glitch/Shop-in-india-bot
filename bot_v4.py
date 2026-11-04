@@ -330,7 +330,7 @@ async def payment_photo(update,ctx):
         log.exception("Payment proof admin delivery failed")
         await update.message.reply_text("Proof save ho gaya, lekin Admin ko Telegram notification nahi ja saki. Admin se contact karein.")
         return
-    await update.message.reply_text(f"Payment proof request #{rid} Admin review ke liye bhej di gayi hai.",reply_markup=v3.main_keyboard())
+    await update.message.reply_text(f"Payment proof request #{rid} Admin review ke liye bhej di gayi hai.",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back to Dashboard",callback_data="m:dashboard")]]))
 
 async def payment_review(update,ctx):
     q=update.callback_query

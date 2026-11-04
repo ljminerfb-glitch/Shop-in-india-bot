@@ -1256,8 +1256,8 @@ async def dashboard(update,ctx):
 def main():
     if not TOKEN or not ADMIN_ID: raise RuntimeError("BOT_TOKEN and ADMIN_ID are required.")
     v3.setup()
-    v3.ensure_catalog_schema()
     runtime_schema.ensure_schema(v4.DB)
+    v3.ensure_catalog_schema()
     central.setup()
     central.resale_setup()
     app=ApplicationBuilder().token(TOKEN).build()

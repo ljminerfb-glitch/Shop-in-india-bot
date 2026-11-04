@@ -282,7 +282,7 @@ def test_admin_catalogue_pagination():
     require(product_card_ids(ctx.bot.sent)==ids[:5],
             "Admin Level 1 page must show only the first five products")
     nav=next(x for x in ctx.bot.sent if "ccadminpage:1" in sent_callback_data(x))
-    require("PAGE 1/3" in nav["kwargs"].get("text",""),
+    require("PAGE 1/3" in sent_text(nav),
             "Admin catalogue page indicator or Next 5 button is missing")
     before=len(ctx.bot.sent)
     next_update,_,_=callback_update(999999,"ccadminpage:1")

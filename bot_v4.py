@@ -323,6 +323,7 @@ async def payment_photo(update,ctx):
         c.execute("UPDATE payment_requests SET screenshot_file_id=?,transaction_hash=COALESCE(?,transaction_hash) WHERE id=?",(photo,tx_hash or None,rid))
     except Exception:
         c.execute("UPDATE payment_requests SET screenshot_file_id=? WHERE id=?",(photo,rid))
+    saved_hash=(row["transaction_hash"] if "transaction_hash" in row.keys() else row["tx_hash"])
     c.commit(); c.close()
     ctx.user_data.clear()
     kb=InlineKeyboardMarkup([
@@ -333,7 +334,7 @@ async def payment_photo(update,ctx):
         rate=usdt_inr_rate()
         inr_equiv=round(float(row['amount'])*rate,2) if row['currency']=='USDT' else None
         conversion=f"\nRate: 1 USDT = INR {rate:,.2f}\nINR equivalent: ₹{inr_equiv:,.2f}" if inr_equiv is not None else ""
-        await ctx.bot.send_photo(ADMIN_ID,photo=photo,caption=f"PAYMENT PROOF #{rid}\nOwner: {row['owner_id']}\nShop: {row['shop_id']}\nType: {row['payment_type']} L{row['level']}\nAmount: {row['amount']} {row['currency']}{conversion}\nNetwork: {row['network']}\nTransaction Hash: {row['transaction_hash'] or 'Not provided'}\nVerify transaction independently before approving.",reply_markup=kb)
+        await ctx.bot.send_photo(ADMIN_ID,photo=photo,caption=f"PAYMENT PROOF #{rid}\nOwner: {row['owner_id']}\nShop: {row['shop_id']}\nType: {row['payment_type']} L{row['level']}\nAmount: {row['amount']} {row['currency']}{conversion}\nNetwork: {row['network']}\nTransaction Hash: {saved_hash or 'Not provided'}\nVerify transaction independently before approving.",reply_markup=kb)
     except Exception:
         log.exception("Payment proof admin delivery failed")
         await update.message.reply_text("Proof save ho gaya, lekin Admin ko Telegram notification nahi ja saki. Admin se contact karein.")

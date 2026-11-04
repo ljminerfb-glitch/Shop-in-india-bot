@@ -389,7 +389,7 @@ def test_admin_resale_flow(listing_id, inventory_id):
 def test_failed_central_purchases(pid):
     c = v4.db()
     c.execute("""INSERT INTO ledger(shop_id,owner_id,entry_type,amount,currency,note,created_at)
-                 VALUES(1,101,'resale_purchase_debit',20,'USDT','isolated test spend',?)""", (v4.now(),))
+                 VALUES(1,101,'resale_purchase_debit',1000,'USDT','isolated test spend',?)""", (v4.now(),))
     c.commit()
     c.close()
     replies = run_central_buy(101, pid, 1)

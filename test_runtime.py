@@ -412,6 +412,9 @@ def test_failed_central_purchases(pid):
 
 def test_merchant_deposit_screenshot_and_admin_approval():
     owner_ctx=context()
+    c=v4.db()
+    credits_before=c.execute("SELECT COUNT(*) FROM ledger WHERE owner_id=101 AND entry_type='deposit_credit'").fetchone()[0]
+    c.close()
 
     dashboard=v5.owner_kb()
     dashboard_callbacks=[button.callback_data for row in dashboard.inline_keyboard for button in row]
@@ -462,7 +465,7 @@ def test_merchant_deposit_screenshot_and_admin_approval():
     credits=c.execute("SELECT COUNT(*) FROM ledger WHERE owner_id=101 AND entry_type='deposit_credit'").fetchone()[0]
     require(request["status"]=="pending" and request["screenshot_file_id"]=="merchant-proof-photo",
             "Screenshot was not saved while leaving request pending")
-    require(credits==0,"Wallet was credited before Admin approval")
+    require(credits==credits_before,"Wallet was credited before Admin approval")
     c.close()
 
     admin_update,admin_message,_=callback_update(999999,f"pay:approve:{rid}")
@@ -470,9 +473,10 @@ def test_merchant_deposit_screenshot_and_admin_approval():
     asyncio.run(v4.payment_review(admin_update,context()))
     c=v4.db()
     request=c.execute("SELECT status FROM payment_requests WHERE id=?",(rid,)).fetchone()
-    credit=c.execute("SELECT amount FROM ledger WHERE owner_id=101 AND entry_type='deposit_credit' ORDER BY id DESC LIMIT 1").fetchone()
+    credits_after=c.execute("SELECT COUNT(*) FROM ledger WHERE owner_id=101 AND entry_type='deposit_credit'").fetchone()[0]
+    credit=c.execute("SELECT amount FROM ledger WHERE owner_id=101 AND entry_type='deposit_credit' AND note LIKE ? ORDER BY id DESC LIMIT 1", (f"%#{rid}%",)).fetchone()
     require(request["status"]=="approved","Admin approval did not update deposit status")
-    require(credit is not None and abs(float(credit["amount"])-12.5)<1e-8,
+    require(credits_after==credits_before+1 and credit is not None and abs(float(credit["amount"])-12.5)<1e-8,
             "Approved deposit did not credit the merchant wallet exactly once")
     c.close()
     print("PASS: Deposit Center, network selection, I HAVE DEPOSITED, screenshot delivery and Admin approval")

@@ -667,8 +667,10 @@ async def list_inventory(update,ctx):
         await update.effective_message.reply_text("<b>🔒 APPROVED LEVEL REQUIRED</b>\nYour shop must be approved and active at Level 1 or Level 2.",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Dashboard",callback_data="m:dashboard")]]),parse_mode="HTML"); return
     resale_setup(); c=v4.db()
     rows=c.execute("""SELECT i.id,i.catalog_id,i.remaining_quantity,i.unit_cost_usdt,p.title,p.level_required,
+      cfg.profit_min AS level_profit_min,cfg.profit_max AS level_profit_max,
       COALESCE((SELECT SUM(l.remaining_quantity) FROM resale_listings l WHERE l.inventory_id=i.id AND l.status='active'),0) listed
       FROM central_inventory i JOIN central_catalog p ON p.id=i.catalog_id
+      LEFT JOIN level_settings cfg ON cfg.level=p.level_required
       WHERE i.owner_id=? AND p.level_required<=? AND i.remaining_quantity>0 ORDER BY i.id DESC""",
       (update.effective_user.id,int(shop["level"]))).fetchall()
     c.close()
@@ -682,9 +684,8 @@ async def list_inventory(update,ctx):
             low_profit=high_profit=0.8
             price=round(unit_cost+0.8,6)
         else:
-            item_settings=c.execute("SELECT profit_min,profit_max FROM level_settings WHERE level=?",(item_level,)).fetchone()
-            low_pct=float(item_settings["profit_min"]) if item_settings else 2.0
-            high_pct=float(item_settings["profit_max"]) if item_settings else 6.5
+            low_pct=float(r["level_profit_min"]) if r["level_profit_min"] is not None else 2.0
+            high_pct=float(r["level_profit_max"]) if r["level_profit_max"] is not None else 6.5
             low_profit=round(unit_cost*low_pct/100.0,6)
             high_profit=round(unit_cost*high_pct/100.0,6)
             price=round(unit_cost+(low_profit+high_profit)/2,6)

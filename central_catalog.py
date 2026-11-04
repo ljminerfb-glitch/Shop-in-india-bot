@@ -762,7 +762,7 @@ async def list_inventory(update,ctx):
             f"💚 <b>Expected profit: +{profit_label} USDT / sold item</b>\n"
             f"🟢 Listed stock potential: <b>+{listed_profit:g} USDT</b>\n"
             f"🟢 Free stock potential: <b>+{free_profit:g} USDT</b>\n\n"
-            "<i>Your margin is saved per merchant and product; it does not change when you reopen this screen. Profit is credited after a sale.</i>"
+            "<i>Your margin is saved per merchant and product; it does not change when you reopen this screen. Profit is credited after a sale is completed.</i>"
         )
         await update.effective_message.reply_text(details,reply_markup=InlineKeyboardMarkup([x for x in kb if x]),parse_mode="HTML")
 

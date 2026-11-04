@@ -460,7 +460,7 @@ async def menu_callback(update,ctx):
             f"#{r['id']} • Product #{r['product_id']} ×{r['quantity']} • INR {r['total_amount']:.2f} • "
             f"{'🟢' if r['status'] in ('delivered','completed') else '🔴' if r['status']=='rejected' else '🟡'} {html.escape(str(r['status']).upper())}"
             for r in rows)
-        central_body="\n".join(
+        central_body="\n\n".join(
             f"#{r['id']} • {html.escape(str(r['title']))} ×{r['quantity']} • {r['total_usdt']:g} USDT • 🟢 {html.escape(str(r['status']).upper())}"
             for r in central_rows)
         body="<b>🧾 MY ORDERS</b>\n━━━━━━━━━━━━━━━━━━\n<b>INR SELLER MARKETPLACE</b>\n"+(seller_body or "No INR orders.")+"\n\n<b>USDT CATALOGUE / RESALE</b>\n"+(central_body or "No USDT orders.")

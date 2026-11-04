@@ -488,7 +488,9 @@ def test_level2_catalogue_random_margin_and_resale():
             "Level 2 Next 5 navigation or page counter is missing")
     first_product_id=ids[0]
     p1=next(x for x in owner_ctx.bot.sent if product_card_ids([x])==[first_product_id])
-    p1_caption=p1["kwargs"].get("caption",p1.get("args",["",""])[1])
+    p1_caption=p1["kwargs"].get("caption") or p1["kwargs"].get("text")
+    if not p1_caption and len(p1.get("args",()))>1:
+        p1_caption=p1["args"][1]
     require("Your random margin:" in p1_caption,
             "Level 2 product card does not display its merchant-specific random margin")
 

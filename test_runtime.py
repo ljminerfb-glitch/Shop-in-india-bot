@@ -486,6 +486,16 @@ def test_level2_catalogue_random_margin_and_resale():
     l2_nav=next(x for x in owner_ctx.bot.sent if "cc2page:1" in sent_callback_data(x))
     require("PAGE 1/3" in sent_text(l2_nav),
             "Level 2 Next 5 navigation or page counter is missing")
+    before=len(owner_ctx.bot.sent)
+    next_page_update,_,_=callback_update(303,"cc2page:1")
+    asyncio.run(cc.owner_catalog2_page_callback(next_page_update,owner_ctx))
+    next_page_sent=owner_ctx.bot.sent[before:]
+    require(product_card_ids(next_page_sent)==ids[5:10],
+            "Level 2 Next 5 did not show products 6 through 10")
+    next_nav=next(x for x in next_page_sent if any(cb.startswith("cc2page:") for cb in sent_callback_data(x)))
+    require("cc2page:0" in sent_callback_data(next_nav) and
+            "cc2page:2" in sent_callback_data(next_nav),
+            "Level 2 middle page must provide Previous 5 and Next 5")
     first_product_id=ids[0]
     p1=next(x for x in owner_ctx.bot.sent if product_card_ids([x])==[first_product_id])
     p1_caption=p1["kwargs"].get("caption") or p1["kwargs"].get("text")

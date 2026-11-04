@@ -456,7 +456,7 @@ async def menu_callback(update,ctx):
         central_rows=c.execute("""SELECT o.id,o.quantity,o.total_usdt,o.status,p.title FROM central_orders o
           JOIN central_catalog p ON p.id=o.catalog_id WHERE o.buyer_shop_id=? ORDER BY o.id DESC LIMIT 20""",(s["id"],)).fetchall()
         c.close()
-        seller_body="\n".join(
+        seller_body="\n\n".join(
             f"#{r['id']} • Product #{r['product_id']} ×{r['quantity']} • INR {r['total_amount']:.2f} • "
             f"{'🟢' if r['status'] in ('delivered','completed') else '🔴' if r['status']=='rejected' else '🟡'} {html.escape(str(r['status']).upper())}"
             for r in rows)

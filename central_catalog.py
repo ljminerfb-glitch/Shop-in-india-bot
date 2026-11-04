@@ -77,22 +77,44 @@ def catalogue_text(c):
 async def admin_catalog(update,ctx):
     if update.effective_user.id != v4.ADMIN_ID:
         await update.effective_message.reply_text("Admin only."); return
-    setup()
-    c=v4.db()
-    try:
-        rows=c.execute("SELECT id,title,price_usdt,stock,active FROM central_catalog ORDER BY id").fetchall()
-        from telegram import InlineKeyboardMarkup, InlineKeyboardButton
-        keyboard=[]
-        for r in rows:
-            keyboard.append([InlineKeyboardButton(
-                f"#{r['id']} {r['title']} | {float(r['price_usdt']):g} USDT | Stock {r['stock']}",
-                callback_data=f"cc:view:{r['id']}")])
-        keyboard += [[InlineKeyboardButton("📦 Manage Central Orders",callback_data="cc:orders")],
-                     [InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]
-        await update.effective_message.reply_text(
-            "<b>🛠 CENTRAL CATALOGUE</b>\n━━━━━━━━━━━━━━━━━━\nChoose a product to manage its USDT price, shared stock or availability.",
-            reply_markup=InlineKeyboardMarkup(keyboard),parse_mode="HTML")
+    from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+    await update.effective_message.reply_text(
+        "<b>🛒 BUY PRODUCT</b>\\n━━━━━━━━━━━━━━━━━━\\nPick your level:",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🟦 LEVEL 1",callback_data="ccadminlevel:1")],
+            [InlineKeyboardButton("📦 Manage Central Orders",callback_data="cc:orders")],
+            [InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]),
+        parse_mode="HTML")
+
+async def admin_level_callback(update,ctx):
+    q=update.callback_query
+    if q.from_user.id != v4.ADMIN_ID:
+        await safe_callback_answer(q,"Admin only",show_alert=True); return
+    await safe_callback_answer(q)
+    setup(); c=v4.db()
+    try: rows=c.execute("SELECT * FROM central_catalog WHERE level_required=1 ORDER BY id").fetchall()
     finally: c.close()
+    from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+    await q.message.reply_text("<b>🛍 LEVEL 1 PRODUCTS</b>\\n━━━━━━━━━━━━━━━━━━\\nManage each product below.",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back to Levels",callback_data="adm:central"),InlineKeyboardButton("🏠 Dashboard",callback_data="adm:home")]]),parse_mode="HTML")
+    for p in rows:
+        caption=(f"<b>#{p['id']} {html.escape(str(p['title']))}</b>\\n{html.escape(str(p['description'] or ''))}\\n\\n"
+                 f"💰 <b>{float(p['price_usdt']):g} USDT</b> / item\\n📦 Stock: <b>{int(p['stock'])}</b>\\n"
+                 f"{'🟢 ACTIVE' if p['active'] else '🔴 OFF'}")
+        kb=InlineKeyboardMarkup([
+            [InlineKeyboardButton("💲 Price",callback_data=f"cc:price:{p['id']}"),InlineKeyboardButton("📦 Stock",callback_data=f"cc:stock:{p['id']}")],
+            [InlineKeyboardButton("🔴 Turn Off" if p['active'] else "🟢 Turn On",callback_data=f"cc:toggle:{p['id']}")],
+            [InlineKeyboardButton("⬅️ Levels",callback_data="adm:central"),InlineKeyboardButton("🏠 Dashboard",callback_data="adm:home")]])
+        image_path=Path(__file__).resolve().parent/(p["image_path"] or "")
+        try:
+            if image_path.is_file():
+                with image_path.open("rb") as photo:
+                    await ctx.bot.send_photo(q.message.chat_id,photo=photo,caption=caption[:1024],reply_markup=kb,parse_mode="HTML")
+            else: await ctx.bot.send_message(q.message.chat_id,caption+"\\n⚠️ Product photo unavailable.",reply_markup=kb,parse_mode="HTML")
+        except Exception:
+            log.exception("Could not send admin catalogue card")
+            await ctx.bot.send_message(q.message.chat_id,caption,reply_markup=kb,parse_mode="HTML")
+
 
 async def set_price(update,ctx):
     if update.effective_user.id != v4.ADMIN_ID: return
@@ -332,6 +354,29 @@ async def admin_callback(update,ctx):
 
 
 async def owner_market(update,ctx,shop):
+    from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+    if not shop or shop["status"] != "approved" or int(shop["level"]) != 1:
+        await update.callback_query.message.reply_text(
+            "This catalogue is available only to approved Level 1 shops.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back",callback_data="m:dashboard")]]))
+        return
+    await update.callback_query.message.reply_text(
+        "<b>🛒 BUY PRODUCT</b>\\n━━━━━━━━━━━━━━━━━━\\nPick your level:",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🟦 LEVEL 1",callback_data="cclevel:1")],
+            [InlineKeyboardButton("⬅️ Back to My Products",callback_data="m:products"),InlineKeyboardButton("🏠 Dashboard",callback_data="m:dashboard")]]),
+        parse_mode="HTML")
+
+async def owner_level_callback(update,ctx):
+    q=update.callback_query
+    shop=v4.shop_for(q.from_user.id)
+    if not shop or shop["status"]!="approved" or int(shop["level"])!=1:
+        await safe_callback_answer(q,"Approved Level 1 shop required",show_alert=True); return
+    await safe_callback_answer(q)
+    if q.data=="cclevel:1":
+        await show_owner_level_products(update,ctx,shop)
+
+async def show_owner_level_products(update,ctx,shop):
     from telegram import InlineKeyboardMarkup, InlineKeyboardButton
     if not shop or shop["status"] != "approved" or int(shop["level"]) != 1:
         await update.callback_query.message.reply_text(

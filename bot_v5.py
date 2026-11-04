@@ -149,9 +149,10 @@ async def level_callback(update,ctx):
         f"📈 Profit/margin reference: {float(cfg['profit_min']):g}%–{float(cfg['profit_max']):g}%\n"
         "🔓 Marketplace access according to this level"
     )
+    back_label="⬅️ Back to upgrade options" if int(s["level"])>=1 else "⬅️ Back to all levels"
     kb=InlineKeyboardMarkup([
         [InlineKeyboardButton(f"💳 Continue to payment • {float(cfg['activation_usdt']):g} USDT",callback_data=f"lvpay:{lv}")],
-        [InlineKeyboardButton("⬅️ Back to all levels",callback_data="lvback")]
+        [InlineKeyboardButton(back_label,callback_data="lvback")]
     ])
     await q.message.reply_text(
         f"<b>🔷 SHOP LEVEL {lv}</b>\n━━━━━━━━━━━━━━━━━━\n"
@@ -218,6 +219,24 @@ async def level_pay_callback(update,ctx):
 async def level_back_callback(update,ctx):
     q=update.callback_query
     await q.answer()
+    shop=v4.shop_for(q.from_user.id)
+    if shop and shop["status"]=="approved" and int(shop["level"])>=1:
+        current=int(shop["level"])
+        c=v4.db()
+        try:
+            available=c.execute("SELECT COUNT(*) FROM level_settings WHERE level>?",(current,)).fetchone()[0]
+        finally:
+            c.close()
+        if available:
+            await q.message.reply_text(
+                f"<b>🚀 UPGRADE YOUR SHOP</b>\nCurrent active level: <b>LEVEL {current}</b>\n"
+                "Choose a higher level to continue.",
+                reply_markup=upgrade_level_kb(current),parse_mode="HTML")
+        else:
+            await q.message.reply_text(
+                f"<b>🏆 Highest level already active: LEVEL {current}</b>",
+                reply_markup=back_dashboard_kb(),parse_mode="HTML")
+        return
     await q.message.reply_text(
         "<b>🔷 SELECT YOUR SHOP LEVEL</b>\n━━━━━━━━━━━━━━━━━━\n"
         "Choose a level to view its price and benefits.",

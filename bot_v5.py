@@ -519,10 +519,14 @@ async def menu_callback(update,ctx):
             for r in rows:
                 remaining=int(r["remaining_quantity"])
                 cost=float(r["unit_cost_usdt"])
-                margin=round(float(r["resale_margin_usdt"]),2)
+                margin=float(r["resale_margin_usdt"])
                 state="🟢 IN STOCK" if remaining>0 else "🔴 SOLD OUT"
-                margin_text=(f"💚 Expected margin: <b>+{margin:.2f} USDT / item</b> | Potential: <b>+{remaining*margin:g} USDT</b>\n"
-                             if remaining>0 else "")
+                if remaining>0 and int(r["pricing_level"])==1:
+                    margin_text=(f"💚 Expected margin: <b>+{margin:g} USDT / item</b> | Potential: <b>+{remaining*margin:g} USDT</b>\n")
+                elif remaining>0:
+                    margin_text=(f"💚 Expected margin: <b>+{margin:.2f} USDT / item</b> | Potential: <b>+{remaining*margin:g} USDT</b>\n")
+                else:
+                    margin_text=""
                 body+=(
                     f"\n<b>{html.escape(str(r['title']))}</b>\n"
                     f"Available quantity: <b>{remaining}</b>\n"

@@ -79,7 +79,7 @@ async def admin_catalog(update,ctx):
         await update.effective_message.reply_text("Admin only."); return
     from telegram import InlineKeyboardMarkup, InlineKeyboardButton
     await update.effective_message.reply_text(
-        "<b>🛒 BUY PRODUCT</b>\\n━━━━━━━━━━━━━━━━━━\\nPick your level:",
+        "<b>🛒 BUY PRODUCT</b>\n━━━━━━━━━━━━━━━━━━\nPick your level:",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🟦 LEVEL 1",callback_data="ccadminlevel:1")],
             [InlineKeyboardButton("📦 Manage Central Orders",callback_data="cc:orders")],
@@ -95,11 +95,11 @@ async def admin_level_callback(update,ctx):
     try: rows=c.execute("SELECT * FROM central_catalog WHERE level_required=1 ORDER BY id").fetchall()
     finally: c.close()
     from telegram import InlineKeyboardMarkup, InlineKeyboardButton
-    await q.message.reply_text("<b>🛍 LEVEL 1 PRODUCTS</b>\\n━━━━━━━━━━━━━━━━━━\\nManage each product below.",
+    await q.message.reply_text("<b>🛍 LEVEL 1 PRODUCTS</b>\n━━━━━━━━━━━━━━━━━━\nManage each product below.",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back to Levels",callback_data="adm:central"),InlineKeyboardButton("🏠 Dashboard",callback_data="adm:home")]]),parse_mode="HTML")
     for p in rows:
-        caption=(f"<b>#{p['id']} {html.escape(str(p['title']))}</b>\\n{html.escape(str(p['description'] or ''))}\\n\\n"
-                 f"💰 <b>{float(p['price_usdt']):g} USDT</b> / item\\n📦 Stock: <b>{int(p['stock'])}</b>\\n"
+        caption=(f"<b>#{p['id']} {html.escape(str(p['title']))}</b>\n{html.escape(str(p['description'] or ''))}\n\n"
+                 f"💰 <b>{float(p['price_usdt']):g} USDT</b> / item\n📦 Stock: <b>{int(p['stock'])}</b>\n"
                  f"{'🟢 ACTIVE' if p['active'] else '🔴 OFF'}")
         kb=InlineKeyboardMarkup([
             [InlineKeyboardButton("💲 Price",callback_data=f"cc:price:{p['id']}"),InlineKeyboardButton("📦 Stock",callback_data=f"cc:stock:{p['id']}")],
@@ -110,7 +110,7 @@ async def admin_level_callback(update,ctx):
             if image_path.is_file():
                 with image_path.open("rb") as photo:
                     await ctx.bot.send_photo(q.message.chat_id,photo=photo,caption=caption[:1024],reply_markup=kb,parse_mode="HTML")
-            else: await ctx.bot.send_message(q.message.chat_id,caption+"\\n⚠️ Product photo unavailable.",reply_markup=kb,parse_mode="HTML")
+            else: await ctx.bot.send_message(q.message.chat_id,caption+"\n⚠️ Product photo unavailable.",reply_markup=kb,parse_mode="HTML")
         except Exception:
             log.exception("Could not send admin catalogue card")
             await ctx.bot.send_message(q.message.chat_id,caption,reply_markup=kb,parse_mode="HTML")
@@ -361,7 +361,7 @@ async def owner_market(update,ctx,shop):
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back",callback_data="m:dashboard")]]))
         return
     await update.callback_query.message.reply_text(
-        "<b>🛒 BUY PRODUCT</b>\\n━━━━━━━━━━━━━━━━━━\\nPick your level:",
+        "<b>🛒 BUY PRODUCT</b>\n━━━━━━━━━━━━━━━━━━\nPick your level:",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🟦 LEVEL 1",callback_data="cclevel:1")],
             [InlineKeyboardButton("⬅️ Back to My Products",callback_data="m:products"),InlineKeyboardButton("🏠 Dashboard",callback_data="m:dashboard")]]),

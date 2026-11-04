@@ -526,14 +526,14 @@ async def menu_callback(update,ctx):
               FROM resale_listings l JOIN central_catalog p ON p.id=l.catalog_id
               JOIN shops sh ON sh.id=l.shop_id
               WHERE l.status='active' AND l.remaining_quantity>0 AND l.owner_id=?
-                AND sh.status='approved' AND sh.level=? AND p.level_required=?
-              ORDER BY l.id DESC LIMIT 30""",(q.from_user.id,int(s["level"]),int(s["level"]))).fetchall()
+                AND sh.status='approved' AND sh.level>=p.level_required AND p.level_required<=?
+              ORDER BY l.id DESC LIMIT 30""",(q.from_user.id,int(s["level"]))).fetchall()
             resale=c.execute("""SELECT l.id,l.remaining_quantity,l.ask_price_usdt,p.title,sh.shop_name
               FROM resale_listings l JOIN central_catalog p ON p.id=l.catalog_id
               JOIN shops sh ON sh.id=l.shop_id
               WHERE l.status='active' AND l.remaining_quantity>0 AND l.owner_id<>?
-                AND sh.status='approved' AND sh.level=? AND p.level_required=?
-              ORDER BY l.id DESC LIMIT 30""",(q.from_user.id,int(s["level"]),int(s["level"]))).fetchall()
+                AND sh.status='approved' AND sh.level>=p.level_required AND p.level_required<=?
+              ORDER BY l.id DESC LIMIT 30""",(q.from_user.id,int(s["level"]))).fetchall()
         finally: c.close()
         body="<b>🏬 SELLER MARKETPLACE</b>\n━━━━━━━━━━━━━━━━━━\n<b>MY ACTIVE USDT LISTINGS</b>\n"
         if own_resale:
@@ -543,8 +543,8 @@ async def menu_callback(update,ctx):
                 f"Asking price: <b>{float(r['ask_price_usdt']):g} USDT / item</b>"
                 for r in own_resale)
         else:
-            body+="No active USDT listings yet. Approved catalogue purchases at your current level are listed automatically."
-        body+=f"\n\n<b>OTHER LEVEL {int(s['level'])} MERCHANT LISTINGS</b>\n"
+            body+="No active USDT listings yet. Approved catalogue purchases from your available levels are listed automatically."
+        body+=f"\n\n<b>OTHER ELIGIBLE MERCHANT LISTINGS (LEVEL 1–{int(s['level'])})</b>\n"
         if resale:
             body+="\n\n".join(
                 f"<b>#{r['id']} {html.escape(str(r['title']))}</b>\n"
@@ -552,7 +552,7 @@ async def menu_callback(update,ctx):
                 f"Price: <b>{float(r['ask_price_usdt']):g} USDT / item</b> | Stock: {r['remaining_quantity']}"
                 for r in resale)
         else:
-            body+="No other merchant listings available at your level right now."
+            body+="No other merchant listings available in your level range right now."
         await q.message.reply_text(body[:4000],reply_markup=InlineKeyboardMarkup(
             [([InlineKeyboardButton(f"Buy #{r['id']} ×1",callback_data=f"rs:buy:{r['id']}:1"),
                InlineKeyboardButton("Buy ×5",callback_data=f"rs:buy:{r['id']}:5")]

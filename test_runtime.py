@@ -216,28 +216,28 @@ def test_level1_catalogue_quantity_buttons():
         "SELECT id FROM central_catalog WHERE active=1 AND level_required=1 ORDER BY id").fetchall()]
     require(product_card_ids(ctx.bot.sent)==expected_ids[:5],
             f"First Level 1 page should show exactly the first five products: {product_card_ids(ctx.bot.sent)!r}")
-    nav=next(x for x in ctx.bot.sent if "ccpage:1" in sent_callback_data(x))
+    nav=next(x for x in ctx.bot.sent if "ccpage:1:1" in sent_callback_data(x))
     require("PAGE 1/3" in sent_text(nav),
             "First catalogue page indicator or Next 5 button is missing")
     before=len(ctx.bot.sent)
-    next_update,_,_=callback_update(101,"ccpage:1")
+    next_update,_,_=callback_update(101,"ccpage:1:1")
     asyncio.run(cc.owner_catalog_page_callback(next_update,ctx))
     next_page_sent=ctx.bot.sent[before:]
     require(product_card_ids(next_page_sent)==expected_ids[5:10],
             "Next 5 did not show products 6 through 10")
     next_nav=next(x for x in next_page_sent if any(cb.startswith("ccpage:") for cb in sent_callback_data(x)))
     next_nav_buttons=sent_callback_data(next_nav)
-    require("ccpage:0" in next_nav_buttons and "ccpage:2" in next_nav_buttons,
+    require("ccpage:1:0" in next_nav_buttons and "ccpage:1:2" in next_nav_buttons,
             "Middle page must provide Previous 5 and Next 5 buttons")
     before=len(ctx.bot.sent)
-    last_update,_,_=callback_update(101,"ccpage:2")
+    last_update,_,_=callback_update(101,"ccpage:1:2")
     asyncio.run(cc.owner_catalog_page_callback(last_update,ctx))
     last_page_sent=ctx.bot.sent[before:]
     require(product_card_ids(last_page_sent)==expected_ids[10:],
             "Final catalogue page should show only the remaining products")
     last_nav=next(x for x in last_page_sent if any(cb.startswith("ccpage:") for cb in sent_callback_data(x)))
-    require("ccpage:3" not in sent_callback_data(last_nav) and
-            "ccpage:1" in sent_callback_data(last_nav),
+    require("ccpage:1:3" not in sent_callback_data(last_nav) and
+            "ccpage:1:1" in sent_callback_data(last_nav),
             "Final page must hide Next 5 and keep Previous 5")
     # Re-open page one for the per-product quantity-button assertions below.
     ctx=context()

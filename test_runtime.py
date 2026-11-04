@@ -468,7 +468,8 @@ def test_merchant_level_dashboard_visibility():
     asyncio.run(v5.menu_callback(update,context()))
     dashboard=message.replies[0]
     buttons=callback_data(dashboard)
-    require("Level 1 Central Catalogue" in dashboard["text"],
+    dashboard_labels=[b.text for row in dashboard["kwargs"]["reply_markup"].inline_keyboard for b in row]
+    require("🛍 Level 1 Central Catalogue" in dashboard_labels,
             "Level 1 merchant dashboard does not identify the active Level 1 catalogue")
     require("m:market" in buttons and "m:levels" in buttons,
             "Level 1 merchant dashboard is missing catalogue or upgrade navigation")
@@ -493,7 +494,8 @@ def test_merchant_level_dashboard_visibility():
     asyncio.run(v5.menu_callback(update,context()))
     l2_dashboard=l2_dashboard_message.replies[0]
     l2_buttons=callback_data(l2_dashboard)
-    require("Level 2 Central Catalogue" in l2_dashboard["text"],
+    l2_dashboard_labels=[b.text for row in l2_dashboard["kwargs"]["reply_markup"].inline_keyboard for b in row]
+    require("🛍 Level 2 Central Catalogue" in l2_dashboard_labels,
             "Level 2 merchant dashboard does not identify the active Level 2 catalogue")
     require("m:market" in l2_buttons and "m:levels" not in l2_buttons,
             "Level 2 merchant dashboard has incorrect catalogue/upgrade controls")

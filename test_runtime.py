@@ -383,7 +383,7 @@ def test_seller_market_screen(listing_id):
     asyncio.run(v5.menu_callback(update, context()))
     require(len(message.replies) >= 2, "Seller Marketplace did not render both resale and legacy screens")
     first = message.replies[0]
-    require("OTHER LEVEL 1 MERCHANT LISTINGS" in first["text"], "Other Level 1 resale section missing")
+    require("OTHER ELIGIBLE MERCHANT LISTINGS (LEVEL 1–1)" in first["text"], "Other Level 1 resale section missing")
     require("Price: <b>3.3 USDT / item</b>" in first["text"], "Seller Marketplace price is wrong")
     require(first["kwargs"].get("parse_mode") == "HTML", "Seller Marketplace is not using Telegram HTML")
     buttons = callback_data(first)
@@ -406,13 +406,16 @@ def test_seller_market_screen(listing_id):
 
 
 def test_resale_buyer_guards_and_sale(listing_id, inventory_id):
-    # Level 2 can use its own resale market but cannot buy a Level 1 listing.
+    # An upgraded Level 2 shop can see eligible Level 1 resale inventory.
     add_deposit(303, 3, 20)
     before_l2 = cc.balance(v4.db(), 303)
-    update, message, query = callback_update(303, "rs:buy:%d:1" % listing_id)
+    update, message, query = callback_update(303, "rs:market")
     asyncio.run(cc.resale_callback(update, context()))
-    require(query.answers[-1]["kwargs"].get("show_alert") is True, "Cross-level Level 2 purchase was not blocked")
-    require("different level" in query.answers[-1]["args"][0], "Cross-level rejection message unclear")
+    visible_buttons=[cb for reply in message.replies for cb in callback_data(reply)]
+    require("rs:buy:%d:1" % listing_id in visible_buttons,
+            "Level 2 resale market did not include eligible Level 1 listings")
+    require(abs(cc.balance(v4.db(),303)-before_l2)<1e-8,
+            "Opening the resale market unexpectedly changed the Level 2 wallet")
 
     # A Level 1 buyer completes the real callback handler.
     add_deposit(202, 2, 20)
@@ -439,20 +442,20 @@ def test_resale_buyer_guards_and_sale(listing_id, inventory_id):
     require(c.execute("""SELECT COUNT(*) FROM central_orders
                          WHERE buyer_owner_id=202 AND quantity=1 AND total_usdt=3.3""").fetchone()[0] == 1,
             "Resale central order was not recorded")
-    # Verify an unapproved/non-L1 seller cannot sell from an old active listing.
-    c.execute("UPDATE shops SET level=2 WHERE id=1")
+    # A suspended seller cannot sell even when the product level is otherwise eligible.
+    c.execute("UPDATE shops SET status='suspended' WHERE id=1")
     c.commit()
     c.close()
     update, message, query = callback_update(202, "rs:buy:%d:1" % listing_id)
     asyncio.run(cc.resale_callback(update, context()))
     require(query.answers[-1]["kwargs"].get("show_alert") is True,
-            "Non-Level 1 seller listing was not blocked")
-    require("your level" in query.answers[-1]["args"][0],
-            "Different-level seller rejection message unclear")
+            "Suspended seller listing was not blocked")
+    require("approved merchants" in query.answers[-1]["args"][0],
+            "Suspended seller rejection message is unclear")
     c = v4.db()
     require(c.execute("SELECT remaining_quantity FROM resale_listings WHERE id=?", (listing_id,)).fetchone()[0] == 1,
-            "Listing changed after invalid seller rejection")
-    c.execute("UPDATE shops SET level=1 WHERE id=1")
+            "Listing changed after suspended seller rejection")
+    c.execute("UPDATE shops SET status='approved',level=1 WHERE id=1")
     c.commit()
     c.close()
     require(abs(cc.balance(v4.db(), 303) - before_l2) < 1e-8,
@@ -565,6 +568,35 @@ def test_level2_catalogue_and_purchase_flow():
     require(product_card_ids(admin_ctx.bot.sent[before:])==ids[5:10],
             "Admin Level 2 Next 5 did not show products 6–10")
 
+    # A Level 2 dashboard offers both catalogues and keeps Level 1 pagination available.
+    menu_update,menu_message,_=callback_update(303,"m:market")
+    menu_ctx=context()
+    asyncio.run(v5.menu_callback(menu_update,menu_ctx))
+    menu_callbacks=callback_data(menu_message.replies[0])
+    require("cclevel:1" in menu_callbacks and "cclevel:2" in menu_callbacks,
+            "Level 2 merchant catalogue menu does not show both Level 1 and Level 2")
+
+    l1_rows=v4.db().execute(
+        "SELECT id,title,price_usdt,stock FROM central_catalog WHERE active=1 AND level_required=1 ORDER BY id"
+    ).fetchall()
+    require(len(l1_rows)>=10,"Level 1 catalogue fixture should contain multiple pages")
+    l1_ids=[int(row["id"]) for row in l1_rows]
+    l1_pid=l1_ids[0]
+    l1_title=str(l1_rows[0]["title"])
+    lower_ctx=context()
+    lower_update,_,_=callback_update(303,"cclevel:1")
+    asyncio.run(cc.owner_level_callback(lower_update,lower_ctx))
+    require(product_card_ids(lower_ctx.bot.sent)==l1_ids[:5],
+            "Level 2 merchant could not open the first five Level 1 products")
+    lower_nav=next(x for x in lower_ctx.bot.sent if "ccpage:1:1" in sent_callback_data(x))
+    require("PAGE 1/3" in sent_text(lower_nav),
+            "Level 2 merchant Level 1 catalogue pagination is missing")
+    before_lower_page=len(lower_ctx.bot.sent)
+    lower_next,_,_=callback_update(303,"ccpage:1:1")
+    asyncio.run(cc.owner_catalog_page_callback(lower_next,lower_ctx))
+    require(product_card_ids(lower_ctx.bot.sent[before_lower_page:])==l1_ids[5:10],
+            "Level 2 merchant could not paginate the Level 1 catalogue")
+
     owner_update,_,_=callback_update(303,"cclevel:2")
     owner_ctx=context()
     asyncio.run(cc.owner_level_callback(owner_update,owner_ctx))
@@ -597,6 +629,36 @@ def test_level2_catalogue_and_purchase_flow():
     listing_id=int(listing["id"])
     c.close()
 
+    # Level 2 merchants can also buy Level 1 inventory, retaining its original +0.8 USDT margin.
+    c=v4.db()
+    l1_before=int(c.execute("SELECT stock FROM central_catalog WHERE id=?",(l1_pid,)).fetchone()[0])
+    c.close()
+    l1_replies=run_central_buy(303,l1_pid,1)
+    require(any("Purchase successful" in x["text"] for x in l1_replies),
+            f"Level 2 merchant could not buy a Level 1 catalogue product: {l1_replies!r}")
+    c=v4.db()
+    l1_after=int(c.execute("SELECT stock FROM central_catalog WHERE id=?",(l1_pid,)).fetchone()[0])
+    require(l1_after==l1_before-1,"Level 1 stock did not decrease after Level 2 merchant purchase")
+    l1_inventory=c.execute(
+        "SELECT i.*,p.level_required FROM central_inventory i JOIN central_catalog p ON p.id=i.catalog_id "
+        "WHERE i.owner_id=303 AND i.catalog_id=? AND i.remaining_quantity=1 ORDER BY i.id DESC LIMIT 1",
+        (l1_pid,)
+    ).fetchone()
+    require(l1_inventory is not None and int(l1_inventory["level_required"])==1,
+            "Level 2 merchant's Level 1 purchase was not saved as Level 1 inventory")
+    l1_listing=c.execute(
+        "SELECT * FROM resale_listings WHERE inventory_id=? AND status='active'",(l1_inventory["id"],)
+    ).fetchone()
+    require(l1_listing is not None and abs(float(l1_listing["ask_price_usdt"])-3.3)<1e-8,
+            "Level 2 merchant's Level 1 purchase did not retain Level 1 +0.8 resale margin")
+    l1_listing_id=int(l1_listing["id"])
+    c.close()
+    stock_screen_ctx=context()
+    stock_screen_update,stock_screen_message,_=callback_update(303,"rs:listmenu")
+    asyncio.run(cc.resale_callback(stock_screen_update,stock_screen_ctx))
+    require(any(l1_title in x["text"] for x in stock_screen_message.replies),
+            "Level 2 merchant's Level 1 inventory was hidden from List My Stock")
+
     # My Products displays the actual random resale price and percentage for Level 2 stock.
     products_update,products_message,_=callback_update(303,"m:products")
     asyncio.run(v5.menu_callback(products_update,context()))
@@ -610,6 +672,8 @@ def test_level2_catalogue_and_purchase_flow():
     market_buttons=[cb for reply in market_message.replies for cb in callback_data(reply)]
     require(f"rs:buy:{listing_id}:1" in market_buttons,
             "Level 2 resale market did not show the Level 2 seller listing")
+    require(f"rs:buy:{l1_listing_id}:1" in market_buttons,
+            "Level 2 resale market did not show the eligible Level 1 listing")
     buy_update,buy_message,buy_query=callback_update(404,f"rs:buy:{listing_id}:1")
     asyncio.run(cc.resale_callback(buy_update,context()))
     require(buy_query.answers[-1]["args"][0]=="Purchased",
@@ -622,8 +686,8 @@ def test_level2_catalogue_and_purchase_flow():
     asyncio.run(cc.resale_callback(cross_update,context()))
     require(cross_query.answers[-1]["kwargs"].get("show_alert") is True,
             "Level 1 shop was allowed to buy a Level 2 listing")
-    require("different level" in cross_query.answers[-1]["args"][0],
-            "Cross-level Level 1 rejection message is unclear")
+    require("higher shop level" in cross_query.answers[-1]["args"][0],
+            "Level 1 rejection did not explain the higher shop-level requirement")
     require(abs(cc.balance(v4.db(),202)-before_l1)<1e-8,
             "Cross-level rejected purchase changed the Level 1 wallet")
 

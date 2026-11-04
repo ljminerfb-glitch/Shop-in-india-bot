@@ -5,6 +5,7 @@ import html
 import bot_v4 as v4
 
 log = logging.getLogger("central_catalog")
+CATALOGUE_PAGE_SIZE=5
 PRODUCTS = [
 ("oxidised_jhumka","Oxidised Jhumka Earrings","Traditional and stylish earrings for women, perfect for daily wear and parties.","images/01_jhumka.jpg"),
 ("mobile_back_covers","Mobile Back Covers","Attractive mobile covers available in different colours and designs.","images/02_mobile_cover.jpg"),
@@ -86,18 +87,44 @@ async def admin_catalog(update,ctx):
             [InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]),
         parse_mode="HTML")
 
-async def admin_level_callback(update,ctx):
-    q=update.callback_query
-    if q.from_user.id != v4.ADMIN_ID:
-        await safe_callback_answer(q,"Admin only",show_alert=True); return
-    await safe_callback_answer(q)
-    setup(); c=v4.db()
-    try: rows=c.execute("SELECT * FROM central_catalog WHERE level_required=1 ORDER BY id").fetchall()
-    finally: c.close()
+def _catalogue_page_keyboard(page,total,prefix,back_label,back_callback,dashboard_callback):
     from telegram import InlineKeyboardMarkup, InlineKeyboardButton
-    await q.message.reply_text("<b>🛍 LEVEL 1 PRODUCTS</b>\n━━━━━━━━━━━━━━━━━━\nManage each product below.",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back to Levels",callback_data="adm:central"),InlineKeyboardButton("🏠 Dashboard",callback_data="adm:home")]]),parse_mode="HTML")
-    for p in rows:
+    last_page=max(0,(total-1)//CATALOGUE_PAGE_SIZE)
+    rows=[]
+    navigation=[]
+    if page>0:
+        navigation.append(InlineKeyboardButton("⬅️ Previous 5",callback_data=f"{prefix}:{page-1}"))
+    if page<last_page:
+        navigation.append(InlineKeyboardButton("Next 5 ➡️",callback_data=f"{prefix}:{page+1}"))
+    if navigation:
+        rows.append(navigation)
+    rows.append([
+        InlineKeyboardButton(back_label,callback_data=back_callback),
+        InlineKeyboardButton("🏠 Dashboard",callback_data=dashboard_callback)
+    ])
+    return InlineKeyboardMarkup(rows)
+
+
+async def _send_admin_level_page(update,ctx,page=0):
+    from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+    setup(); c=v4.db()
+    try:
+        rows=c.execute("SELECT * FROM central_catalog WHERE level_required=1 ORDER BY id").fetchall()
+    finally: c.close()
+    total=len(rows)
+    last_page=max(0,(total-1)//CATALOGUE_PAGE_SIZE)
+    page=max(0,min(int(page),last_page))
+    start=page*CATALOGUE_PAGE_SIZE
+    page_rows=rows[start:start+CATALOGUE_PAGE_SIZE]
+    q=update.callback_query
+    await q.message.reply_text(
+        f"<b>🛍 LEVEL 1 PRODUCTS</b>\n━━━━━━━━━━━━━━━━━━\n"
+        f"Showing {start+1 if total else 0}–{min(start+CATALOGUE_PAGE_SIZE,total)} of {total} products. Manage each product below.",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("⬅️ Back to Levels",callback_data="adm:central"),
+            InlineKeyboardButton("🏠 Dashboard",callback_data="adm:home")
+        ]]),parse_mode="HTML")
+    for p in page_rows:
         caption=(f"<b>#{p['id']} {html.escape(str(p['title']))}</b>\n{html.escape(str(p['description'] or ''))}\n\n"
                  f"💰 <b>{float(p['price_usdt']):g} USDT</b> / item\n📦 Stock: <b>{int(p['stock'])}</b>\n"
                  f"{'🟢 ACTIVE' if p['active'] else '🔴 OFF'}")
@@ -110,10 +137,38 @@ async def admin_level_callback(update,ctx):
             if image_path.is_file():
                 with image_path.open("rb") as photo:
                     await ctx.bot.send_photo(q.message.chat_id,photo=photo,caption=caption[:1024],reply_markup=kb,parse_mode="HTML")
-            else: await ctx.bot.send_message(q.message.chat_id,caption+"\n⚠️ Product photo unavailable.",reply_markup=kb,parse_mode="HTML")
+            else:
+                await ctx.bot.send_message(q.message.chat_id,caption+"\n⚠️ Product photo unavailable.",reply_markup=kb,parse_mode="HTML")
         except Exception:
             log.exception("Could not send admin catalogue card")
             await ctx.bot.send_message(q.message.chat_id,caption,reply_markup=kb,parse_mode="HTML")
+    await ctx.bot.send_message(
+        q.message.chat_id,
+        f"<b>PAGE {page+1}/{last_page+1}</b> • Products {start+1 if total else 0}–{min(start+CATALOGUE_PAGE_SIZE,total)} of {total}",
+        reply_markup=_catalogue_page_keyboard(
+            page,total,"ccadminpage","⬅️ Back to Levels","adm:central","adm:home"),
+        parse_mode="HTML")
+
+
+async def admin_level_callback(update,ctx):
+    q=update.callback_query
+    if q.from_user.id != v4.ADMIN_ID:
+        await safe_callback_answer(q,"Admin only",show_alert=True); return
+    await safe_callback_answer(q)
+    await _send_admin_level_page(update,ctx,0)
+
+
+async def admin_catalog_page_callback(update,ctx):
+    q=update.callback_query
+    if q.from_user.id != v4.ADMIN_ID:
+        await safe_callback_answer(q,"Admin only",show_alert=True); return
+    try:
+        page=int(q.data.split(":",1)[1])
+        if page<0: raise ValueError()
+    except (ValueError,IndexError):
+        await safe_callback_answer(q,"Invalid page",show_alert=True); return
+    await safe_callback_answer(q)
+    await _send_admin_level_page(update,ctx,page)
 
 
 async def set_price(update,ctx):
@@ -397,6 +452,7 @@ async def owner_market(update,ctx,shop):
             [InlineKeyboardButton("⬅️ Back to My Products",callback_data="m:products"),InlineKeyboardButton("🏠 Dashboard",callback_data="m:dashboard")]]),
         parse_mode="HTML")
 
+
 async def owner_level_callback(update,ctx):
     q=update.callback_query
     shop=v4.shop_for(q.from_user.id)
@@ -406,7 +462,22 @@ async def owner_level_callback(update,ctx):
     if q.data=="cclevel:1":
         await show_owner_level_products(update,ctx,shop)
 
-async def show_owner_level_products(update,ctx,shop):
+
+async def owner_catalog_page_callback(update,ctx):
+    q=update.callback_query
+    shop=v4.shop_for(q.from_user.id)
+    if not shop or shop["status"]!="approved" or int(shop["level"])!=1:
+        await safe_callback_answer(q,"Approved Level 1 shop required",show_alert=True); return
+    try:
+        page=int(q.data.split(":",1)[1])
+        if page<0: raise ValueError()
+    except (ValueError,IndexError):
+        await safe_callback_answer(q,"Invalid page",show_alert=True); return
+    await safe_callback_answer(q)
+    await show_owner_level_products(update,ctx,shop,page=page,track_visit=False)
+
+
+async def show_owner_level_products(update,ctx,shop,page=0,track_visit=True):
     from telegram import InlineKeyboardMarkup, InlineKeyboardButton
     if not shop or shop["status"] != "approved" or int(shop["level"]) != 1:
         await update.callback_query.message.reply_text(
@@ -416,22 +487,29 @@ async def show_owner_level_products(update,ctx,shop):
     setup()
     c=v4.db()
     try:
-        c.execute("""INSERT INTO catalogue_visits(owner_id,visits,last_seen) VALUES(?,1,?)
-          ON CONFLICT(owner_id) DO UPDATE SET visits=visits+1,last_seen=excluded.last_seen""",
-          (update.effective_user.id,v4.now()))
+        if track_visit:
+            c.execute("""INSERT INTO catalogue_visits(owner_id,visits,last_seen) VALUES(?,1,?)
+              ON CONFLICT(owner_id) DO UPDATE SET visits=visits+1,last_seen=excluded.last_seen""",
+              (update.effective_user.id,v4.now()))
         total_visitors=c.execute("SELECT COUNT(*) FROM catalogue_visits").fetchone()[0]
         rows=c.execute("SELECT * FROM central_catalog WHERE active=1 AND level_required=1 ORDER BY id").fetchall()
         c.commit()
     finally: c.close()
+    total=len(rows)
+    last_page=max(0,(total-1)//CATALOGUE_PAGE_SIZE)
+    page=max(0,min(int(page),last_page))
+    start=page*CATALOGUE_PAGE_SIZE
+    page_rows=rows[start:start+CATALOGUE_PAGE_SIZE]
     await update.callback_query.message.reply_text(
         f"<b>🛍 CENTRAL LEVEL 1 CATALOGUE</b>\n━━━━━━━━━━━━━━━━━━\n"
-        f"12 products • {total_visitors} unique visitors\n"
+        f"Showing {start+1 if total else 0}–{min(start+CATALOGUE_PAGE_SIZE,total)} of {total} products\n"
+        f"{total_visitors} unique visitors\n"
         "<i>Margin figures are references, not guaranteed income. Actual profit is recorded after a completed sale.</i>",
         reply_markup=InlineKeyboardMarkup([[
             InlineKeyboardButton("⬅️ Back to My Products",callback_data="m:products"),
             InlineKeyboardButton("🏠 Dashboard",callback_data="m:dashboard")]]),
         parse_mode="HTML")
-    for p in rows:
+    for p in page_rows:
         price=float(p["price_usdt"] or 0); stock=int(p["stock"] or 0)
         caption=(f"<b>#{p['id']} {html.escape(str(p['title']))}</b>\n"
                  f"{html.escape(str(p['description'] or ''))}\n\n"
@@ -439,13 +517,12 @@ async def show_owner_level_products(update,ctx,shop):
                  f"Available stock: <b>{stock}</b>\n"+
                  ("Select a quantity below to buy." if price>0 and stock>0 else "🔴 Unavailable — Admin must set price and stock."))
         # Offer every quantity from 1 through 10, capped by available stock.
-        # Keep the numeric labels short and put only two buttons on each row:
-        # ten long labels in one row are visually truncated by Telegram clients.
+        # Keep numeric labels short and put only two buttons on each row.
         quantities=list(range(1,min(10,stock)+1)) if stock>0 else []
         buttons=[
             [InlineKeyboardButton(str(n),callback_data=f"ccbuy:{p['id']}:{n}")
-             for n in quantities[start:start+2]]
-            for start in range(0,len(quantities),2)
+             for n in quantities[pos:pos+2]]
+            for pos in range(0,len(quantities),2)
         ]
         buttons.append([
             InlineKeyboardButton("⬅️ Back to My Products",callback_data="m:products"),
@@ -461,6 +538,12 @@ async def show_owner_level_products(update,ctx,shop):
         except Exception:
             log.exception("Could not send catalogue item")
             await ctx.bot.send_message(update.effective_chat.id,caption,reply_markup=kb,parse_mode="HTML")
+    await ctx.bot.send_message(
+        update.effective_chat.id,
+        f"<b>PAGE {page+1}/{last_page+1}</b> • Products {start+1 if total else 0}–{min(start+CATALOGUE_PAGE_SIZE,total)} of {total}",
+        reply_markup=_catalogue_page_keyboard(
+            page,total,"ccpage","⬅️ Back to My Products","m:products","m:dashboard"),
+        parse_mode="HTML")
 
 
 async def owner_buy_callback(update,ctx):

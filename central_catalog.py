@@ -470,21 +470,35 @@ async def list_inventory(update,ctx):
         )
         await update.effective_message.reply_text(details,reply_markup=InlineKeyboardMarkup([x for x in kb if x]),parse_mode="HTML")
 
+async def safe_callback_answer(query, *args, **kwargs):
+    """Answer Telegram callbacks without crashing when Telegram has expired the query."""
+    from telegram.error import BadRequest, TimedOut, NetworkError
+    try:
+        return await query.answer(*args, **kwargs)
+    except (BadRequest, TimedOut, NetworkError) as exc:
+        message = str(exc).lower()
+        if isinstance(exc, BadRequest) and ("query is too old" in message or "query id is invalid" in message):
+            log.info("Ignoring expired Telegram callback query")
+            return None
+        log.warning("Could not answer Telegram callback: %s", exc)
+        return None
+
+
 async def resale_callback(update,ctx):
     from telegram import InlineKeyboardMarkup, InlineKeyboardButton
     q=update.callback_query; resale_setup()
     parts=q.data.split(":"); action=parts[1]
     if action=="listmenu":
-        await q.answer(); await list_inventory(update,ctx); return
+        await safe_callback_answer(q, ); await list_inventory(update,ctx); return
     if action=="list":
         inv_id=int(parts[2]); c=v4.db()
         try:
             c.execute("BEGIN IMMEDIATE")
             inv=c.execute("""SELECT i.*,p.title FROM central_inventory i JOIN central_catalog p ON p.id=i.catalog_id WHERE i.id=? AND i.owner_id=?""",(inv_id,q.from_user.id)).fetchone()
-            if not inv: c.rollback(); await q.answer("Inventory not found",show_alert=True); return
+            if not inv: c.rollback(); await safe_callback_answer(q, "Inventory not found",show_alert=True); return
             listed=c.execute("SELECT COALESCE(SUM(remaining_quantity),0) FROM resale_listings WHERE inventory_id=? AND status='active'",(inv_id,)).fetchone()[0]
             qty=int(inv["remaining_quantity"])-int(listed)
-            if qty<=0: c.rollback(); await q.answer("No unlisted stock left",show_alert=True); return
+            if qty<=0: c.rollback(); await safe_callback_answer(q, "No unlisted stock left",show_alert=True); return
             price=round(float(inv["unit_cost_usdt"])+0.8,6)
             c.execute("""INSERT INTO resale_listings(inventory_id,owner_id,shop_id,catalog_id,quantity,remaining_quantity,unit_cost_usdt,ask_price_usdt,status,created_at)
               VALUES(?,?,?,?,?,?,?,?, 'active',?)""",(inv_id,q.from_user.id,inv["shop_id"],inv["catalog_id"],qty,qty,inv["unit_cost_usdt"],price,v4.now()))
@@ -494,7 +508,7 @@ async def resale_callback(update,ctx):
         except Exception:
             c.rollback(); log.exception("Resale listing failed"); await q.message.reply_text("Listing failed safely."); return
         finally: c.close()
-        await q.answer("Listed")
+        await safe_callback_answer(q, "Listed")
         cost=float(inv["unit_cost_usdt"])
         expected_profit=round((price-cost)*qty,6)
         await q.message.reply_text(
@@ -508,14 +522,14 @@ async def resale_callback(update,ctx):
         except Exception: log.exception("Admin listing notification failed")
         return
     if action=="review":
-        if q.from_user.id!=v4.ADMIN_ID: await q.answer("Admin only",show_alert=True); return
+        if q.from_user.id!=v4.ADMIN_ID: await safe_callback_answer(q, "Admin only",show_alert=True); return
         lid=int(parts[2]); c=v4.db()
         r=c.execute("""SELECT l.*,p.title,s.shop_name FROM resale_listings l JOIN central_catalog p ON p.id=l.catalog_id JOIN shops s ON s.id=l.shop_id WHERE l.id=?""",(lid,)).fetchone(); c.close()
-        if not r: await q.answer("Listing not found",show_alert=True); return
+        if not r: await safe_callback_answer(q, "Listing not found",show_alert=True); return
         if r["status"]!="active" or int(r["remaining_quantity"])<1:
-            await q.answer("This listing is no longer available",show_alert=True); return
+            await safe_callback_answer(q, "This listing is no longer available",show_alert=True); return
         ctx.user_data["admin_resale_offer"]={"listing_id":lid}
-        await q.answer()
+        await safe_callback_answer(q, )
         suggested_price=float(r["ask_price_usdt"])
         available_qty=int(r["remaining_quantity"])
         await q.message.reply_text(
@@ -532,9 +546,9 @@ async def resale_callback(update,ctx):
     if action=="market":
         shop=v4.shop_for(q.from_user.id)
         if not shop or shop["status"]!="approved" or int(shop["level"])!=1:
-            await q.answer("Approved Level 1 shop required",show_alert=True); return
+            await safe_callback_answer(q, "Approved Level 1 shop required",show_alert=True); return
         c=v4.db(); rows=c.execute("""SELECT l.id,l.remaining_quantity,l.ask_price_usdt,p.title,s.shop_name FROM resale_listings l JOIN central_catalog p ON p.id=l.catalog_id JOIN shops s ON s.id=l.shop_id WHERE l.status='active' AND l.remaining_quantity>0 AND l.owner_id<>? AND s.status='approved' AND s.level=1 ORDER BY l.id DESC LIMIT 30""",(q.from_user.id,)).fetchall(); c.close()
-        await q.answer()
+        await safe_callback_answer(q, )
         if not rows: await q.message.reply_text("<b>🛍 LEVEL 1 RESALE MARKET</b>\nNo merchant listings available right now.",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Dashboard",callback_data="m:dashboard")]]),parse_mode="HTML"); return
         for r in rows:
             buttons=[[InlineKeyboardButton("Buy 1",callback_data=f"rs:buy:{r['id']}:1")]]
@@ -550,21 +564,21 @@ async def resale_callback(update,ctx):
         return
     if action=="buy":
         shop=v4.shop_for(q.from_user.id)
-        if not shop or shop["status"]!="approved" or int(shop["level"])!=1: await q.answer("Approved Level 1 shop required",show_alert=True); return
+        if not shop or shop["status"]!="approved" or int(shop["level"])!=1: await safe_callback_answer(q, "Approved Level 1 shop required",show_alert=True); return
         lid,qty=int(parts[2]),int(parts[3])
         c=v4.db()
         try:
             c.execute("BEGIN IMMEDIATE")
             l=c.execute("SELECT * FROM resale_listings WHERE id=? AND status='active'",(lid,)).fetchone()
-            if not l or int(l["owner_id"])==q.from_user.id or qty<1 or qty>int(l["remaining_quantity"]): c.rollback(); await q.answer("Listing/quantity unavailable",show_alert=True); return
+            if not l or int(l["owner_id"])==q.from_user.id or qty<1 or qty>int(l["remaining_quantity"]): c.rollback(); await safe_callback_answer(q, "Listing/quantity unavailable",show_alert=True); return
             seller_shop=c.execute("SELECT status,level FROM shops WHERE id=?",(l["shop_id"],)).fetchone()
             if not seller_shop or seller_shop["status"]!="approved" or int(seller_shop["level"])!=1:
-                c.rollback(); await q.answer("Only approved Level 1 seller listings are available",show_alert=True); return
+                c.rollback(); await safe_callback_answer(q, "Only approved Level 1 seller listings are available",show_alert=True); return
             total=round(float(l["ask_price_usdt"])*qty,6); bal=balance(c,q.from_user.id)
-            if bal+1e-9<total: c.rollback(); await q.answer("Insufficient USDT balance",show_alert=True); return
+            if bal+1e-9<total: c.rollback(); await safe_callback_answer(q, "Insufficient USDT balance",show_alert=True); return
             changed=c.execute("UPDATE resale_listings SET remaining_quantity=remaining_quantity-?,status=CASE WHEN remaining_quantity-?=0 THEN 'sold' ELSE status END WHERE id=? AND status='active' AND remaining_quantity>=?",(qty,qty,lid,qty))
             if changed.rowcount != 1:
-                c.rollback(); await q.answer("Listing stock changed. Please refresh the market.",show_alert=True); return
+                c.rollback(); await safe_callback_answer(q, "Listing stock changed. Please refresh the market.",show_alert=True); return
             cur=c.execute("""INSERT INTO central_orders(catalog_id,buyer_shop_id,buyer_owner_id,quantity,unit_price_usdt,total_usdt,status,created_at) VALUES(?,?,?,?,?,?,'paid',?)""",(l["catalog_id"],shop["id"],q.from_user.id,qty,l["ask_price_usdt"],total,v4.now())); oid=cur.lastrowid
             changed=c.execute("UPDATE central_inventory SET remaining_quantity=remaining_quantity-? WHERE id=? AND owner_id=? AND remaining_quantity>=?",(qty,l["inventory_id"],l["owner_id"],qty))
             if changed.rowcount != 1:
@@ -579,7 +593,7 @@ async def resale_callback(update,ctx):
         except Exception:
             c.rollback(); log.exception("Resale purchase failed"); await q.message.reply_text("Purchase failed safely; no changes committed."); return
         finally: c.close()
-        await q.answer("Purchased")
+        await safe_callback_answer(q, "Purchased")
         await q.message.reply_text(
             f"<b>✅ PURCHASE CONFIRMED</b>\n━━━━━━━━━━━━━━━━━━\n"
             f"Quantity: <b>{qty}</b> item(s)\nTotal paid: <b>{total:g} USDT</b>\nOrder: <code>#{oid}</code>",

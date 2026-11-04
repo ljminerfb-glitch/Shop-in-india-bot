@@ -165,6 +165,43 @@ def run_central_buy(owner, pid, qty):
     return message.replies
 
 
+def test_level1_catalogue_quantity_buttons():
+    c=v4.db()
+    row=c.execute("SELECT id FROM central_catalog ORDER BY id LIMIT 1").fetchone()
+    pid=int(row["id"])
+    c.execute("UPDATE central_catalog SET price_usdt=2.5,stock=12,active=1,level_required=1 WHERE id=?",(pid,))
+    c.commit()
+    c.close()
+    shop=v4.shop_for(101)
+    update,_,_=callback_update(101,"m:catalogue")
+    ctx=context()
+    asyncio.run(cc.show_owner_level_products(update,ctx,shop))
+    item=next(x for x in ctx.bot.sent if x["kwargs"].get("reply_markup") and
+              any(getattr(b,"callback_data",None)==f"ccbuy:{pid}:1"
+                  for row in x["kwargs"]["reply_markup"].inline_keyboard for b in row))
+    callbacks=[b.callback_data for row in item["kwargs"]["reply_markup"].inline_keyboard
+               for b in row if getattr(b,"callback_data",None)]
+    expected=[f"ccbuy:{pid}:{n}" for n in range(1,11)]
+    require(callbacks[:10]==expected,"Level 1 catalogue does not show Buy ×1 through Buy ×10")
+    require("m:products" in callbacks and "m:dashboard" in callbacks,
+            "Catalogue quantity buttons lost their Back/Dashboard navigation")
+    c=v4.db()
+    c.execute("UPDATE central_catalog SET stock=3 WHERE id=?",(pid,))
+    c.commit()
+    c.close()
+    ctx=context()
+    asyncio.run(cc.show_owner_level_products(update,ctx,shop))
+    item=next(x for x in ctx.bot.sent if x["kwargs"].get("reply_markup") and
+              any(getattr(b,"callback_data",None)==f"ccbuy:{pid}:1"
+                  for row in x["kwargs"]["reply_markup"].inline_keyboard for b in row))
+    callbacks=[b.callback_data for row in item["kwargs"]["reply_markup"].inline_keyboard
+               for b in row if getattr(b,"callback_data",None)]
+    require(callbacks[:3]==[f"ccbuy:{pid}:{n}" for n in range(1,4)] and
+            f"ccbuy:{pid}:4" not in callbacks,
+            "Catalogue offers quantities above available stock")
+    print("PASS: Level 1 catalogue Buy ×1–×10 buttons and stock cap")
+
+
 def test_central_purchase_and_auto_listing():
     add_deposit(101, 1, 10)
     c = v4.db()
@@ -665,6 +702,7 @@ def test_usdt_balance_reconciliation():
 
 def main():
     fixture()
+    test_level1_catalogue_quantity_buttons()
     pid, listing_id, inventory_id = test_central_purchase_and_auto_listing()
     test_owner_wallet_and_inventory_design()
     test_list_stock_profit_screen()

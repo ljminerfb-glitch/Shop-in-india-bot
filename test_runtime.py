@@ -849,7 +849,7 @@ def test_merchant_deposit_screenshot_and_admin_approval():
             "Rejected deposit did not leave Pending with the rejection reason")
     require(reject_credit==0,"Rejected deposit incorrectly credited the wallet")
 
-    # Level activation goes directly to screenshot upload; it must not use the wallet-deposit confirmation button.
+    # Level activation follows the same deposit-style confirmation and screenshot sequence.
     c=v4.db()
     cur=c.execute("""INSERT INTO payment_requests(owner_id,shop_id,payment_type,level,amount,currency,network,status,created_at)
                      VALUES(202,2,'level_activation',2,10.0,'USDT','not_selected','pending',?)""",(v4.now(),))
@@ -859,13 +859,62 @@ def test_merchant_deposit_screenshot_and_admin_approval():
     level_update,level_message,_=callback_update(202,f"net:{level_rid}:trc")
     asyncio.run(v5.network_callback(level_update,level_ctx))
     level_buttons=callback_data(level_message.replies[0])
+    require(level_ctx.user_data.get("state")=="await_deposit_done",
+            "Level activation did not wait for the merchant payment confirmation")
+    require("m:depositdone" in level_buttons and f"txid:{level_rid}" in level_buttons,
+            "Level upgrade address screen is missing I HAVE DEPOSITED or optional TXID")
+    require("m:dashboard" in level_buttons and "USDT TRC20" in level_message.replies[0]["text"],
+            "Level upgrade address screen is missing the selected network or Back to Dashboard")
+    require("LEVEL UPGRADE PAYMENT ADDRESS" in level_message.replies[0]["text"],
+            "Level upgrade address screen title is incorrect")
+
+    level_done_update,level_done_message,_=callback_update(202,"m:depositdone")
+    asyncio.run(v5.menu_callback(level_done_update,level_ctx))
     require(level_ctx.user_data.get("state")=="payment_proof",
-            "Level activation network selection did not proceed directly to payment proof")
-    require("m:depositdone" not in level_buttons,
-            "Level activation incorrectly displayed the wallet-deposit confirmation button")
-    require("USDT TRC20" in level_message.replies[0]["text"],
-            "Level activation network screen did not show the selected network")
-    print("PASS: Deposit Center, transaction hash, approval/rejection lifecycle and level activation network flow")
+            "I HAVE DEPOSITED did not move the level upgrade to screenshot upload")
+    require("UPLOAD YOUR PAYMENT SCREENSHOT" in level_done_message.replies[0]["text"],
+            "Level upgrade was not asked to upload payment proof")
+    level_photo_update,level_photo_message=message_update(202,None)
+    level_photo_message.photo=[SimpleNamespace(file_id="level-upgrade-proof-photo")]
+    asyncio.run(v4.payment_photo(level_photo_update,level_ctx))
+    c=v4.db()
+    level_request=c.execute("SELECT status,screenshot_file_id FROM payment_requests WHERE id=?",(level_rid,)).fetchone()
+    c.close()
+    require(level_request["status"]=="pending" and
+            level_request["screenshot_file_id"]=="level-upgrade-proof-photo",
+            "Level upgrade screenshot was not saved for Admin review")
+
+    # Optional TXID must also work for an upgrade payment, not only a wallet deposit.
+    c=v4.db()
+    cur=c.execute("""INSERT INTO payment_requests(owner_id,shop_id,payment_type,level,amount,currency,network,status,created_at)
+                     VALUES(202,2,'level_activation',3,15.0,'USDT','not_selected','pending',?)""",(v4.now(),))
+    level_txid_rid=cur.lastrowid
+    c.commit(); c.close()
+    level_txid_ctx=context()
+    tx_network_update,tx_network_message,_=callback_update(202,f"net:{level_txid_rid}:bep")
+    asyncio.run(v5.network_callback(tx_network_update,level_txid_ctx))
+    require(f"txid:{level_txid_rid}" in callback_data(tx_network_message.replies[0]),
+            "Level upgrade payment screen is missing optional TXID")
+    txid_update,txid_prompt,_=callback_update(202,f"txid:{level_txid_rid}")
+    asyncio.run(v5.txid_callback(txid_update,level_txid_ctx))
+    require(level_txid_ctx.user_data.get("state")=="deposit_tx_hash",
+            "Level upgrade optional TXID did not start transaction-hash entry")
+    hash_update,hash_message=message_update(202,"LEVELTXID1234567890abcdef")
+    asyncio.run(v5.text_handler(hash_update,level_txid_ctx))
+    require(level_txid_ctx.user_data.get("state")=="payment_proof",
+            "Level upgrade TXID did not continue to screenshot upload")
+    tx_photo_update,tx_photo_message=message_update(202,None)
+    tx_photo_message.photo=[SimpleNamespace(file_id="level-upgrade-txid-proof")]
+    asyncio.run(v4.payment_photo(tx_photo_update,level_txid_ctx))
+    c=v4.db()
+    tx_level_request=c.execute("SELECT transaction_hash,screenshot_file_id,status FROM payment_requests WHERE id=?",
+                               (level_txid_rid,)).fetchone()
+    c.close()
+    require(tx_level_request["transaction_hash"]=="LEVELTXID1234567890abcdef" and
+            tx_level_request["screenshot_file_id"]=="level-upgrade-txid-proof" and
+            tx_level_request["status"]=="pending",
+            "Level upgrade TXID and screenshot were not saved together for Admin review")
+    print("PASS: Deposit Center and Level Upgrade share the same address, optional TXID, confirmation and proof flow")
 
 
 def test_usdt_trc20_withdrawal_flow():

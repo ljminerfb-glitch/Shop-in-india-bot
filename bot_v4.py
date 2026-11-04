@@ -425,13 +425,14 @@ async def payment_review(update,ctx):
     # misleadingly displays PENDING or keeps active review buttons.
     try:
         result_label = "✅ APPROVED" if status == "approved" else "❌ REJECTED"
+        queue_action = "payments" if r["payment_type"] == "wallet_deposit" else "levelpayments"
         result_line=f"\n\nREVIEW RESULT: {result_label}"
         if q.message.photo:
             old_caption=q.message.caption or ""
             clean_caption=old_caption.split("\n\nREVIEW RESULT:",1)[0]
             await q.message.edit_caption(caption=clean_caption+result_line,
                                          reply_markup=InlineKeyboardMarkup([
-                                             [InlineKeyboardButton("⬅️ Back to Deposits",callback_data="adm:payments")],
+                                             [InlineKeyboardButton("⬅️ Back to Deposits",callback_data=f"adm:{queue_action}")],
                                              [InlineKeyboardButton("🏠 Admin Panel",callback_data="adm:home")]
                                          ]))
         else:

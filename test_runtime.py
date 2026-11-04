@@ -294,7 +294,7 @@ def test_admin_catalogue_pagination():
             "Admin Next 5 did not show products 6 through 10")
     nav_two=next(x for x in page_two if any(cb.startswith("ccadminpage:") for cb in sent_callback_data(x)))
     buttons=sent_callback_data(nav_two)
-    require("ccadminpage:1:0" in buttons and "ccadminpage:1:2" in buttons,
+    require("ccadminpage:0" in buttons and "ccadminpage:2" in buttons,
             "Admin middle page must provide Previous 5 and Next 5")
     print("PASS: Admin Level 1 catalogue shows five products per page with Previous/Next")
 

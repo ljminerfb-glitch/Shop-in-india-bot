@@ -947,32 +947,9 @@ async def admin_panel_callback(update,ctx):
                 await q.message.reply_text(caption,reply_markup=kb,parse_mode="HTML")
             await q.message.reply_text("⬅️ Back options:",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]))
         elif action=="products":
-            # Show both legacy merchant products and central Level 1 catalogue products.
-            rows=c.execute("""SELECT id,title,price,currency,stock,active,shop_id,
-                                     COALESCE(level_required,1) AS level_required
-                              FROM products ORDER BY level_required,id DESC LIMIT 50""").fetchall()
-            level_counts=c.execute("""SELECT COALESCE(level_required,1) AS lv,COUNT(*) AS total
-                                      FROM products GROUP BY COALESCE(level_required,1)
-                                      ORDER BY lv""").fetchall()
-            central_rows=c.execute("""SELECT id,title,price_usdt,stock,active,level_required
-                                      FROM central_catalog ORDER BY level_required,id DESC LIMIT 50""").fetchall()
-            summary="\\n".join(f"L{r['lv']}: {r['total']} products" for r in level_counts)
-            details="\\n\\n".join(
-                f"#{r['id']} {r['title']} | L{r['level_required']} | Shop #{r['shop_id']}\\n"
-                f"{r['currency']} {r['price']} | Stock {r['stock']} | Active {r['active']}\\n"
-                f"Change level: /setproductlevel {r['id']} LEVEL"
-                for r in rows)
-            central_details="\\n\\n".join(
-                f"Central #{r['id']} {r['title']} | L{r['level_required']}\\n"
-                f"Price: {float(r['price_usdt'] or 0):g} USDT | Stock: {r['stock']} | Active: {r['active']}\\n"
-                f"Manage from the Central Catalogue menu."
-                for r in central_rows)
-            await q.message.reply_text(
-                "<b>🛍 PRODUCTS BY LEVEL</b>\\n━━━━━━━━━━━━━━━━━━\\n"
-                "<b>MERCHANT PRODUCTS</b>\\n"+html.escape(summary or "No merchant products assigned.")+
-                "\\n\\n<b>LATEST MERCHANT PRODUCTS</b>\\n"+html.escape(details or "No merchant products.")+
-                "\\n\\n<b>🌐 CENTRAL LEVEL CATALOGUE</b>\\n"+html.escape(central_details or "No central catalogue products."),
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]),parse_mode="HTML")
+            # Replace the old plain-text Products by Level summary with the level-picker catalogue UI.
+            await central.admin_catalog(update,ctx)
+            return
         elif action=="orders":
             await q.message.reply_text("📦 ORDER MANAGEMENT\nUse /orders to view pending orders and Mark Delivered controls.\nUse /orderdone ORDER_ID or /orderreject ORDER_ID REASON when appropriate.",
               reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]))

@@ -124,6 +124,8 @@ def fixture():
     CREATE TABLE owner_wallets(owner_id INTEGER PRIMARY KEY,network TEXT NOT NULL,address TEXT NOT NULL,updated_at TEXT NOT NULL,verified INTEGER NOT NULL DEFAULT 0);
     CREATE TABLE admin_audit(id INTEGER PRIMARY KEY AUTOINCREMENT,admin_id INTEGER,owner_id INTEGER,action TEXT,details TEXT,created_at TEXT);
     CREATE TABLE level_settings(level INTEGER PRIMARY KEY,activation_usdt REAL,product_target INTEGER,profit_min REAL,profit_max REAL);
+    CREATE TABLE platform_settings(setting_key TEXT PRIMARY KEY,setting_value TEXT NOT NULL,updated_by INTEGER,updated_at TEXT);
+    INSERT INTO platform_settings(setting_key,setting_value) VALUES('usdt_inr_rate','110');
     INSERT INTO shops(owner_id,shop_name,status,created_at,level) VALUES(101,'Seller L1','approved','2026-01-01',1);
     INSERT INTO users(tg_id,created_at,role,status) VALUES(101,'2026-01-01','shop_owner','approved');
     INSERT INTO shops(owner_id,shop_name,status,created_at,level) VALUES(202,'Buyer L1','approved','2026-01-01',1);

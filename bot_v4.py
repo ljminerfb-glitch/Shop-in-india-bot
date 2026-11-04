@@ -432,7 +432,7 @@ async def payment_review(update,ctx):
             clean_caption=old_caption.split("\n\nREVIEW RESULT:",1)[0]
             await q.message.edit_caption(caption=clean_caption+result_line,
                                          reply_markup=InlineKeyboardMarkup([
-                                             [InlineKeyboardButton("⬅️ Back to Deposits",callback_data=f"adm:{queue_action}")],
+                                             [InlineKeyboardButton("⬅️ Back to Payment Queue",callback_data=f"adm:{queue_action}")],
                                              [InlineKeyboardButton("🏠 Admin Panel",callback_data="adm:home")]
                                          ]))
         else:
@@ -440,14 +440,14 @@ async def payment_review(update,ctx):
             clean_text=old_text.split("\n\nREVIEW RESULT:",1)[0]
             await q.message.edit_text(text=clean_text+result_line,
                                       reply_markup=InlineKeyboardMarkup([
-                                          [InlineKeyboardButton("⬅️ Back to Deposits",callback_data="adm:payments")],
+                                          [InlineKeyboardButton("⬅️ Back to Payment Queue",callback_data=f"adm:{queue_action}")],
                                           [InlineKeyboardButton("🏠 Admin Panel",callback_data="adm:home")]
                                       ]))
     except Exception:
         log.exception("Could not update reviewed payment Telegram card")
         await q.message.reply_text(f"Payment request #{rid}: {status.upper()}. Database status saved.",
                                    reply_markup=InlineKeyboardMarkup([
-                                       [InlineKeyboardButton("⬅️ Back to Deposits",callback_data="adm:payments")],
+                                       [InlineKeyboardButton("⬅️ Back to Payment Queue",callback_data=f"adm:{queue_action}")],
                                        [InlineKeyboardButton("🏠 Admin Panel",callback_data="adm:home")]
                                    ]))
 

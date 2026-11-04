@@ -366,7 +366,7 @@ async def menu_callback(update,ctx):
                 "Pehle apna USDT TRC20 withdrawal address save karein.\\n"
                 "<i>Address T se start hona chahiye. Sirf TRC20 accepted hai.</i>",
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔐 OPEN WITHDRAW SETUP",callback_data="m:withdrawsetupedit")],
+                    [InlineKeyboardButton("🔐 OPEN WITHDRAW SETUP",callback_data="m:withdrawsetup")],
                     [InlineKeyboardButton("⬅️ Back to Dashboard",callback_data="m:dashboard")]]),
                 parse_mode="HTML")
             return

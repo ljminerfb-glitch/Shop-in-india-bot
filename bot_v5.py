@@ -30,7 +30,6 @@ def owner_kb():
       [InlineKeyboardButton("🛍 Level 1 Central Catalogue",callback_data="m:market")],
       [InlineKeyboardButton("🏬 Seller Marketplace",callback_data="m:sellermarket"),InlineKeyboardButton("💳 Deposit",callback_data="m:deposit")],
       [InlineKeyboardButton("💸 Withdraw",callback_data="m:withdraw"),InlineKeyboardButton("👛 Wallet",callback_data="m:wallet")],
-      [InlineKeyboardButton("🔐 Withdraw Setup",callback_data="m:withdrawsetup")],
       [InlineKeyboardButton("📦 My Products",callback_data="m:products"),InlineKeyboardButton("🧾 My Orders",callback_data="m:orders")],
       [InlineKeyboardButton("📊 Profit & History",callback_data="m:history"),InlineKeyboardButton("👤 My Account",callback_data="m:profile")],
       [InlineKeyboardButton("💬 Support",callback_data="m:support")],
@@ -311,13 +310,12 @@ async def menu_callback(update,ctx):
             c.close()
         address=str(wallet["address"] or "") if wallet and wallet["network"]=="USDT TRC20" else ""
         if not re.fullmatch(r"T[1-9A-HJ-NP-Za-km-z]{33}",address):
+            ctx.user_data["state"]="withdraw_setup_address"
             await q.message.reply_text(
-                "<b>🔐 WITHDRAW SETUP REQUIRED</b>\n━━━━━━━━━━━━━━━━━━\n"
-                "Save your USDT TRC20 payout address before requesting a withdrawal.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("➕ OPEN WITHDRAW SETUP",callback_data="m:withdrawsetup")],
-                    [InlineKeyboardButton("⬅️ Dashboard",callback_data="m:dashboard")]]),
-                parse_mode="HTML")
+                "<b>💸 WITHDRAW — ADD PAYOUT ADDRESS</b>\\n━━━━━━━━━━━━━━━━━━\\n"
+                "Apna USDT TRC20 (TRON) withdrawal address yahan send karein.\\n"
+                "<i>Address T se start hona chahiye. Sirf TRC20 accepted hai.</i>",
+                reply_markup=back_dashboard_kb(),parse_mode="HTML")
             return
         available=available_withdrawal_usdt(q.from_user.id)
         ctx.user_data["state"]="withdraw_amount"
@@ -630,10 +628,15 @@ async def text_handler(update,ctx):
             return
         shop=v4.shop_for(update.effective_user.id)
         if not shop or shop["status"]!="approved":
-            ctx.user_data.pop("state",None)
-            await edit_screen(ctx,update,"Approved shop required to save a payout address.",
-                              reply_markup=back_dashboard_kb())
-            return
+            available=available_withdrawal_usdt(update.effective_user.id)
+        ctx.user_data["state"]="withdraw_amount"
+        await edit_screen(ctx,update,
+            "<b>✅ WITHDRAW ADDRESS SAVED</b>\\n━━━━━━━━━━━━━━━━━━\\n"
+            f"Address: <code>{html.escape(address)}</code>\\n\\n"
+            f"Available sale earnings: <b>{available:.6f} USDT</b>\\n"
+            "Ab withdrawal amount USDT mein send karein.",
+            reply_markup=back_dashboard_kb())
+        return
         c=v4.db()
         try:
             c.execute("""INSERT INTO owner_wallets(owner_id,network,address,updated_at,verified)

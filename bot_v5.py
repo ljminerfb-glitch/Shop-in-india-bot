@@ -99,7 +99,7 @@ async def approved_callback(update,ctx):
     await v3.approval(update,ctx)
     if action=="approve" and row:
         if int(row["level"])<1: await levels(ctx.bot,row["owner_id"])
-        else: await ctx.bot.send_message(row["owner_id"],"<b>✅ SHOP APPROVED</b>\nYour shop is approved and its level is active. Open /start to access your owner dashboard.",reply_markup=owner_kb(),parse_mode="HTML")
+        else: await ctx.bot.send_message(row["owner_id"],"<b>✅ SHOP APPROVED</b>\nYour shop is approved and its level is active. Open /start to access your owner dashboard.",reply_markup=owner_kb(int(row["level"])),parse_mode="HTML")
 
 async def level_callback(update,ctx):
     q=update.callback_query
@@ -303,7 +303,7 @@ async def menu_callback(update,ctx):
         ctx.user_data["screen_chat_id"]=q.message.chat_id
         await q.message.reply_text(
             f"<b>🔷 SHOP IN INDIA</b>\n━━━━━━━━━━━━━━━━━━\n🏪 <b>{html.escape(str(s['shop_name']))}</b> • <b>LEVEL {s['level']}</b>\n\n<b>OWNER DASHBOARD</b>\nChoose a section below.",
-            reply_markup=owner_kb(),parse_mode="HTML")
+            reply_markup=owner_kb(int(s["level"])),parse_mode="HTML")
         return
 
     if not s or s["status"]!="approved" or int(s["level"])<1:
@@ -314,7 +314,7 @@ async def menu_callback(update,ctx):
     if action=="levels":
         await q.message.reply_text(
             "<b>🎚 SHOP LEVEL UPGRADE</b>\n━━━━━━━━━━━━━━━━━━\n"
-            "Your current level is <b>LEVEL 1</b>. Select Level 2 to view its activation price and benefits.",
+            f"Your current level is <b>LEVEL {int(s['level'])}</b>. Select the next available level to view its activation price and benefits.",
             reply_markup=level_kb(int(s["level"])),parse_mode="HTML")
     elif action=="deposit":
         kb=InlineKeyboardMarkup([
@@ -1283,7 +1283,7 @@ async def dashboard(update,ctx):
     if not s: await start(update,ctx)
     elif s["status"]!="approved": await update.message.reply_text("Awaiting Admin approval.")
     elif int(s["level"])<1: await levels(ctx.bot,update.effective_user.id)
-    else: await update.message.reply_text(f"🏪 {s['shop_name']} | L{s['level']}",reply_markup=owner_kb())
+    else: await update.message.reply_text(f"🏪 {s['shop_name']} | L{s['level']}",reply_markup=owner_kb(int(s["level"])))
 
 def main():
     if not TOKEN or not ADMIN_ID: raise RuntimeError("BOT_TOKEN and ADMIN_ID are required.")

@@ -745,6 +745,7 @@ async def list_inventory(update,ctx):
         free=max(0,int(r["remaining_quantity"])-int(r["listed"]))
         unit_cost=round(float(r["unit_cost_usdt"]),6)
         profit_each=round(float(r["resale_margin_usdt"]),2)
+        profit_label=f"{profit_each:g}" if int(r["pricing_level"])==1 else f"{profit_each:.2f}"
         price=round(unit_cost+profit_each,6)
         listed_profit=round(profit_each*int(r["listed"]),6)
         free_profit=round(profit_each*free,6)
@@ -758,7 +759,7 @@ async def list_inventory(update,ctx):
             "<b>PRICE & PROFIT</b>\n"
             f"Your cost: {unit_cost:g} USDT / item\n"
             f"Resale price: {price:g} USDT / item\n"
-            f"💚 <b>Expected profit: +{profit_each:.2f} USDT / sold item</b>\n"
+            f"💚 <b>Expected profit: +{profit_label} USDT / sold item</b>\n"
             f"🟢 Listed stock potential: <b>+{listed_profit:g} USDT</b>\n"
             f"🟢 Free stock potential: <b>+{free_profit:g} USDT</b>\n\n"
             "<i>Your margin is saved per merchant and product; it does not change when you reopen this screen. Profit is credited after a sale.</i>"

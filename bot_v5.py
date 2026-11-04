@@ -28,7 +28,7 @@ def level_kb():
 
 def owner_kb():
     return InlineKeyboardMarkup([
-      [InlineKeyboardButton("🛍 Level 1 Central Catalogue",callback_data="m:market")],
+      [InlineKeyboardButton("🛍 My Level Catalogue",callback_data="m:market")],
       [InlineKeyboardButton("🏬 Seller Marketplace",callback_data="m:sellermarket"),InlineKeyboardButton("💳 Deposit",callback_data="m:deposit")],
       [InlineKeyboardButton("💸 Withdraw",callback_data="m:withdraw"),InlineKeyboardButton("👛 Wallet",callback_data="m:wallet")],
       [InlineKeyboardButton("📦 My Products",callback_data="m:products"),InlineKeyboardButton("🧾 My Orders",callback_data="m:orders")],
@@ -455,14 +455,14 @@ async def menu_callback(update,ctx):
               FROM resale_listings l JOIN central_catalog p ON p.id=l.catalog_id
               JOIN shops sh ON sh.id=l.shop_id
               WHERE l.status='active' AND l.remaining_quantity>0 AND l.owner_id=?
-                AND sh.status='approved' AND sh.level=1
-              ORDER BY l.id DESC LIMIT 30""",(q.from_user.id,)).fetchall()
+                AND sh.status='approved' AND sh.level=? AND p.level_required=?
+              ORDER BY l.id DESC LIMIT 30""",(q.from_user.id,int(s["level"]),int(s["level"]))).fetchall()
             resale=c.execute("""SELECT l.id,l.remaining_quantity,l.ask_price_usdt,p.title,sh.shop_name
               FROM resale_listings l JOIN central_catalog p ON p.id=l.catalog_id
               JOIN shops sh ON sh.id=l.shop_id
               WHERE l.status='active' AND l.remaining_quantity>0 AND l.owner_id<>?
-                AND sh.status='approved' AND sh.level=1
-              ORDER BY l.id DESC LIMIT 30""",(q.from_user.id,)).fetchall()
+                AND sh.status='approved' AND sh.level=? AND p.level_required=?
+              ORDER BY l.id DESC LIMIT 30""",(q.from_user.id,int(s["level"]),int(s["level"]))).fetchall()
         finally: c.close()
         body="<b>🏬 SELLER MARKETPLACE</b>\n━━━━━━━━━━━━━━━━━━\n<b>MY ACTIVE USDT LISTINGS</b>\n"
         if own_resale:
@@ -472,8 +472,8 @@ async def menu_callback(update,ctx):
                 f"Asking price: <b>{float(r['ask_price_usdt']):g} USDT / item</b>"
                 for r in own_resale)
         else:
-            body+="No active USDT listings yet. Approved Level 1 catalogue purchases are listed automatically."
-        body+="\n\n<b>OTHER LEVEL 1 MERCHANT LISTINGS</b>\n"
+            body+="No active USDT listings yet. Approved catalogue purchases at your current level are listed automatically."
+        body+=f"\n\n<b>OTHER LEVEL {int(s['level'])} MERCHANT LISTINGS</b>\n"
         if resale:
             body+="\n\n".join(
                 f"<b>#{r['id']} {html.escape(str(r['title']))}</b>\n"
@@ -481,7 +481,7 @@ async def menu_callback(update,ctx):
                 f"Price: <b>{float(r['ask_price_usdt']):g} USDT / item</b> | Stock: {r['remaining_quantity']}"
                 for r in resale)
         else:
-            body+="No other Level 1 merchant listings available right now."
+            body+="No other merchant listings available at your level right now."
         await q.message.reply_text(body[:4000],reply_markup=InlineKeyboardMarkup(
             [[InlineKeyboardButton(f"Buy #{r['id']} ×1",callback_data=f"rs:buy:{r['id']}:1"),
               InlineKeyboardButton("Buy ×5",callback_data=f"rs:buy:{r['id']}:5")] for r in resale]+
@@ -525,7 +525,7 @@ async def menu_callback(update,ctx):
                 f"#{r['id']} {html.escape(str(r['title']))} — {html.escape(str(r['currency']))} {r['price']} | Stock {r['stock']}"
                 for r in legacy)
         await q.message.reply_text(body[:4000],reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🛍 LEVEL 1 PRODUCTS / CATALOGUE",callback_data="m:level1")],
+            [InlineKeyboardButton("🛍 MY LEVEL PRODUCTS / CATALOGUE",callback_data="m:level1")],
             [InlineKeyboardButton("⬅️ Back",callback_data="m:dashboard"),
              InlineKeyboardButton("🏠 Dashboard",callback_data="m:dashboard")]]),parse_mode="HTML")
         await q.message.reply_text(
@@ -1278,10 +1278,10 @@ def main():
     app.add_handler(CallbackQueryHandler(central.resale_callback,pattern=r"^rs:(list:[0-9]+|listmenu|market|review:[0-9]+|buy:[0-9]+:[0-9]+)$"))
     app.add_handler(CallbackQueryHandler(audit_callback,pattern=r"^audit:(all|payments|levels|wallet|orders|products):[0-9]+$"))
     app.add_handler(CallbackQueryHandler(delivered_callback,pattern=r"^order:delivered:[0-9]+$"))
-    app.add_handler(CallbackQueryHandler(central.admin_level_callback,pattern=r"^ccadminlevel:1$"))
-    app.add_handler(CallbackQueryHandler(central.admin_catalog_page_callback,pattern=r"^ccadminpage:[0-9]+$"))
-    app.add_handler(CallbackQueryHandler(central.owner_level_callback,pattern=r"^cclevel:1$"))
-    app.add_handler(CallbackQueryHandler(central.owner_catalog_page_callback,pattern=r"^ccpage:[0-9]+$"))
+    app.add_handler(CallbackQueryHandler(central.admin_level_callback,pattern=r"^ccadminlevel:[12]$"))
+    app.add_handler(CallbackQueryHandler(central.admin_catalog_page_callback,pattern=r"^ccadminpage:(?:[12]:)?[0-9]+$"))
+    app.add_handler(CallbackQueryHandler(central.owner_level_callback,pattern=r"^cclevel:[12]$"))
+    app.add_handler(CallbackQueryHandler(central.owner_catalog_page_callback,pattern=r"^ccpage:(?:[12]:)?[0-9]+$"))
     app.add_handler(CallbackQueryHandler(central.admin_callback,pattern=r"^cc:(view|orders|price|stock|toggle|fulfill|refund)(:[0-9]+)?$"))
     app.add_handler(CallbackQueryHandler(central.owner_buy_callback,pattern=r"^ccbuy:[0-9]+:[0-9]+$"))
     app.add_handler(CallbackQueryHandler(v4.payment_review,pattern=r"^pay:(approve|reject):[0-9]+$"))

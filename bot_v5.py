@@ -14,9 +14,11 @@ logging.basicConfig(level=logging.INFO)
 log=logging.getLogger("shop_v5")
 v3.main_keyboard=lambda: ReplyKeyboardRemove()
 
-def level_kb():
+def level_kb(current_level=0):
     c=v4.db()
-    rows=c.execute("SELECT level,activation_usdt,product_target FROM level_settings ORDER BY level").fetchall()
+    rows=c.execute(
+        "SELECT level,activation_usdt,product_target FROM level_settings "
+        "WHERE level>? AND level<=2 ORDER BY level",(int(current_level),)).fetchall()
     c.close()
     buttons=[]
     for r in rows:
@@ -24,17 +26,25 @@ def level_kb():
         buttons.append([InlineKeyboardButton(
             f"🔵 LEVEL {r['level']}  •  {r['activation_usdt']:g} USDT  •  {target}",
             callback_data=f"lv:{r['level']}")])
+    if int(current_level)>0:
+        buttons.append([InlineKeyboardButton("⬅️ Back to Dashboard",callback_data="m:dashboard")])
     return InlineKeyboardMarkup(buttons)
 
-def owner_kb():
-    return InlineKeyboardMarkup([
-      [InlineKeyboardButton("🛍 Level 1 Central Catalogue",callback_data="m:market")],
+def owner_kb(level=1):
+    level=int(level)
+    buttons=[
+      [InlineKeyboardButton(f"🛍 Level {level} Central Catalogue",callback_data="m:market")],
+    ]
+    if level==1:
+        buttons.append([InlineKeyboardButton("🎚 Upgrade to Level 2",callback_data="m:levels")])
+    buttons.extend([
       [InlineKeyboardButton("🏬 Seller Marketplace",callback_data="m:sellermarket"),InlineKeyboardButton("💳 Deposit",callback_data="m:deposit")],
       [InlineKeyboardButton("💸 Withdraw",callback_data="m:withdraw"),InlineKeyboardButton("👛 Wallet",callback_data="m:wallet")],
       [InlineKeyboardButton("📦 My Products",callback_data="m:products"),InlineKeyboardButton("🧾 My Orders",callback_data="m:orders")],
       [InlineKeyboardButton("📊 Profit & History",callback_data="m:history"),InlineKeyboardButton("👤 My Account",callback_data="m:profile")],
       [InlineKeyboardButton("💬 Support",callback_data="m:support")]
     ])
+    return InlineKeyboardMarkup(buttons)
 
 
 async def edit_screen(ctx, update, text, reply_markup=None):
@@ -80,7 +90,7 @@ async def start(update,ctx):
             f"<b>🔷 SHOP IN INDIA</b>\n━━━━━━━━━━━━━━━━━━\n"
             f"🏪 <b>{html.escape(str(s['shop_name']))}</b> • <b>LEVEL {s['level']}</b>\n\n"
             "<b>OWNER DASHBOARD</b>\nWelcome back! Choose a section below.",
-            reply_markup=owner_kb(),parse_mode="HTML")
+            reply_markup=owner_kb(int(s["level"])),parse_mode="HTML")
 
 async def approved_callback(update,ctx):
     q=update.callback_query
@@ -89,7 +99,7 @@ async def approved_callback(update,ctx):
     await v3.approval(update,ctx)
     if action=="approve" and row:
         if int(row["level"])<1: await levels(ctx.bot,row["owner_id"])
-        else: await ctx.bot.send_message(row["owner_id"],"<b>✅ SHOP APPROVED</b>\nYour shop is approved and its level is active. Open /start to access your owner dashboard.",reply_markup=owner_kb(),parse_mode="HTML")
+        else: await ctx.bot.send_message(row["owner_id"],"<b>✅ SHOP APPROVED</b>\nYour shop is approved and its level is active. Open /start to access your owner dashboard.",reply_markup=owner_kb(int(row["level"])),parse_mode="HTML")
 
 async def level_callback(update,ctx):
     q=update.callback_query
@@ -205,10 +215,12 @@ async def level_pay_callback(update,ctx):
 async def level_back_callback(update,ctx):
     q=update.callback_query
     await q.answer()
+    shop=v4.shop_for(q.from_user.id)
+    current_level=int(shop["level"]) if shop and shop["status"]=="approved" else 0
     await q.message.reply_text(
-        "<b>🔷 SELECT YOUR SHOP LEVEL</b>\n━━━━━━━━━━━━━━━━━━\n"
-        "Choose a level to view its price and benefits.",
-        reply_markup=level_kb(),parse_mode="HTML")
+        "<b>🔷 UPGRADE YOUR SHOP LEVEL</b>\n━━━━━━━━━━━━━━━━━━\n"
+        "Choose the next available level to view its price and benefits.",
+        reply_markup=level_kb(current_level),parse_mode="HTML")
 
 async def network_callback(update,ctx):
     q=update.callback_query
@@ -291,7 +303,7 @@ async def menu_callback(update,ctx):
         ctx.user_data["screen_chat_id"]=q.message.chat_id
         await q.message.reply_text(
             f"<b>🔷 SHOP IN INDIA</b>\n━━━━━━━━━━━━━━━━━━\n🏪 <b>{html.escape(str(s['shop_name']))}</b> • <b>LEVEL {s['level']}</b>\n\n<b>OWNER DASHBOARD</b>\nChoose a section below.",
-            reply_markup=owner_kb(),parse_mode="HTML")
+            reply_markup=owner_kb(int(s["level"])),parse_mode="HTML")
         return
 
     if not s or s["status"]!="approved" or int(s["level"])<1:
@@ -299,7 +311,12 @@ async def menu_callback(update,ctx):
                                   reply_markup=back_dashboard_kb())
         return
 
-    if action=="deposit":
+    if action=="levels":
+        await q.message.reply_text(
+            "<b>🎚 SHOP LEVEL UPGRADE</b>\n━━━━━━━━━━━━━━━━━━\n"
+            f"Your current level is <b>LEVEL {int(s['level'])}</b>. Select the next available level to view its activation price and benefits.",
+            reply_markup=level_kb(int(s["level"])),parse_mode="HTML")
+    elif action=="deposit":
         kb=InlineKeyboardMarkup([
             [InlineKeyboardButton("➕ Make Deposit",callback_data="m:depositstart")],
             [InlineKeyboardButton("🧾 Deposit History",callback_data="m:deposits")],
@@ -1266,7 +1283,7 @@ async def dashboard(update,ctx):
     if not s: await start(update,ctx)
     elif s["status"]!="approved": await update.message.reply_text("Awaiting Admin approval.")
     elif int(s["level"])<1: await levels(ctx.bot,update.effective_user.id)
-    else: await update.message.reply_text(f"🏪 {s['shop_name']} | L{s['level']}",reply_markup=owner_kb())
+    else: await update.message.reply_text(f"🏪 {s['shop_name']} | L{s['level']}",reply_markup=owner_kb(int(s["level"])))
 
 def main():
     if not TOKEN or not ADMIN_ID: raise RuntimeError("BOT_TOKEN and ADMIN_ID are required.")

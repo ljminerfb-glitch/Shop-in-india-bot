@@ -461,6 +461,51 @@ def test_resale_buyer_guards_and_sale(listing_id, inventory_id):
     print("PASS: Non-Level 1 seller listing blocked without stock change")
 
 
+
+def test_merchant_level_dashboard_visibility():
+    # Level 1 merchants must see their active catalogue and a Level 2 upgrade path.
+    update,message,query=callback_update(101,"m:dashboard")
+    asyncio.run(v5.menu_callback(update,context()))
+    dashboard=message.replies[0]
+    buttons=callback_data(dashboard)
+    dashboard_labels=[b.text for row in dashboard["kwargs"]["reply_markup"].inline_keyboard for b in row]
+    require("🛍 Level 1 Central Catalogue" in dashboard_labels,
+            "Level 1 merchant dashboard does not identify the active Level 1 catalogue")
+    require("m:market" in buttons and "m:levels" in buttons,
+            "Level 1 merchant dashboard is missing catalogue or upgrade navigation")
+
+    update,upgrade_message,_=callback_update(101,"m:levels")
+    asyncio.run(v5.menu_callback(update,context()))
+    upgrade=upgrade_message.replies[0]
+    upgrade_buttons=callback_data(upgrade)
+    require("SHOP LEVEL UPGRADE" in upgrade["text"] and "lv:2" in upgrade_buttons,
+            "Level 1 merchant cannot see the Level 2 upgrade option")
+    require("lv:1" not in upgrade_buttons,
+            "Level 1 merchant was incorrectly offered their already-active level")
+
+    update,level_message,_=callback_update(101,"lv:2")
+    asyncio.run(v5.level_callback(update,context()))
+    require("SHOP LEVEL 2" in level_message.replies[0]["text"],
+            "Level 2 selection did not open its price and benefits")
+
+    # Level 2 merchants must see Level 2 in their dashboard, not Level 1,
+    # and their catalogue menu must route to the Level 2 catalogue callback.
+    update,l2_dashboard_message,_=callback_update(303,"m:dashboard")
+    asyncio.run(v5.menu_callback(update,context()))
+    l2_dashboard=l2_dashboard_message.replies[0]
+    l2_buttons=callback_data(l2_dashboard)
+    l2_dashboard_labels=[b.text for row in l2_dashboard["kwargs"]["reply_markup"].inline_keyboard for b in row]
+    require("🛍 Level 2 Central Catalogue" in l2_dashboard_labels,
+            "Level 2 merchant dashboard does not identify the active Level 2 catalogue")
+    require("m:market" in l2_buttons and "m:levels" not in l2_buttons,
+            "Level 2 merchant dashboard has incorrect catalogue/upgrade controls")
+
+    update,market_message,_=callback_update(303,"m:market")
+    asyncio.run(v5.menu_callback(update,context()))
+    require("cclevel:2" in callback_data(market_message.replies[0]),
+            "Level 2 merchant catalogue entry does not route to Level 2")
+    print("PASS: Merchant dashboards show active catalogue and correct Level 2 upgrade visibility")
+
 def test_level2_catalogue_random_margin_and_resale():
     c=v4.db()
     products=c.execute("SELECT id FROM central_catalog ORDER BY id").fetchall()
@@ -1150,6 +1195,7 @@ def main():
     test_seller_market_screen(listing_id)
     test_resale_buyer_guards_and_sale(listing_id, inventory_id)
     test_admin_resale_flow(listing_id, inventory_id)
+    test_merchant_level_dashboard_visibility()
     test_level2_catalogue_random_margin_and_resale()
     test_merchant_deposit_screenshot_and_admin_approval()
     test_usdt_trc20_withdrawal_flow()

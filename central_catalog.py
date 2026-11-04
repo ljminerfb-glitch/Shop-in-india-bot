@@ -692,9 +692,8 @@ def resale_setup(c=None):
         listing_cols={r["name"] for r in conn.execute("PRAGMA table_info(resale_listings)").fetchall()}
         if "seller_level" not in listing_cols:
             conn.execute("ALTER TABLE resale_listings ADD COLUMN seller_level INTEGER NOT NULL DEFAULT 1")
-        conn.execute("""UPDATE resale_listings SET seller_level=COALESCE(
-            (SELECT level FROM shops WHERE shops.id=resale_listings.shop_id),1)
-            WHERE seller_level IS NULL OR seller_level=1""")
+            conn.execute("""UPDATE resale_listings SET seller_level=COALESCE(
+                (SELECT level FROM shops WHERE shops.id=resale_listings.shop_id),1)""")
         conn.execute("""CREATE TABLE IF NOT EXISTS admin_resale_orders(
           id INTEGER PRIMARY KEY AUTOINCREMENT, listing_id INTEGER NOT NULL,
           seller_owner_id INTEGER NOT NULL, seller_shop_id INTEGER NOT NULL,

@@ -232,7 +232,7 @@ async def network_callback(update,ctx):
         f"<b><i>Address:</i></b>\n\n<code>{address}</code>\n\n"
         f"<b>Amount:</b> {float(r['amount']):g} USDT\n"
         f"<b>Rate:</b> 1 USDT = INR {rate:,.2f}\n\n"
-        "<i>Send USDT only on the selected network. After payment, upload your transaction screenshot. Admin will verify it manually.</i>",
+        ( "<i>Send USDT only on the selected network. After payment, tap I HAVE DEPOSITED below and upload your transaction screenshot. Admin will verify it manually.</i>" if is_wallet_deposit else "<i>Send USDT only on the selected network. Upload your payment screenshot; Admin will verify it manually.</i>" ),
         reply_markup=kb,parse_mode="HTML")
 
 

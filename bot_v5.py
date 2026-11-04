@@ -267,7 +267,7 @@ async def menu_callback(update,ctx):
             rows=c.execute("""SELECT id,amount,currency,status,created_at,admin_note FROM payment_requests
                 WHERE owner_id=? AND payment_type='wallet_deposit' ORDER BY id DESC LIMIT 30""",(q.from_user.id,)).fetchall()
         finally: c.close()
-        body="<b>🧾 MY DEPOSITS</b>\\n━━━━━━━━━━━━━━━━━━\\n"
+        body="<b>🧾 MY DEPOSITS</b>\n━━━━━━━━━━━━━━━━━━\n"
         if not rows: body+="No deposit records found."
         else:
             from datetime import datetime
@@ -277,9 +277,9 @@ async def menu_callback(update,ctx):
                 date_text=str(r["created_at"] or "Date unavailable")
                 try: date_text=datetime.fromisoformat(date_text.replace("Z","+00:00")).strftime("%A, %d %B %Y")
                 except Exception: pass
-                body+=f"\\n<b>{float(r['amount']):g} {html.escape(str(r['currency'] or 'USDT'))}</b> — {label} ({html.escape(date_text)})"
-                if status=="rejected": body+=f"\\n  Reason: {html.escape(str(r['admin_note'] or 'No reason provided'))}"
-                body+="\\n"
+                body+=f"\n<b>{float(r['amount']):g} {html.escape(str(r['currency'] or 'USDT'))}</b> — {label} ({html.escape(date_text)})"
+                if status=="rejected": body+=f"\n  Reason: {html.escape(str(r['admin_note'] or 'No reason provided'))}"
+                body+="\n"
         await q.message.reply_text(body,reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back to Dashboard",callback_data="m:dashboard")]]),parse_mode="HTML")
     elif action=="depositdone":
         rid=ctx.user_data.get("payment_request_id")
@@ -291,7 +291,7 @@ async def menu_callback(update,ctx):
         if not row:
             await q.message.reply_text("This deposit request is no longer pending.",reply_markup=back_dashboard_kb()); return
         ctx.user_data["state"]="deposit_tx_hash"
-        await q.message.reply_text("📸 <b>Send Payment Screenshot</b>\\n━━━━━━━━━━━━━━━━━━\\nFirst send your transaction hash (TXID), then upload the payment screenshot/photo.",reply_markup=back_dashboard_kb(),parse_mode="HTML")
+        await q.message.reply_text("📸 <b>Send Payment Screenshot</b>\n━━━━━━━━━━━━━━━━━━\nFirst send your transaction hash (TXID), then upload the payment screenshot/photo.",reply_markup=back_dashboard_kb(),parse_mode="HTML")
     elif action in ("deposit","depositfund","deposit_fund","deposit-fund"):
         ctx.user_data["state"]="deposit_amount"
         await q.message.reply_text(

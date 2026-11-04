@@ -352,6 +352,9 @@ async def owner_market(update,ctx,shop):
         f"<b>🛍 CENTRAL LEVEL 1 CATALOGUE</b>\n━━━━━━━━━━━━━━━━━━\n"
         f"12 products • {total_visitors} unique visitors\n"
         "<i>Margin figures are references, not guaranteed income. Actual profit is recorded after a completed sale.</i>",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("⬅️ Back to My Products",callback_data="m:products"),
+            InlineKeyboardButton("🏠 Dashboard",callback_data="m:dashboard")]]),
         parse_mode="HTML")
     for p in rows:
         price=float(p["price_usdt"] or 0); stock=int(p["stock"] or 0)
@@ -363,7 +366,9 @@ async def owner_market(update,ctx,shop):
         quantities=[n for n in (1,2,5) if n<=stock] or [1]
         buttons=[[InlineKeyboardButton(f"🛒 Buy × {n}",callback_data=f"ccbuy:{p['id']}:{n}")
                   for n in quantities]]
-        buttons.append([InlineKeyboardButton("⬅️ Back to Dashboard",callback_data="m:dashboard")])
+        buttons.append([
+            InlineKeyboardButton("⬅️ Back to My Products",callback_data="m:products"),
+            InlineKeyboardButton("🏠 Dashboard",callback_data="m:dashboard")])
         kb=InlineKeyboardMarkup(buttons)
         image_path=Path(__file__).resolve().parent/(p["image_path"] or "")
         try:

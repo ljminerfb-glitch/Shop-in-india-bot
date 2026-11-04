@@ -223,7 +223,7 @@ def test_level1_catalogue_quantity_buttons():
     next_page_sent=ctx.bot.sent[before:]
     require(product_card_ids(next_page_sent)==expected_ids[5:10],
             "Next 5 did not show products 6 through 10")
-    next_nav=next(x for x in next_page_sent if x["kwargs"].get("reply_markup"))
+    next_nav=next(x for x in next_page_sent if any(cb.startswith("ccpage:") for cb in sent_callback_data(x)))
     next_nav_buttons=sent_callback_data(next_nav)
     require("ccpage:0" in next_nav_buttons and "ccpage:2" in next_nav_buttons,
             "Middle page must provide Previous 5 and Next 5 buttons")
@@ -233,7 +233,7 @@ def test_level1_catalogue_quantity_buttons():
     last_page_sent=ctx.bot.sent[before:]
     require(product_card_ids(last_page_sent)==expected_ids[10:],
             "Final catalogue page should show only the remaining products")
-    last_nav=next(x for x in last_page_sent if x["kwargs"].get("reply_markup"))
+    last_nav=next(x for x in last_page_sent if any(cb.startswith("ccpage:") for cb in sent_callback_data(x)))
     require("ccpage:3" not in sent_callback_data(last_nav) and
             "ccpage:1" in sent_callback_data(last_nav),
             "Final page must hide Next 5 and keep Previous 5")
@@ -290,7 +290,7 @@ def test_admin_catalogue_pagination():
     page_two=ctx.bot.sent[before:]
     require(product_card_ids(page_two)==ids[5:10],
             "Admin Next 5 did not show products 6 through 10")
-    nav_two=next(x for x in page_two if x["kwargs"].get("reply_markup"))
+    nav_two=next(x for x in page_two if any(cb.startswith("ccadminpage:") for cb in sent_callback_data(x)))
     buttons=sent_callback_data(nav_two)
     require("ccadminpage:0" in buttons and "ccadminpage:2" in buttons,
             "Admin middle page must provide Previous 5 and Next 5")

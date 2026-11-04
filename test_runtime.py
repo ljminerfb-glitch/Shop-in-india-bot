@@ -113,6 +113,13 @@ def product_card_ids(sent):
     return ids
 
 
+def sent_text(item):
+    if "text" in item["kwargs"]:
+        return item["kwargs"]["text"]
+    args=item.get("args",())
+    return args[1] if len(args)>1 and isinstance(args[1],str) else ""
+
+
 def sent_callback_data(item):
     markup=item["kwargs"].get("reply_markup")
     if not markup:
@@ -208,7 +215,7 @@ def test_level1_catalogue_quantity_buttons():
     require(product_card_ids(ctx.bot.sent)==expected_ids[:5],
             f"First Level 1 page should show exactly the first five products: {product_card_ids(ctx.bot.sent)!r}")
     nav=next(x for x in ctx.bot.sent if "ccpage:1" in sent_callback_data(x))
-    require("PAGE 1/3" in nav["kwargs"].get("text",""),
+    require("PAGE 1/3" in sent_text(nav),
             "First catalogue page indicator or Next 5 button is missing")
     before=len(ctx.bot.sent)
     next_update,_,_=callback_update(101,"ccpage:1")

@@ -259,13 +259,13 @@ async def menu_callback(update,ctx):
                                   reply_markup=back_dashboard_kb())
         return
 
-    if action=="deposit":
+    if action in ("deposit","depositfund","deposit_fund"):
         ctx.user_data["state"]="deposit_amount"
         await q.message.reply_text(
-            "<b>💳 DEPOSIT USDT</b>\n━━━━━━━━━━━━━━━━━━\n"
-            "Enter the amount you want to deposit.\n"
-            "<i>Minimum amount must be greater than zero.</i>\n\n"
-            "Choose a network on the next screen, then upload your payment proof for Admin review.",
+            "<b>💳 DEPOSIT USDT</b>\\n━━━━━━━━━━━━━━━━━━\\n"
+            "Enter the amount you want to add to your merchant wallet.\\n"
+            "<i>Minimum amount must be greater than zero.</i>\\n\\n"
+            "Next, select TRC20 or BEP20 and upload your transaction proof for Admin verification.",
             reply_markup=back_dashboard_kb(),parse_mode="HTML")
     elif action=="withdrawsetup":
         c=v4.db()
@@ -456,14 +456,25 @@ async def menu_callback(update,ctx):
         central_rows=c.execute("""SELECT o.id,o.quantity,o.total_usdt,o.status,p.title FROM central_orders o
           JOIN central_catalog p ON p.id=o.catalog_id WHERE o.buyer_shop_id=? ORDER BY o.id DESC LIMIT 20""",(s["id"],)).fetchall()
         c.close()
-        seller_body="\n\n".join(
-            f"#{r['id']} • Product #{r['product_id']} ×{r['quantity']} • INR {r['total_amount']:.2f} • "
-            f"{'🟢' if r['status'] in ('delivered','completed') else '🔴' if r['status']=='rejected' else '🟡'} {html.escape(str(r['status']).upper())}"
+        seller_body="\\n\\n━━━━━━━━━━━━━━━━━━━━\\n\\n".join(
+            f"<b>ORDER #{r['id']}</b>\\n"
+            f"Product: <b>#{r['product_id']}</b>\\n"
+            f"Quantity: <b>{r['quantity']}</b>\\n"
+            f"Amount: <b>INR {r['total_amount']:.2f}</b>\\n"
+            f"Status: {'🟢' if r['status'] in ('delivered','completed') else '🔴' if r['status']=='rejected' else '🟡'} "
+            f"<b>{html.escape(str(r['status']).upper())}</b>"
             for r in rows)
-        central_body="\n\n".join(
-            f"#{r['id']} • {html.escape(str(r['title']))} ×{r['quantity']} • {r['total_usdt']:g} USDT • 🟢 {html.escape(str(r['status']).upper())}"
+        central_body="\\n\\n━━━━━━━━━━━━━━━━━━━━\\n\\n".join(
+            f"<b>ORDER #{r['id']}</b>\\n"
+            f"Product: <b>{html.escape(str(r['title']))}</b>\\n"
+            f"Quantity: <b>{r['quantity']}</b>\\n"
+            f"Amount: <b>{r['total_usdt']:g} USDT</b>\\n"
+            f"Status: 🟢 <b>{html.escape(str(r['status']).upper())}</b>"
             for r in central_rows)
-        body="<b>🧾 MY ORDERS</b>\n━━━━━━━━━━━━━━━━━━\n<b>INR SELLER MARKETPLACE</b>\n"+(seller_body or "No INR orders.")+"\n\n<b>USDT CATALOGUE / RESALE</b>\n"+(central_body or "No USDT orders.")
+        body=("<b>🧾 MY ORDERS</b>\\n━━━━━━━━━━━━━━━━━━\\n\\n"
+              "<b>INR SELLER MARKETPLACE</b>\\n\\n"+(seller_body or "No INR orders.")+
+              "\\n\\n━━━━━━━━━━━━━━━━━━\\n\\n<b>USDT CATALOGUE / RESALE</b>\\n\\n"+
+              (central_body or "No USDT orders."))
         await q.message.reply_text(body[:4000],reply_markup=back_dashboard_kb(),parse_mode="HTML")
     elif action=="history":
         c=v4.db()

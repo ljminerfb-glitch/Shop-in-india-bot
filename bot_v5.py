@@ -1,9 +1,11 @@
 """V5 Telegram-chat UI: inline level selection, owner panel and deposits."""
-import os, logging, re, html
+import os, logging, asyncio, html, re
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove, CopyTextButton
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 import bot_v3 as v3
 import bot_v4 as v4
+import central_catalog as central
+import audit_dashboard as audit
 
 TOKEN=os.getenv("BOT_TOKEN")
 ADMIN_ID=int(os.getenv("ADMIN_ID","0"))
@@ -25,7 +27,8 @@ def level_kb():
 
 def owner_kb():
     return InlineKeyboardMarkup([
-      [InlineKeyboardButton("🛍 Marketplace",callback_data="m:market"),InlineKeyboardButton("💳 Deposit",callback_data="m:deposit")],
+      [InlineKeyboardButton("🛍 Level 1 Central Catalogue",callback_data="m:market")],
+      [InlineKeyboardButton("🏬 Seller Marketplace",callback_data="m:sellermarket"),InlineKeyboardButton("💳 Deposit",callback_data="m:deposit")],
       [InlineKeyboardButton("💸 Withdraw",callback_data="m:withdraw"),InlineKeyboardButton("👛 Wallet",callback_data="m:wallet")],
       [InlineKeyboardButton("📦 My Products",callback_data="m:products"),InlineKeyboardButton("🧾 My Orders",callback_data="m:orders")],
       [InlineKeyboardButton("📊 Profit & History",callback_data="m:history"),InlineKeyboardButton("👤 My Account",callback_data="m:profile")],
@@ -48,37 +51,35 @@ def back_dashboard_kb():
 async def levels(bot,uid):
     await bot.send_message(
         uid,
-        "🔷 SHOP IN INDIA\n━━━━━━━━━━━━━━━━━━\n"
-        "🎯 SELECT YOUR SHOP LEVEL\n\n"
-        "Choose the level you want to activate.\n"
-        "After selection, choose your USDT payment network.\n\n"
-        "🔵 Blue buttons = available levels",
-        reply_markup=level_kb())
+        "<b>🔷 SHOP IN INDIA</b>\n━━━━━━━━━━━━━━━━━━\n"
+        "<b>SELECT YOUR SHOP LEVEL</b>\n"
+        "Choose a level to see its price and benefits. Payment is made in USDT.",
+        reply_markup=level_kb(),parse_mode="HTML")
 
 async def start(update,ctx):
     ctx.user_data.clear()
     s=v4.shop_for(update.effective_user.id)
     if not s:
         await update.message.reply_text(
-            "🔷 SHOP IN INDIA\n━━━━━━━━━━━━━━━━━━\n"
-            "Welcome! Build and manage your online shop.\n\n"
-            "Choose an option to continue:",
+            "<b>🔷 SHOP IN INDIA</b>\n━━━━━━━━━━━━━━━━━━\n"
+            "Welcome! Manage your shop, products and orders from one place.\n"
+            "<b>Choose an option to continue:</b>",
             reply_markup=ReplyKeyboardMarkup(
                 [["🏪 Register Shop"],["🔐 Login"],["💬 Support"]],
-                resize_keyboard=True))
+                resize_keyboard=True),parse_mode="HTML")
     elif s["status"]!="approved":
         await update.message.reply_text(
-            "🔷 SHOP IN INDIA\n━━━━━━━━━━━━━━━━━━\n"
-            "⏳ Your shop application is waiting for Admin approval.\n"
-            "You will receive a message when it is approved.")
+            "<b>🟡 APPLICATION PENDING</b>\n━━━━━━━━━━━━━━━━━━\n"
+            "Your shop is waiting for Admin review. You will receive a message when a decision is made.",
+            parse_mode="HTML")
     elif int(s["level"])<1:
         await levels(ctx.bot,update.effective_user.id)
     else:
         await update.message.reply_text(
-            f"🔷 SHOP IN INDIA\n━━━━━━━━━━━━━━━━━━\n"
-            f"🏪 {s['shop_name']}  •  LEVEL {s['level']}\n\n"
-            "Welcome to your Owner Dashboard. Select an option:",
-            reply_markup=owner_kb())
+            f"<b>🔷 SHOP IN INDIA</b>\n━━━━━━━━━━━━━━━━━━\n"
+            f"🏪 <b>{html.escape(str(s['shop_name']))}</b> • <b>LEVEL {s['level']}</b>\n\n"
+            "<b>OWNER DASHBOARD</b>\nWelcome back! Choose a section below.",
+            reply_markup=owner_kb(),parse_mode="HTML")
 
 async def approved_callback(update,ctx):
     q=update.callback_query
@@ -87,7 +88,7 @@ async def approved_callback(update,ctx):
     await v3.approval(update,ctx)
     if action=="approve" and row:
         if int(row["level"])<1: await levels(ctx.bot,row["owner_id"])
-        else: await ctx.bot.send_message(row["owner_id"],"🏪 Your shop is approved and level is active. Open /start for your owner panel.",reply_markup=owner_kb())
+        else: await ctx.bot.send_message(row["owner_id"],"<b>✅ SHOP APPROVED</b>\nYour shop is approved and its level is active. Open /start to access your owner dashboard.",reply_markup=owner_kb(),parse_mode="HTML")
 
 async def level_callback(update,ctx):
     q=update.callback_query
@@ -131,13 +132,12 @@ async def level_callback(update,ctx):
         [InlineKeyboardButton("⬅️ Back to all levels",callback_data="lvback")]
     ])
     await q.message.reply_text(
-        f"🔷 SHOP IN INDIA — LEVEL {lv}\n━━━━━━━━━━━━━━━━━━\n"
-        f"💰 Activation price: {float(cfg['activation_usdt']):g} USDT\n"
-        f"🇮🇳 INR reference: ₹{float(cfg['activation_usdt'])*v4.usdt_inr_rate():,.2f}\n\n"
-        f"🎁 LEVEL BENEFITS\n{benefits}\n\n"
-        "Note: Profit/margin figures are references, not guaranteed earnings. "
-        "Level activates only after Admin verifies your payment.",
-        reply_markup=kb)
+        f"<b>🔷 SHOP LEVEL {lv}</b>\n━━━━━━━━━━━━━━━━━━\n"
+        f"Activation price: <b>{float(cfg['activation_usdt']):g} USDT</b>\n"
+        f"INR reference: ₹{float(cfg['activation_usdt'])*v4.usdt_inr_rate():,.2f}\n\n"
+        f"<b>LEVEL BENEFITS</b>\n{html.escape(benefits)}\n\n"
+        "<i>Profit figures are references, not guaranteed earnings. Level activates after Admin verifies payment.</i>",
+        reply_markup=kb,parse_mode="HTML")
 
 async def level_pay_callback(update,ctx):
     q=update.callback_query
@@ -180,27 +180,26 @@ async def level_pay_callback(update,ctx):
     finally:
         c.close()
 
-    ctx.user_data.update({"state":"payment_proof","payment_request_id":rid})
+    ctx.user_data.update({"state":"await_deposit_done","payment_request_id":rid})
     kb=InlineKeyboardMarkup([[
         InlineKeyboardButton("🔵 USDT TRC20",callback_data=f"net:{rid}:trc"),
         InlineKeyboardButton("🔵 USDT BEP20",callback_data=f"net:{rid}:bep")
     ]])
     await q.message.reply_text(
-        f"🔷 LEVEL {lv} PAYMENT\n━━━━━━━━━━━━━━━━━━\n"
-        f"Payment request: #{rid}\n"
-        f"Amount: {amount:g} USDT\n"
-        f"Rate: 1 USDT = INR {rate:,.2f}\n"
-        f"INR reference: ₹{amount*rate:,.2f}\n\n"
-        "Choose your payment network:",
-        reply_markup=kb)
+        f"<b>💳 LEVEL {lv} PAYMENT</b>\n━━━━━━━━━━━━━━━━━━\n"
+        f"Request: <code>#{rid}</code>\n"
+        f"Amount: <b>{amount:g} USDT</b>\n"
+        f"INR reference: ₹{amount*rate:,.2f} (rate ₹{rate:,.2f}/USDT)\n\n"
+        "<b>Choose your payment network:</b>",
+        reply_markup=kb,parse_mode="HTML")
 
 async def level_back_callback(update,ctx):
     q=update.callback_query
     await q.answer()
     await q.message.reply_text(
-        "🔷 SHOP IN INDIA\n━━━━━━━━━━━━━━━━━━\n"
-        "🎯 SELECT YOUR SHOP LEVEL\n\nChoose a level to view its price and benefits.",
-        reply_markup=level_kb())
+        "<b>🔷 SELECT YOUR SHOP LEVEL</b>\n━━━━━━━━━━━━━━━━━━\n"
+        "Choose a level to view its price and benefits.",
+        reply_markup=level_kb(),parse_mode="HTML")
 
 async def network_callback(update,ctx):
     q=update.callback_query
@@ -210,15 +209,16 @@ async def network_callback(update,ctx):
     network="USDT TRC20" if net=="trc" else "USDT BEP20"
     address=v4.PAY_TRON if net=="trc" else v4.PAY_BSC
     c=v4.db()
-    r=c.execute("SELECT amount,payment_type FROM payment_requests WHERE id=? AND owner_id=? AND status='pending'",(rid,q.from_user.id)).fetchone()
-    if not r:
+    try:
+        r=c.execute("SELECT amount,payment_type FROM payment_requests WHERE id=? AND owner_id=? AND status='pending'",(rid,q.from_user.id)).fetchone()
+        if not r:
+            await q.message.reply_text("Payment request not found.",reply_markup=back_dashboard_kb())
+            return
+        c.execute("UPDATE payment_requests SET network=? WHERE id=? AND owner_id=? AND status='pending'",(network,rid,q.from_user.id))
+        rate=v4.usdt_inr_rate(c)
+        c.commit()
+    finally:
         c.close()
-        await q.message.reply_text("Payment request not found.",reply_markup=back_dashboard_kb())
-        return
-    c.execute("UPDATE payment_requests SET network=? WHERE id=?",(network,rid))
-    rate=v4.usdt_inr_rate(c)
-    c.commit()
-    c.close()
     is_wallet_deposit=(r["payment_type"]=="wallet_deposit")
     ctx.user_data.update({"state":"await_deposit_done" if is_wallet_deposit else "payment_proof","payment_request_id":rid,
                           "screen_message_id":q.message.message_id,"screen_chat_id":q.message.chat_id})
@@ -232,9 +232,8 @@ async def network_callback(update,ctx):
         f"<b><i>Address:</i></b>\n\n<code>{address}</code>\n\n"
         f"<b>Amount:</b> {float(r['amount']):g} USDT\n"
         f"<b>Rate:</b> 1 USDT = INR {rate:,.2f}\n\n"
-        "<i>Send USDT only on the selected network. After payment, upload your transaction screenshot. Admin will verify it manually.</i>",
+        + ( "<i>Send USDT only on the selected network. After payment, tap I HAVE DEPOSITED below and upload your transaction screenshot. Admin will verify it manually.</i>" if is_wallet_deposit else "<i>Send USDT only on the selected network. Upload your payment screenshot; Admin will verify it manually.</i>" ),
         reply_markup=kb,parse_mode="HTML")
-
 
 
 async def menu_callback(update,ctx):
@@ -253,8 +252,8 @@ async def menu_callback(update,ctx):
         ctx.user_data["screen_message_id"]=q.message.message_id
         ctx.user_data["screen_chat_id"]=q.message.chat_id
         await q.message.reply_text(
-            f"🔷 SHOP IN INDIA\n━━━━━━━━━━━━━━━━━━\n🏪 {s['shop_name']} • LEVEL {s['level']}\n\nOWNER DASHBOARD\nSelect an option:",
-            reply_markup=owner_kb())
+            f"<b>🔷 SHOP IN INDIA</b>\n━━━━━━━━━━━━━━━━━━\n🏪 <b>{html.escape(str(s['shop_name']))}</b> • <b>LEVEL {s['level']}</b>\n\n<b>OWNER DASHBOARD</b>\nChoose a section below.",
+            reply_markup=owner_kb(),parse_mode="HTML")
         return
 
     if not s or s["status"]!="approved" or int(s["level"])<1:
@@ -269,7 +268,7 @@ async def menu_callback(update,ctx):
             [InlineKeyboardButton("⬅️ Back to Dashboard",callback_data="m:dashboard")]
         ])
         await q.message.reply_text(
-            "💳 <b>DEPOSIT CENTER</b>\n━━━━━━━━━━━━━━━━━━\n\nChoose an option below:",
+            "<b>💳 DEPOSIT CENTER</b>\n━━━━━━━━━━━━━━━━━━\n\nChoose an option below:",
             reply_markup=kb,parse_mode="HTML")
     elif action=="deposits":
         c=v4.db()
@@ -290,85 +289,459 @@ async def menu_callback(update,ctx):
                 body+=f"\n<b>{float(r['amount']):g} {html.escape(str(r['currency'] or 'USDT'))}</b> — {label} ({html.escape(date_text)})"
                 if status=="rejected": body+=f"\n  Reason: {html.escape(str(r['admin_note'] or 'No reason provided'))}"
                 body+="\n"
-        await q.message.reply_text(body,reply_markup=back_dashboard_kb(),parse_mode="HTML")
+        await q.message.reply_text(body,reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back to Dashboard",callback_data="m:dashboard")]]),parse_mode="HTML")
+    # Merchant confirms the transfer before the screenshot is accepted for Admin review.
     elif action=="depositdone":
         rid=ctx.user_data.get("payment_request_id")
         if not rid or ctx.user_data.get("state")!="await_deposit_done":
             await q.message.reply_text("Please complete the deposit amount and network selection first.",reply_markup=back_dashboard_kb()); return
         c=v4.db()
-        try: row=c.execute("SELECT id FROM payment_requests WHERE id=? AND owner_id=? AND payment_type='wallet_deposit' AND status='pending'",(rid,q.from_user.id)).fetchone()
-        finally: c.close()
+        try:
+            row=c.execute(
+                "SELECT id,payment_type FROM payment_requests WHERE id=? AND owner_id=? "
+                "AND payment_type='wallet_deposit' AND status='pending'",
+                (rid,q.from_user.id)).fetchone()
+        finally:
+            c.close()
         if not row:
-            await q.message.reply_text("This deposit request is no longer pending.",reply_markup=back_dashboard_kb()); return
+            await q.message.reply_text("This payment request is no longer pending.",reply_markup=back_dashboard_kb()); return
         ctx.user_data["state"]="payment_proof"
         await q.message.reply_text(
-            "📸 <b>UPLOAD YOUR PAYMENT SCREENSHOT</b>\n━━━━━━━━━━━━━━━━━━\n"
-            "Please send a clear screenshot of your completed USDT deposit. "
+            "<b>📸 UPLOAD YOUR PAYMENT SCREENSHOT</b>\n━━━━━━━━━━━━━━━━━━\n"
+            "Send a clear screenshot of your completed USDT transfer. "
             "Your proof will be sent to Admin for manual verification. "
-            "Your deposit will be credited only after Admin approves it.",
+            "Your payment will be credited or activated only after Admin approves it.",
             reply_markup=back_dashboard_kb(),parse_mode="HTML")
-    elif action=="depositstart":
+    elif action=="depositstart" or action in ("depositfund","deposit_fund","deposit-fund"):
         ctx.user_data["state"]="deposit_amount"
         await q.message.reply_text(
-            "💳 DEPOSIT FUNDS\n━━━━━━━━━━━━━━━━━━\n"
-            "Enter the amount of USDT you want to deposit.\n"
-            "Minimum amount must be greater than zero.\n\n"
-            "Payment network and address will appear after amount entry. Admin manually verifies the screenshot.",
-            reply_markup=back_dashboard_kb())
+            "<b>💳 DEPOSIT USDT</b>\n━━━━━━━━━━━━━━━━━━\n"
+            "Enter the amount you want to add to your merchant wallet.\n"
+            "<i>Minimum amount must be greater than zero.</i>\n\n"
+            "Next, select TRC20 or BEP20. After sending payment, tap I HAVE DEPOSITED and upload your screenshot.",
+            reply_markup=back_dashboard_kb(),parse_mode="HTML")
+    elif action=="withdrawsetup":
+        c=v4.db()
+        try:
+            wallet=c.execute("SELECT network,address,updated_at FROM owner_wallets WHERE owner_id=?",
+                             (q.from_user.id,)).fetchone()
+        finally:
+            c.close()
+        configured=bool(wallet and wallet["network"]=="USDT TRC20" and
+                        re.fullmatch(r"T[1-9A-HJ-NP-Za-km-z]{33}",str(wallet["address"] or "")))
+        if configured:
+            body=("<b>🔐 WITHDRAW SETUP</b>\n━━━━━━━━━━━━━━━━━━\n"
+                  "🟢 <b>USDT TRC20 address saved</b>\n"
+                  f"<code>{html.escape(str(wallet['address']))}</code>\n"
+                  f"<i>Last updated: {html.escape(str(wallet['updated_at'] or ''))}</i>\n\n"
+                  "Withdrawal requests will use this saved address. You can update it anytime.")
+            rows=[[InlineKeyboardButton("📋 COPY MY ADDRESS",copy_text=CopyTextButton(text=str(wallet["address"])))],
+                  [InlineKeyboardButton("✏️ UPDATE ADDRESS",callback_data="m:withdrawsetupedit")],
+                  [InlineKeyboardButton("⬅️ Dashboard",callback_data="m:dashboard")]]
+        else:
+            body=("<b>🔐 WITHDRAW SETUP</b>\n━━━━━━━━━━━━━━━━━━\n"
+                  "🟡 <b>No payout address saved</b>\n\n"
+                  "Save your USDT TRC20 address once before requesting a withdrawal. "
+                  "Only TRON/TRC20 addresses are accepted.")
+            rows=[[InlineKeyboardButton("➕ SET TRC20 ADDRESS",callback_data="m:withdrawsetupedit")],
+                  [InlineKeyboardButton("⬅️ Dashboard",callback_data="m:dashboard")]]
+        await q.message.reply_text(body,reply_markup=InlineKeyboardMarkup(rows),parse_mode="HTML")
+    elif action=="withdrawsetupedit":
+        ctx.user_data["state"]="withdraw_setup_address"
+        await q.message.reply_text(
+            "<b>🔐 SET USDT TRC20 ADDRESS</b>\n━━━━━━━━━━━━━━━━━━\n"
+            "Send your USDT TRC20 (TRON) wallet address.\n"
+            "<i>Address must begin with T. BEP20/ERC20 addresses are not accepted.</i>",
+            reply_markup=back_dashboard_kb(),parse_mode="HTML")
     elif action=="withdraw":
+        c=v4.db()
+        try:
+            wallet=c.execute("SELECT network,address FROM owner_wallets WHERE owner_id=?",
+                             (q.from_user.id,)).fetchone()
+        finally:
+            c.close()
+        address=str(wallet["address"] or "") if wallet and wallet["network"]=="USDT TRC20" else ""
+        if not re.fullmatch(r"T[1-9A-HJ-NP-Za-km-z]{33}",address):
+            ctx.user_data["state"]="withdraw_setup_address"
+            await q.message.reply_text(
+                "<b>🔐 WITHDRAW SETUP REQUIRED</b>\n━━━━━━━━━━━━━━━━━━\n"
+                "Pehle apna USDT TRC20 withdrawal address save karein.\n"
+                "<i>Address T se start hona chahiye. Sirf TRC20 accepted hai.</i>",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔐 OPEN WITHDRAW SETUP",callback_data="m:withdrawsetup")],
+                    [InlineKeyboardButton("⬅️ Back to Dashboard",callback_data="m:dashboard")]]),
+                parse_mode="HTML")
+            return
+        available=available_withdrawal_usdt(q.from_user.id)
         ctx.user_data["state"]="withdraw_amount"
         await q.message.reply_text(
-            "💸 WITHDRAW FUNDS\n━━━━━━━━━━━━━━━━━━\n"
-            "Enter withdrawal amount in INR. Only completed sale earnings are withdrawable.",
-            reply_markup=back_dashboard_kb())
+            "<b>💸 WITHDRAW USDT</b>\n━━━━━━━━━━━━━━━━━━\n"
+            f"Available sale earnings: <b>{available:.6f} USDT</b>\n"
+            f"Payout address: <code>{html.escape(address)}</code>\n"
+            "Enter the amount you want to withdraw in <b>USDT</b>.\n"
+            "<i>Only completed USDT resale sale proceeds are withdrawable. Payout is TRC20 only.</i>",
+            reply_markup=back_dashboard_kb(),parse_mode="HTML")
     elif action=="wallet":
-        ctx.user_data["state"]="wallet_network"
-        await q.message.reply_text(
-            "👛 WALLET SETTINGS\nWallet setup is managed through the wallet verification flow. Use /verifywallet or contact Admin.",
-            reply_markup=back_dashboard_kb())
-    elif action=="market":
         c=v4.db()
-        rows=c.execute("SELECT id,title,description,price,currency,stock FROM products WHERE active=1 AND stock>0 AND level_required=? ORDER BY id DESC LIMIT 20",(s["level"],)).fetchall()
-        c.close()
-        body="🛍 MARKETPLACE\n━━━━━━━━━━━━━━━━━━\n"
-        body += ("\n\n".join(f"#{r['id']} {r['title']}\n{(r['description'] or '')[:250]}\nPrice: {r['currency']} {r['price']} | Stock: {r['stock']}\nBuy: /buy {r['id']} 1" for r in rows)
-                 if rows else "Catalog is empty. Admin must add verified products first.")
-        await q.message.reply_text(body[:4000],reply_markup=back_dashboard_kb())
+        try:
+            summary=usdt_wallet_summary(c,q.from_user.id)
+            bal=float(summary["ledger_balance"])
+            available_wallet=max(0.0,round(bal-float(summary["pending"]),6))
+            invested=c.execute("SELECT COALESCE(SUM(amount),0) FROM ledger WHERE owner_id=? AND currency='USDT' AND entry_type='central_purchase_debit'",(q.from_user.id,)).fetchone()[0]
+            profit=c.execute("SELECT COALESCE(SUM(amount),0) FROM ledger WHERE owner_id=? AND currency='USDT' AND entry_type IN ('resale_profit_credit','central_sale_profit')",(q.from_user.id,)).fetchone()[0]
+            dep=c.execute("SELECT COALESCE(SUM(amount),0) FROM ledger WHERE owner_id=? AND currency='USDT' AND entry_type='deposit_credit'",(q.from_user.id,)).fetchone()[0]
+        finally: c.close()
+        balance_line=(f"Available balance: <b>{available_wallet:.6f} USDT</b>" if bal>=-1e-9 else
+                      f"⚠️ <b>Wallet shortfall: {abs(bal):.6f} USDT</b>")
+        await q.message.reply_text(
+            "<b>👛 USDT WALLET</b>\n━━━━━━━━━━━━━━━━━━\n"
+            f"{balance_line}\n"
+            f"Total deposits: {float(dep):.6f} USDT\n"
+            f"Catalogue investment: {float(invested):.6f} USDT\n"
+            f"Total resale proceeds: {float(summary['earned']):.6f} USDT\n"
+            f"Paid withdrawals: {float(summary['paid']):.6f} USDT\n"
+            f"Pending withdrawals: {float(summary['pending']):.6f} USDT\n"
+            f"Sale proceeds remaining: {float(summary['sale_remaining']):.6f} USDT\n"
+            f"Available to withdraw: <b>{float(summary['available']):.6f} USDT</b>\n"
+            f"💚 <b>Recorded profit: +{float(profit):.6f} USDT</b>\n\n"
+            "<b>DEPOSIT NETWORKS</b>\n"
+            f"TRC20: <code>{html.escape(str(v4.PAY_TRON))}</code>\n"
+            f"BEP20: <code>{html.escape(str(v4.PAY_BSC))}</code>\n\n"
+            "Send USDT only on the selected network and upload payment proof for verification.",
+            reply_markup=back_dashboard_kb(),parse_mode="HTML")
+    elif action=="market":
+        await central.owner_market(update,ctx,s)
+    elif action=="level1":
+        await central.owner_market(update,ctx,s)
+    elif action=="sellermarket":
+        central.resale_setup()
+        c=v4.db()
+        try:
+            rows=c.execute("""SELECT p.id,p.title,p.description,p.price,p.currency,p.stock,s.shop_name
+              FROM products p JOIN shops s ON s.id=p.shop_id
+              WHERE p.active=1 AND p.stock>0 AND s.status='approved' AND p.shop_id<>?
+              ORDER BY p.id DESC LIMIT 30""",(s["id"],)).fetchall()
+            own_resale=c.execute("""SELECT l.id,l.remaining_quantity,l.ask_price_usdt,p.title
+              FROM resale_listings l JOIN central_catalog p ON p.id=l.catalog_id
+              JOIN shops sh ON sh.id=l.shop_id
+              WHERE l.status='active' AND l.remaining_quantity>0 AND l.owner_id=?
+                AND sh.status='approved' AND sh.level=1
+              ORDER BY l.id DESC LIMIT 30""",(q.from_user.id,)).fetchall()
+            resale=c.execute("""SELECT l.id,l.remaining_quantity,l.ask_price_usdt,p.title,sh.shop_name
+              FROM resale_listings l JOIN central_catalog p ON p.id=l.catalog_id
+              JOIN shops sh ON sh.id=l.shop_id
+              WHERE l.status='active' AND l.remaining_quantity>0 AND l.owner_id<>?
+                AND sh.status='approved' AND sh.level=1
+              ORDER BY l.id DESC LIMIT 30""",(q.from_user.id,)).fetchall()
+        finally: c.close()
+        body="<b>🏬 SELLER MARKETPLACE</b>\n━━━━━━━━━━━━━━━━━━\n<b>MY ACTIVE USDT LISTINGS</b>\n"
+        if own_resale:
+            body+="\n\n".join(
+                f"<b>#{r['id']} {html.escape(str(r['title']))}</b>\n"
+                f"Your available stock: <b>{r['remaining_quantity']}</b>\n"
+                f"Asking price: <b>{float(r['ask_price_usdt']):g} USDT / item</b>"
+                for r in own_resale)
+        else:
+            body+="No active USDT listings yet. Approved Level 1 catalogue purchases are listed automatically."
+        body+="\n\n<b>OTHER LEVEL 1 MERCHANT LISTINGS</b>\n"
+        if resale:
+            body+="\n\n".join(
+                f"<b>#{r['id']} {html.escape(str(r['title']))}</b>\n"
+                f"Seller: {html.escape(str(r['shop_name']))}\n"
+                f"Price: <b>{float(r['ask_price_usdt']):g} USDT / item</b> | Stock: {r['remaining_quantity']}"
+                for r in resale)
+        else:
+            body+="No other Level 1 merchant listings available right now."
+        await q.message.reply_text(body[:4000],reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton(f"Buy #{r['id']} ×1",callback_data=f"rs:buy:{r['id']}:1"),
+              InlineKeyboardButton("Buy ×5",callback_data=f"rs:buy:{r['id']}:5")] for r in resale]+
+            [[InlineKeyboardButton("⬅️ Dashboard",callback_data="m:dashboard")]]),parse_mode="HTML")
+        legacy_body="<b>LEGACY INR MARKETPLACE</b>\n<i>Separate from USDT resale listings</i>"
+        legacy_body+="\n\n".join(
+            f"#{r['id']} {html.escape(str(r['title']))}\nShop: {html.escape(str(r['shop_name']))}\n"
+            f"{html.escape(str(r['currency']))} {float(r['price']):g} | Stock: {r['stock']}\n"
+            f"<code>/buy {r['id']} QUANTITY</code>"
+            for r in rows) if rows else "\nNo INR products are published. Your USDT listings appear above."
+        await q.message.reply_text(legacy_body[:4000],reply_markup=back_dashboard_kb(),parse_mode="HTML")
     elif action=="products":
         c=v4.db()
-        rows=c.execute("SELECT id,title,price,currency,stock,active FROM products WHERE shop_id=? ORDER BY id DESC LIMIT 20",(s["id"],)).fetchall()
-        c.close()
-        body="📦 MY PRODUCTS\n━━━━━━━━━━━━━━━━━━\n"+("\n".join(f"#{r['id']} {r['title']} — {r['currency']} {r['price']} | stock {r['stock']} | active {r['active']}" for r in rows) if rows else "No products assigned to your shop.")
-        await q.message.reply_text(body[:4000],reply_markup=back_dashboard_kb())
+        try:
+            rows=c.execute("""SELECT i.catalog_id,i.quantity,i.remaining_quantity,i.unit_cost_usdt,i.status,
+                p.title FROM central_inventory i JOIN central_catalog p ON p.id=i.catalog_id
+                WHERE i.owner_id=? ORDER BY i.id DESC LIMIT 30""",(q.from_user.id,)).fetchall()
+            legacy=c.execute("SELECT id,title,price,currency,stock,active FROM products WHERE shop_id=? ORDER BY id DESC LIMIT 20",(s["id"],)).fetchall()
+        finally: c.close()
+        body="<b>📦 MY PRODUCTS & INVENTORY</b>\n━━━━━━━━━━━━━━━━━━\n"
+        if rows:
+            total_remaining=sum(int(r["remaining_quantity"]) for r in rows)
+            body+=f"Available units: <b>{total_remaining}</b> across {len(rows)} inventory record(s).\n"
+            for r in rows:
+                remaining=int(r["remaining_quantity"])
+                cost=float(r["unit_cost_usdt"])
+                state="🟢 IN STOCK" if remaining>0 else "🔴 SOLD OUT"
+                expected=round(remaining*0.8,6) if int(s["level"])==1 else 0
+                margin=(f"💚 Expected margin: <b>+0.8 USDT / item</b> | Potential: <b>+{expected:g} USDT</b>\n"
+                        if int(s["level"])==1 and remaining>0 else "")
+                body+=(
+                    f"\n<b>{html.escape(str(r['title']))}</b>\n"
+                    f"Available quantity: <b>{remaining}</b>\n"
+                    f"Purchase cost: {cost:g} USDT / item\n"
+                    f"{margin}Status: {state}\n"
+                )
+        else:
+            body+="No central catalogue purchases recorded yet."
+        if legacy:
+            body+="\n<b>LEGACY INR PRODUCTS</b>\n"+"\n".join(
+                f"#{r['id']} {html.escape(str(r['title']))} — {html.escape(str(r['currency']))} {r['price']} | Stock {r['stock']}"
+                for r in legacy)
+        await q.message.reply_text(body[:4000],reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🛍 LEVEL 1 PRODUCTS / CATALOGUE",callback_data="m:level1")],
+            [InlineKeyboardButton("⬅️ Back",callback_data="m:dashboard"),
+             InlineKeyboardButton("🏠 Dashboard",callback_data="m:dashboard")]]),parse_mode="HTML")
+        await q.message.reply_text(
+            "<b>USDT RESALE</b>\nChoose an action:",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🏷️ List My Stock",callback_data="rs:listmenu")],
+                [InlineKeyboardButton("🛍 USDT Resale Market",callback_data="rs:market")],
+                [InlineKeyboardButton("⬅️ Back to Products",callback_data="m:products"),
+                 InlineKeyboardButton("🏠 Dashboard",callback_data="m:dashboard")]]),
+            parse_mode="HTML")
     elif action=="orders":
         c=v4.db()
         rows=c.execute("SELECT id,product_id,quantity,total_amount,status FROM v4_orders WHERE buyer_shop_id=? OR seller_shop_id=? ORDER BY id DESC LIMIT 20",(s["id"],s["id"])).fetchall()
+        central_rows=c.execute("""SELECT o.id,o.quantity,o.total_usdt,o.status,p.title FROM central_orders o
+          JOIN central_catalog p ON p.id=o.catalog_id WHERE o.buyer_shop_id=? ORDER BY o.id DESC LIMIT 20""",(s["id"],)).fetchall()
         c.close()
-        body="🧾 MY ORDERS\n━━━━━━━━━━━━━━━━━━\n"+("\n".join(f"#{r['id']} Product #{r['product_id']} ×{r['quantity']} — ₹{r['total_amount']:.2f} — {r['status']}" for r in rows) if rows else "No orders yet.")
-        await q.message.reply_text(body,reply_markup=back_dashboard_kb())
+        seller_body="\n────────────────────\n".join(
+            f"<b>#{r['id']}  Product #{r['product_id']}</b>\n"
+            f"     Qty: <b>{r['quantity']}</b>    Total: <b>INR {r['total_amount']:.2f}</b>\n"
+            f"     Status: {'🟢' if r['status'] in ('delivered','completed') else '🔴' if r['status']=='rejected' else '🟡'} "
+            f"<b>{html.escape(str(r['status']).upper())}</b>"
+            for r in rows)
+        central_body="\n────────────────────\n".join(
+            f"<b>#{r['id']}  {html.escape(str(r['title']))}</b>\n"
+            f"     Qty: <b>{r['quantity']}</b>    Total: <b>{r['total_usdt']:g} USDT</b>\n"
+            f"     Status: {'🟢' if r['status'] in ('paid','completed','delivered') else '🔴' if r['status']=='rejected' else '🟡'} "
+            f"<b>{html.escape(str(r['status']).upper())}</b>"
+            for r in central_rows)
+        body=("<b>🧾 MY ORDERS</b>\n━━━━━━━━━━━━━━━━━━\n\n"
+              "<b>INR SELLER MARKETPLACE</b>\n\n"+(seller_body or "No INR orders.")+
+              "\n\n━━━━━━━━━━━━━━━━━━\n\n<b>USDT CATALOGUE / RESALE</b>\n\n"+
+              (central_body or "No USDT orders."))
+        await q.message.reply_text(body[:4000],reply_markup=back_dashboard_kb(),parse_mode="HTML")
     elif action=="history":
         c=v4.db()
         rows=c.execute("SELECT entry_type,amount,currency,note,created_at FROM ledger WHERE owner_id=? ORDER BY id DESC LIMIT 20",(q.from_user.id,)).fetchall()
         c.close()
-        body="📊 PROFIT & HISTORY\n━━━━━━━━━━━━━━━━━━\n"+("\n".join(f"{r['entry_type']} — {r['currency']} {r['amount']} — {r['note'] or ''} — {r['created_at']}" for r in rows) if rows else "No history yet.")
-        await q.message.reply_text(body[:4000],reply_markup=back_dashboard_kb())
+        body="<b>📊 PROFIT & TRANSACTION HISTORY</b>\n━━━━━━━━━━━━━━━━━━\n"
+        if rows:
+            items=[]
+            for r in rows:
+                kind=str(r["entry_type"])
+                amount=float(r["amount"])
+                if kind in ("resale_profit_credit","central_sale_profit","sale_credit"):
+                    marker="💚"; label="PROFIT / SALE CREDIT"; signed=f"+{amount:g}"
+                elif "debit" in kind or "withdrawal" in kind:
+                    marker="🔴"; label="PAYMENT / DEBIT"; signed=f"{amount:g}"
+                elif "credit" in kind or "deposit" in kind:
+                    marker="🟢"; label="CREDIT"; signed=f"+{amount:g}"
+                else:
+                    marker="🔹"; label=kind.replace("_"," ").upper(); signed=f"{amount:g}"
+                items.append(
+                    f"{marker} <b>{label}</b>\n"
+                    f"{html.escape(kind.replace('_',' ').title())}: <b>{html.escape(str(r['currency']))} {signed}</b>\n"
+                    f"<i>{html.escape(str(r['note'] or ''))}</i>\n"
+                    f"<code>{html.escape(str(r['created_at']))}</code>"
+                )
+            body+="\n\n".join(items)
+        else:
+            body+="No wallet or order activity has been recorded yet."
+        await q.message.reply_text(body[:4000],reply_markup=back_dashboard_kb(),parse_mode="HTML")
     elif action=="profile":
-        c=v4.db()
-        w=c.execute("SELECT network,verified FROM owner_wallets WHERE owner_id=?",(q.from_user.id,)).fetchone()
-        c.close()
-        body=(f"👤 {s['shop_name']}\nShop ID: {s['id']}\nLevel: L{s['level']}\nWallet: {w['network']} — {'Verified' if w['verified'] else 'Pending'}"
-              if w else f"👤 {s['shop_name']} | L{s['level']}\nWallet: Not saved")
-        await q.message.reply_text(body,reply_markup=back_dashboard_kb())
+        body=(
+            "<b>👤 MY ACCOUNT</b>\n━━━━━━━━━━━━━━━━━━\n"
+            f"Shop: <b>{html.escape(str(s['shop_name']))}</b>\n"
+            f"Shop ID: <code>{s['id']}</code> • Level: <b>L{s['level']}</b>\n"
+            "Withdrawal network: <b>USDT TRC20 only</b>\n"
+            "Enter your TRC20 address with each withdrawal request.\n\n"
+            "<b>DEPOSIT NETWORKS</b>\n"
+            f"TRC20: <code>{html.escape(str(v4.PAY_TRON))}</code>\n"
+            f"BEP20: <code>{html.escape(str(v4.PAY_BSC))}</code>\n\n"
+            "<i>Withdrawal address is requested separately for every payout.</i>"
+        )
+        await q.message.reply_text(body,reply_markup=back_dashboard_kb(),parse_mode="HTML")
     elif action=="support":
-        await q.message.reply_text("💬 SUPPORT\nFor help with registration, payments, shop approval or account issues, contact the Shop in India administrator.",reply_markup=back_dashboard_kb())
+        await q.message.reply_text(
+            "<b>💬 SUPPORT</b>\n━━━━━━━━━━━━━━━━━━\n"
+            "For help with registration, payments, shop approval or account issues, contact the Shop in India administrator.",
+            reply_markup=back_dashboard_kb(),parse_mode="HTML")
+
+
+def usdt_wallet_summary(c, owner_id):
+    """One source of truth for resale proceeds, withdrawals and spendable wallet balance."""
+    earned=float(c.execute(
+        "SELECT COALESCE(SUM(amount),0) FROM ledger WHERE owner_id=? AND currency='USDT' AND entry_type='resale_sale_credit'",
+        (owner_id,)).fetchone()[0])
+    paid=float(c.execute(
+        "SELECT COALESCE(SUM(amount),0) FROM ledger WHERE owner_id=? AND currency='USDT' AND entry_type='withdrawal_debit'",
+        (owner_id,)).fetchone()[0])
+    pending=float(c.execute(
+        "SELECT COALESCE(SUM(amount),0) FROM withdrawals WHERE owner_id=? AND currency='USDT' AND status='pending'",
+        (owner_id,)).fetchone()[0])
+    ledger_balance=float(central.balance(c,owner_id))
+    sale_remaining=max(0.0,round(earned-paid-pending,6))
+    spendable_after_reservations=round(ledger_balance-pending,6)
+    available=max(0.0,round(min(sale_remaining,spendable_after_reservations),6))
+    return {
+        "earned":round(earned,6),
+        "paid":round(paid,6),
+        "pending":round(pending,6),
+        "ledger_balance":round(ledger_balance,6),
+        "sale_remaining":sale_remaining,
+        "available":available,
+        "shortfall":max(0.0,round(-ledger_balance,6)),
+    }
+
+
+def available_withdrawal_usdt(owner_id):
+    """Only unwithdrawn resale proceeds backed by the merchant's net USDT wallet."""
+    c=v4.db()
+    try:
+        return usdt_wallet_summary(c,owner_id)["available"]
+    finally:
+        c.close()
+
+
+async def withdrawal_review_callback(update,ctx):
+    """Apply Admin review, then show the same post-payout figures to Admin and merchant."""
+    q=update.callback_query
+    try:
+        _,action,wid_text=q.data.split(":")
+        wid=int(wid_text)
+    except (ValueError,IndexError):
+        await v4.withdrawal_review(update,ctx)
+        return
+    c=v4.db()
+    try:
+        before=c.execute("SELECT owner_id,status FROM withdrawals WHERE id=?",(wid,)).fetchone()
+        owner_id=int(before["owner_id"]) if before else None
+        was_pending=bool(before and before["status"]=="pending")
+    finally:
+        c.close()
+    await v4.withdrawal_review(update,ctx)
+    if action!="paid" or not was_pending or owner_id is None:
+        return
+    c=v4.db()
+    try:
+        summary=usdt_wallet_summary(c,owner_id)
+    finally:
+        c.close()
+    if summary["ledger_balance"] < -1e-9:
+        wallet_line=(f"⚠️ Wallet shortfall: <b>{summary['shortfall']:.6f} USDT</b>")
+    else:
+        wallet_line=(f"Available wallet balance: <b>{max(0.0,summary['ledger_balance']-summary['pending']):.6f} USDT</b>")
+    details=(
+        "<b>📊 POST-WITHDRAWAL WALLET SUMMARY</b>\n━━━━━━━━━━━━━━━━━━\n"
+        f"Total resale proceeds: <b>{summary['earned']:.6f} USDT</b>\n"
+        f"Paid withdrawals: <b>{summary['paid']:.6f} USDT</b>\n"
+        f"Pending withdrawals: <b>{summary['pending']:.6f} USDT</b>\n"
+        f"Sale proceeds remaining: <b>{summary['sale_remaining']:.6f} USDT</b>\n"
+        f"{wallet_line}\n"
+        f"Available for another withdrawal: <b>{summary['available']:.6f} USDT</b>"
+    )
+    await q.message.reply_text(details,parse_mode="HTML")
+    try:
+        await ctx.bot.send_message(owner_id,details,parse_mode="HTML")
+    except Exception:
+        log.exception("Post-withdrawal wallet summary notification failed")
 
 
 async def text_handler(update,ctx):
+    if await central.admin_resale_text(update,ctx): return
+    edit=ctx.user_data.get("central_admin_edit")
+    if edit:
+        if update.effective_user.id!=ADMIN_ID:
+            ctx.user_data.pop("central_admin_edit",None); return
+        raw=(update.message.text or "").strip()
+        if raw.lower()=="cancel":
+            ctx.user_data.pop("central_admin_edit",None)
+            await update.message.reply_text("Central catalogue edit cancelled.",reply_markup=back_dashboard_kb()); return
+        try:
+            if edit["field"]=="price":
+                value=round(float(raw),6)
+                if value<0: raise ValueError()
+                await central.set_price(update, type("Args",(),{"args":[str(edit["product_id"]),str(value)]})())
+            else:
+                value=int(raw)
+                if value<0: raise ValueError()
+                await central.set_stock(update, type("Args",(),{"args":[str(edit["product_id"]),str(value)]})())
+        except (ValueError,TypeError):
+            await update.message.reply_text("Invalid value. Enter a non-negative number, or type CANCEL.")
+            return
+        ctx.user_data.pop("central_admin_edit",None)
+        await central.admin_catalog(update,ctx)
+        return
     state=ctx.user_data.get("state")
+    if state=="withdraw_setup_address":
+        address=(update.message.text or "").strip()
+        if not re.fullmatch(r"T[1-9A-HJ-NP-Za-km-z]{33}",address):
+            await edit_screen(ctx,update,
+                "❌ Invalid TRC20 address. Enter a valid USDT TRC20 address beginning with T.",
+                reply_markup=back_dashboard_kb())
+            return
+        shop=v4.shop_for(update.effective_user.id)
+        if not shop or shop["status"]!="approved":
+            ctx.user_data.pop("state",None)
+            await edit_screen(ctx,update,"Approved shop required.",reply_markup=back_dashboard_kb())
+            return
+        c=v4.db()
+        try:
+            c.execute("""INSERT INTO owner_wallets(owner_id,network,address,updated_at,verified)
+                VALUES(?,'USDT TRC20',?,?,0)
+                ON CONFLICT(owner_id) DO UPDATE SET
+                  network='USDT TRC20',address=excluded.address,
+                  updated_at=excluded.updated_at,verified=0""",
+                (update.effective_user.id,address,v4.now()))
+            c.execute("""INSERT INTO admin_audit(admin_id,owner_id,action,details,created_at)
+                VALUES(?,?,?,?,?)""",
+                (ADMIN_ID,update.effective_user.id,"withdrawal_wallet_saved",
+                 f"Merchant saved/updated USDT TRC20 withdrawal address for shop #{shop['id']}",v4.now()))
+            c.commit()
+        except Exception:
+            c.rollback()
+            log.exception("Saving merchant withdrawal address failed")
+            await edit_screen(ctx,update,"Address could not be saved. Please try again.",
+                              reply_markup=back_dashboard_kb())
+            return
+        finally:
+            c.close()
+        available=available_withdrawal_usdt(update.effective_user.id)
+        ctx.user_data.pop("state",None)
+        await edit_screen(ctx,update,
+            "<b>✅ WITHDRAW ADDRESS SAVED</b>\n━━━━━━━━━━━━━━━━━━\n"
+            f"Address: <code>{html.escape(address)}</code>\n\n"
+            f"Available sale earnings: <b>{available:.6f} USDT</b>\n"
+            "Ab withdrawal amount USDT mein send karein.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("💸 WITHDRAW NOW",callback_data="m:withdraw")],
+                [InlineKeyboardButton("⬅️ Dashboard",callback_data="m:dashboard")]]))
+        try:
+            await ctx.bot.send_message(ADMIN_ID,
+                f"<b>🔐 MERCHANT WITHDRAWAL ADDRESS SAVED</b>\n"
+                f"Merchant: <code>{update.effective_user.id}</code>\n"
+                f"Shop: <b>{html.escape(str(shop['shop_name']))}</b> • #{shop['id']}\n"
+                f"Network: <b>USDT TRC20</b>\nAddress: <code>{html.escape(address)}</code>",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📋 COPY ADDRESS",copy_text=CopyTextButton(text=address))],
+                    [InlineKeyboardButton("🔐 All Merchant Wallets",callback_data="adm:withdrawwallets")]]),
+                parse_mode="HTML")
+        except Exception:
+            log.exception("Admin merchant withdrawal wallet notification failed")
+        return
     if state=="deposit_tx_hash":
         tx_hash=(update.message.text or "").strip()
         if len(tx_hash)<12 or len(tx_hash)>160 or not re.fullmatch(r"[A-Za-z0-9xX:_-]+",tx_hash):
-            await update.message.reply_text("❌ Invalid transaction hash. Send the complete TXID/hash."); return
+            await update.message.reply_text("❌ Invalid transaction hash. Send the full TXID/hash from your wallet or blockchain explorer."); return
         rid=ctx.user_data.get("payment_request_id")
         c=v4.db()
         try:
@@ -379,7 +752,7 @@ async def text_handler(update,ctx):
             await update.message.reply_text("Deposit request not found or already reviewed.",reply_markup=back_dashboard_kb()); ctx.user_data.pop("state",None); return
         ctx.user_data["deposit_tx_hash"]=tx_hash
         ctx.user_data["state"]="payment_proof"
-        await update.message.reply_text("📸 <b>Now upload your payment screenshot/photo.</b>\\nYour transaction hash has been saved.",parse_mode="HTML",reply_markup=back_dashboard_kb())
+        await update.message.reply_text("📸 <b>Now send your payment screenshot/photo.</b>\nTransaction hash saved. Please send a clear screenshot showing the transfer details.",parse_mode="HTML",reply_markup=back_dashboard_kb())
         return
     if state=="deposit_amount":
         try:
@@ -401,7 +774,7 @@ async def text_handler(update,ctx):
         rate=v4.usdt_inr_rate(c)
         c.commit()
         c.close()
-        ctx.user_data.update({"state":"payment_proof","payment_request_id":rid})
+        ctx.user_data.update({"state":"await_deposit_done","payment_request_id":rid})
         kb=InlineKeyboardMarkup([
             [InlineKeyboardButton("🔵 USDT TRC20",callback_data=f"net:{rid}:trc"),
              InlineKeyboardButton("🔵 USDT BEP20",callback_data=f"net:{rid}:bep")],
@@ -412,31 +785,79 @@ async def text_handler(update,ctx):
             reply_markup=kb)
     elif state=="withdraw_amount":
         try:
-            amount=round(float(update.message.text),2)
+            amount=round(float(update.message.text),6)
+            if amount<=0: raise ValueError()
         except (TypeError,ValueError):
-            await edit_screen(ctx,update,"Valid INR amount enter karein.",reply_markup=back_dashboard_kb())
+            await edit_screen(ctx,update,"Please enter a valid positive USDT amount.",reply_markup=back_dashboard_kb())
             return
-        s=v4.shop_for(update.effective_user.id)
+        shop=v4.shop_for(update.effective_user.id)
+        if not shop or shop["status"]!="approved":
+            ctx.user_data.pop("state",None)
+            await edit_screen(ctx,update,"Approved shop required.",reply_markup=back_dashboard_kb())
+            return
         c=v4.db()
-        w=c.execute("SELECT * FROM owner_wallets WHERE owner_id=? AND verified=1",(update.effective_user.id,)).fetchone()
-        earned=float(c.execute("SELECT COALESCE(SUM(amount),0) FROM ledger WHERE owner_id=? AND entry_type='sale_credit'",(update.effective_user.id,)).fetchone()[0])
-        paid=float(c.execute("SELECT COALESCE(SUM(amount),0) FROM ledger WHERE owner_id=? AND entry_type='withdrawal_debit'",(update.effective_user.id,)).fetchone()[0])
-        pending=float(c.execute("SELECT COALESCE(SUM(amount),0) FROM withdrawals WHERE owner_id=? AND status='pending'",(update.effective_user.id,)).fetchone()[0])
-        if not s or not w or amount<=0 or amount>earned-paid-pending:
-            c.close()
-            await edit_screen(ctx,update,"Wallet must be verified and amount must be within available sale balance.",reply_markup=back_dashboard_kb())
+        try:
+            c.execute("BEGIN IMMEDIATE")
+            wallet=c.execute("SELECT network,address FROM owner_wallets WHERE owner_id=?",
+                             (update.effective_user.id,)).fetchone()
+            address=str(wallet["address"] or "") if wallet and wallet["network"]=="USDT TRC20" else ""
+            if not re.fullmatch(r"T[1-9A-HJ-NP-Za-km-z]{33}",address):
+                c.rollback()
+                ctx.user_data.pop("state",None)
+                await edit_screen(ctx,update,
+                    "Withdrawal address is not set. Open Withdraw Setup and save your USDT TRC20 address first.",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🔐 OPEN WITHDRAW SETUP",callback_data="m:withdrawsetup")],
+                        [InlineKeyboardButton("⬅️ Dashboard",callback_data="m:dashboard")]]))
+                return
+            available=usdt_wallet_summary(c,update.effective_user.id)["available"]
+            if amount>available+1e-9:
+                c.rollback()
+                await edit_screen(ctx,update,
+                    f"Your available sale earnings changed. Current available amount: {max(0,available):.6f} USDT.",
+                    reply_markup=back_dashboard_kb())
+                ctx.user_data.pop("state",None)
+                return
+            cur=c.execute("""INSERT INTO withdrawals
+                (owner_id,shop_id,amount,currency,network,wallet_address,status,created_at)
+                VALUES(?,?,?,'USDT','USDT TRC20',?,'pending',?)""",
+                (update.effective_user.id,shop["id"],amount,address,v4.now()))
+            wid=cur.lastrowid
+            c.execute("""INSERT INTO admin_audit(admin_id,owner_id,action,details,created_at)
+                VALUES(?,?,?,?,?)""",
+                (ADMIN_ID,update.effective_user.id,"withdrawal_requested",
+                 f"Withdrawal #{wid}: {amount:g} USDT to saved TRC20 address",v4.now()))
+            c.commit()
+        except Exception:
+            c.rollback()
+            log.exception("USDT withdrawal request failed")
+            await edit_screen(ctx,update,"Withdrawal request could not be saved. No balance was deducted.",
+                              reply_markup=back_dashboard_kb())
             return
-        rate=v4.usdt_inr_rate(c)
-        usdt=round(amount/rate,6)
-        cur=c.execute("""INSERT INTO withdrawals(owner_id,shop_id,amount,currency,network,wallet_address,status,created_at,amount_inr,exchange_rate)
-          VALUES(?,?,?,'INR',?,?,'pending',?,?,?)""",(update.effective_user.id,s["id"],amount,w["network"],w["address"],v4.now(),amount,rate))
-        wid=cur.lastrowid
-        c.commit()
-        c.close()
+        finally:
+            c.close()
         await edit_screen(ctx,update,
-            f"Withdrawal #{wid} pending Admin review.\nINR ₹{amount:,.2f} | Rate ₹{rate:,.2f}/USDT | Equivalent {usdt:g} USDT.",
+            f"<b>🟡 WITHDRAWAL REQUEST SUBMITTED</b>\n━━━━━━━━━━━━━━━━━━\n"
+            f"Request: <code>#{wid}</code>\nAmount: <b>{amount:.6f} USDT</b>\n"
+            "Network: <b>USDT TRC20</b>\n"
+            f"Payout address: <code>{html.escape(address)}</code>\n"
+            "Status: <b>PENDING ADMIN REVIEW</b>",
             reply_markup=back_dashboard_kb())
-        await ctx.bot.send_message(ADMIN_ID,f"Withdrawal #{wid} from {update.effective_user.id}: INR ₹{amount:,.2f}, {usdt:g} USDT equivalent. Wallet {w['network']} {w['address']}. Send payout manually before marking paid.")
+        wd_kb=InlineKeyboardMarkup([
+            [InlineKeyboardButton("📋 COPY TRC20 ADDRESS",copy_text=CopyTextButton(text=address))],
+            [InlineKeyboardButton("✅ MARK PAID",callback_data=f"wd:paid:{wid}"),
+             InlineKeyboardButton("❌ REJECT",callback_data=f"wd:reject:{wid}")],
+            [InlineKeyboardButton("💸 All Pending Withdrawals",callback_data="adm:withdrawals"),
+             InlineKeyboardButton("🏠 Admin Panel",callback_data="adm:home")]
+        ])
+        await ctx.bot.send_message(ADMIN_ID,
+            f"<b>💸 USDT WITHDRAWAL REQUEST #{wid}</b>\n━━━━━━━━━━━━━━━━━━\n"
+            f"Owner: <code>{update.effective_user.id}</code>\n"
+            f"Shop: <b>{html.escape(str(shop['shop_name']))}</b> • #{shop['id']}\n"
+            f"Amount: <b>{amount:.6f} USDT</b>\nNetwork: <b>USDT TRC20</b>\n"
+            f"Address: <code>{html.escape(address)}</code>\n\n"
+            "<i>Manually send the exact USDT amount on TRON, then tap MARK PAID. Reject only when declining the request.</i>",
+            reply_markup=wd_kb,parse_mode="HTML")
         ctx.user_data.pop("state",None)
     else:
         was_registering=state=="shop_password"
@@ -466,22 +887,26 @@ async def send_admin_panel(bot, chat_id):
     c.close()
     kb=InlineKeyboardMarkup([
       [InlineKeyboardButton("👥 Owner Control Panel",callback_data="adm:owners")],
+      [InlineKeyboardButton("🛒 Central Catalogue (USDT)",callback_data="adm:central")],
+      [InlineKeyboardButton("🏷️ Admin Resale Market",callback_data="adm:resale")],
+      [InlineKeyboardButton("🧾 FULL AUDIT LOG",callback_data="adm:audit")],
       [InlineKeyboardButton("🏪 All Shops",callback_data="adm:shops"),InlineKeyboardButton("🛍 Products",callback_data="adm:products")],
       [InlineKeyboardButton(f"💳 Pending Deposits ({pending_deposits})",callback_data="adm:payments")],
       [InlineKeyboardButton(f"🎚 Pending Level Payments ({pending_levels})",callback_data="adm:levelpayments")],
       [InlineKeyboardButton(f"💸 Pending Withdrawals ({pending_wd})",callback_data="adm:withdrawals")],
+      [InlineKeyboardButton("🔐 Merchant Withdrawal Wallets",callback_data="adm:withdrawwallets")],
       [InlineKeyboardButton(f"📦 Orders ({counts['v4_orders']})",callback_data="adm:orders"),InlineKeyboardButton("🎚 Levels",callback_data="adm:levels")],
       [InlineKeyboardButton("⚙️ Settings & Commands",callback_data="adm:settings"),InlineKeyboardButton("🔄 Refresh",callback_data="adm:home")]
     ])
     await bot.send_message(chat_id,
-      "🛡️ SHOP IN INDIA — ADMIN CONTROL PANEL\n━━━━━━━━━━━━━━━━━━\n"
-      f"🏪 Shops: {counts['shops']}\n🛍 Products: {counts['products']}\n"
-      f"📦 Orders: {counts['v4_orders']}\n💳 Pending deposits: {pending_deposits}\n"
-      f"🎚 Pending level payments: {pending_levels}\n"
-      f"💸 Withdrawals: {counts['withdrawals']} (Pending: {pending_wd})\n"
+      "<b>🛡️ SHOP IN INDIA — ADMIN CONTROL PANEL</b>\n━━━━━━━━━━━━━━━━━━\n"
+      f"🏪 Shops: <b>{counts['shops']}</b>\n🛍 Products: <b>{counts['products']}</b>\n"
+      f"📦 Orders: <b>{counts['v4_orders']}</b>\n💳 Pending deposits: <b>{pending_deposits}</b>\n"
+      f"🎚 Pending level payments: <b>{pending_levels}</b>\n"
+      f"💸 Withdrawals: <b>{counts['withdrawals']}</b> (Pending: <b>{pending_wd}</b>)\n"
       f"💱 Rate: 1 USDT = INR {v4.usdt_inr_rate():,.2f}\n\n"
-      "Select a control below. All screens are sent as new messages; previous messages remain.",
-      reply_markup=kb)
+      "<b>CONTROL CENTER</b>\nChoose a section below.",
+      reply_markup=kb,parse_mode="HTML")
 
 async def admin_panel_callback(update,ctx):
     q=update.callback_query
@@ -489,68 +914,121 @@ async def admin_panel_callback(update,ctx):
         await q.answer("Admin only",show_alert=True); return
     await q.answer()
     action=q.data.split(":",1)[1]
+    if action=="audit":
+        await audit.show(update,"all",0); return
     if action in ("home","back"):
         await send_admin_panel(ctx.bot,q.message.chat_id); return
     c=v4.db()
     try:
-        if action=="owners":
+        if action=="central":
+            await central.admin_catalog(update,ctx)
+        elif action=="resale":
+            await central.admin_resale_market(update,ctx)
+        elif action=="owners":
             rows=c.execute("""SELECT s.id,s.shop_name,s.owner_id,s.status,s.level,
                 (SELECT COUNT(*) FROM products p WHERE p.shop_id=s.id) products,
                 (SELECT COUNT(*) FROM v4_orders o WHERE o.buyer_shop_id=s.id) buys,
                 (SELECT COUNT(*) FROM v4_orders o WHERE o.seller_shop_id=s.id) sells
                 FROM shops s ORDER BY s.id DESC LIMIT 40""").fetchall()
-            await q.message.reply_text("👥 OWNER CONTROL PANEL\n\n"+("\n\n".join(
-              f"🏪 {r['shop_name']} | Shop #{r['id']}\nOwner ID: {r['owner_id']}\nStatus: {r['status']} | Level: L{r['level']}\nProducts: {r['products']} | Buys: {r['buys']} | Sells: {r['sells']}\nDetails: /owner {r['owner_id']}"
-              for r in rows) if rows else "No owner shops found."),
-              reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]))
+            owner_body="<b>👥 OWNER CONTROL PANEL</b>\n━━━━━━━━━━━━━━━━━━\n"
+            owner_body+="\n\n".join(
+              f"<b>🏪 {html.escape(str(r['shop_name']))}</b> • Shop #{r['id']}\n"
+              f"Owner: <code>{r['owner_id']}</code>\n"
+              f"Status: {'✅' if r['status']=='approved' else '❌' if r['status']=='rejected' else '🟡'} <b>{html.escape(str(r['status']).upper())}</b> • Level {r['level']}\n"
+              f"Products: {r['products']} • Buys: {r['buys']} • Sells: {r['sells']}\n"
+              f"<code>/owner {r['owner_id']}</code>"
+              for r in rows) if rows else "No owner shops found."
+            await q.message.reply_text(owner_body[:4000],
+              reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]),parse_mode="HTML")
         elif action=="shops":
             rows=c.execute("SELECT id,shop_name,owner_id,status,level FROM shops ORDER BY id DESC LIMIT 40").fetchall()
-            await q.message.reply_text("🏪 SHOPS\n\n"+("\n".join(f"#{r['id']} {r['shop_name']} | Owner {r['owner_id']} | {r['status']} | L{r['level']}" for r in rows) if rows else "No shops."),
-              reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]))
+            shops_body="<b>🏪 ALL SHOPS</b>\n━━━━━━━━━━━━━━━━━━\n"
+            shops_body+="\n".join(
+              f"#{r['id']} <b>{html.escape(str(r['shop_name']))}</b> • Owner <code>{r['owner_id']}</code>\n"
+              f"{'✅' if r['status']=='approved' else '❌' if r['status']=='rejected' else '🟡'} {html.escape(str(r['status']).upper())} • Level {r['level']}"
+              for r in rows) if rows else "No shops registered."
+            await q.message.reply_text(shops_body[:4000],
+              reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]),parse_mode="HTML")
         elif action in ("payments","levelpayments"):
             payment_type="wallet_deposit" if action=="payments" else "level_activation"
             section_title="PENDING DEPOSITS" if action=="payments" else "PENDING LEVEL PAYMENTS"
-            rows=c.execute("SELECT id,owner_id,payment_type,amount,currency,network,status,screenshot_file_id,shop_id FROM payment_requests WHERE status='pending' AND payment_type=? ORDER BY id DESC LIMIT 25",(payment_type,)).fetchall()
-            await q.message.reply_text(f"💳 {section_title}\nEach request is reviewed separately. Verify the transaction on the blockchain before approving.")
+            rows=c.execute("SELECT id,owner_id,payment_type,amount,currency,network,status,screenshot_file_id,shop_id,transaction_hash FROM payment_requests WHERE status='pending' AND payment_type=? ORDER BY id DESC LIMIT 25",(payment_type,)).fetchall()
+            await q.message.reply_text(f"<b>💳 {section_title}</b>\n━━━━━━━━━━━━━━━━━━\nReview every request separately. Verify the transaction before approving.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]),parse_mode="HTML")
             if not rows:
-                await q.message.reply_text(f"No pending { 'deposits' if action=='payments' else 'level payments' }.")
+                await q.message.reply_text(f"No pending { 'deposits' if action=='payments' else 'level payments' }.",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]))
             for r in rows:
-                caption=(f"💳 PAYMENT REQUEST #{r['id']}\nOwner: {r['owner_id']} | Shop: {r['shop_id']}\nType: {r['payment_type']}\nAmount: {r['amount']} {r['currency']}\nNetwork: {r['network'] or 'Not selected'}\nStatus: PENDING")
+                caption=(f"<b>💳 PAYMENT REQUEST #{r['id']}</b>\n━━━━━━━━━━━━━━━━━━\n"
+                         f"Owner: <code>{r['owner_id']}</code> • Shop: <code>{r['shop_id']}</code>\n"
+                         f"Type: {html.escape(str(r['payment_type']))}\n"
+                         f"Amount: <b>{float(r['amount']):g} {html.escape(str(r['currency']))}</b>\n"
+                         f"Network: {html.escape(str(r['network'] or 'Not selected'))}\nTransaction Hash: <code>{html.escape(str(r['transaction_hash'] or 'Not provided'))}</code>\n🟡 <b>STATUS: PENDING</b>")
                 back_label="⬅️ Deposits" if action=="payments" else "⬅️ Level Payments"
                 kb=InlineKeyboardMarkup([[InlineKeyboardButton("✅ APPROVE",callback_data=f"pay:approve:{r['id']}"),InlineKeyboardButton("❌ REJECT",callback_data=f"pay:reject:{r['id']}")],[InlineKeyboardButton(back_label,callback_data=f"adm:{action}"),InlineKeyboardButton("🏠 Admin Panel",callback_data="adm:home")]])
                 if r['screenshot_file_id']:
-                    await ctx.bot.send_photo(q.message.chat_id,r['screenshot_file_id'],caption=caption,reply_markup=kb)
+                    await ctx.bot.send_photo(q.message.chat_id,r['screenshot_file_id'],caption=caption,reply_markup=kb,parse_mode="HTML")
                 else:
-                    await q.message.reply_text(caption+"\n⚠️ No screenshot attached.",reply_markup=kb)
+                    await q.message.reply_text(caption+"\n⚠️ No screenshot attached.",reply_markup=kb,parse_mode="HTML")
             await q.message.reply_text("⬅️ Back options:",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]))
+        elif action=="withdrawwallets":
+            rows=c.execute("""SELECT w.owner_id,w.network,w.address,w.updated_at,
+                s.id AS shop_id,s.shop_name
+                FROM owner_wallets w
+                LEFT JOIN shops s ON s.id=(SELECT id FROM shops WHERE owner_id=w.owner_id ORDER BY id DESC LIMIT 1)
+                WHERE w.network='USDT TRC20'
+                ORDER BY w.updated_at DESC LIMIT 50""").fetchall()
+            await q.message.reply_text(
+                "<b>🔐 MERCHANT WITHDRAWAL WALLETS</b>\n━━━━━━━━━━━━━━━━━━\n"
+                "Saved USDT TRC20 payout addresses. Copy carefully before sending funds.",
+                parse_mode="HTML")
+            if not rows:
+                await q.message.reply_text("No merchants have saved a TRC20 payout address yet.",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]))
+            for r in rows:
+                address=str(r["address"] or "")
+                caption=(f"<b>🏪 {html.escape(str(r['shop_name'] or 'Shop not found'))}</b>\n"
+                         f"Shop: <code>{r['shop_id'] if r['shop_id'] is not None else 'N/A'}</code>\n"
+                         f"Merchant ID: <code>{r['owner_id']}</code>\n"
+                         f"Network: <b>USDT TRC20</b>\n"
+                         f"Withdrawal address:\n<code>{html.escape(address)}</code>\n"
+                         f"<i>Saved: {html.escape(str(r['updated_at'] or ''))}</i>")
+                kb=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📋 COPY TRC20 ADDRESS",copy_text=CopyTextButton(text=address))],
+                    [InlineKeyboardButton("⬅️ Merchant Wallets",callback_data="adm:withdrawwallets"),
+                     InlineKeyboardButton("🏠 Admin Panel",callback_data="adm:home")]
+                ])
+                await q.message.reply_text(caption,reply_markup=kb,parse_mode="HTML")
         elif action=="withdrawals":
-            rows=c.execute("SELECT id,owner_id,amount,currency,network,wallet_address,status,amount_inr,exchange_rate FROM withdrawals WHERE status='pending' ORDER BY id DESC LIMIT 25").fetchall()
-            await q.message.reply_text("💸 WITHDRAWAL REVIEW\nMark PAID only after you have actually sent the payout.")
+            rows=c.execute("SELECT id,owner_id,amount,currency,network,wallet_address,status FROM withdrawals WHERE status='pending' ORDER BY id DESC LIMIT 25").fetchall()
+            await q.message.reply_text("<b>💸 USDT WITHDRAWAL REVIEW</b>\n━━━━━━━━━━━━━━━━━━\n"
+                "Check the TRC20 address carefully. Send the payout manually on TRON; mark paid only after the transfer succeeds.",
+                parse_mode="HTML")
             if not rows:
                 await q.message.reply_text("No pending withdrawals.")
             for r in rows:
-                rate=float(r['exchange_rate'] or 0)
-                caption=(f"💸 WITHDRAWAL #{r['id']}\nOwner: {r['owner_id']}\nAmount: ₹{float(r['amount_inr'] or r['amount']):,.2f}\nNetwork: {r['network']}\nWallet: {r['wallet_address']}\nRate: ₹{rate:,.2f} per USDT\nStatus: PENDING")
-                kb=InlineKeyboardMarkup([[InlineKeyboardButton("✅ MARK PAID",callback_data=f"wd:paid:{r['id']}"),InlineKeyboardButton("❌ REJECT",callback_data=f"wd:reject:{r['id']}")],[InlineKeyboardButton("⬅️ Withdrawals",callback_data="adm:withdrawals"),InlineKeyboardButton("🏠 Admin Panel",callback_data="adm:home")]])
-                await q.message.reply_text(caption,reply_markup=kb)
+                currency=str(r["currency"] or "USDT").upper()
+                amount=float(r["amount"])
+                address=str(r["wallet_address"] or "")
+                caption=(f"<b>💸 WITHDRAWAL REQUEST #{r['id']}</b>\n━━━━━━━━━━━━━━━━━━\n"
+                         f"Owner: <code>{r['owner_id']}</code>\n"
+                         f"Amount: <b>{amount:.6f} {html.escape(currency)}</b>\n"
+                         f"Network: <b>{html.escape(str(r['network'] or 'USDT TRC20'))}</b>\n"
+                         f"TRC20 address: <code>{html.escape(address)}</code>\n"
+                         "🟡 <b>STATUS: PENDING</b>")
+                kb=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📋 COPY TRC20 ADDRESS",copy_text=CopyTextButton(text=address))],
+                    [InlineKeyboardButton("✅ MARK PAID",callback_data=f"wd:paid:{r['id']}"),
+                     InlineKeyboardButton("❌ REJECT",callback_data=f"wd:reject:{r['id']}")],
+                    [InlineKeyboardButton("⬅️ Withdrawals",callback_data="adm:withdrawals"),
+                     InlineKeyboardButton("🏠 Admin Panel",callback_data="adm:home")]
+                ])
+                await q.message.reply_text(caption,reply_markup=kb,parse_mode="HTML")
             await q.message.reply_text("⬅️ Back options:",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]))
         elif action=="products":
-            rows=c.execute("""SELECT id,title,price,currency,stock,active,shop_id,
-                                     COALESCE(level_required,1) AS level_required
-                              FROM products ORDER BY level_required,id DESC LIMIT 50""").fetchall()
-            level_counts=c.execute("""SELECT COALESCE(level_required,1) AS lv,COUNT(*) AS total
-                                      FROM products GROUP BY COALESCE(level_required,1)
-                                      ORDER BY lv""").fetchall()
-            summary="\n".join(f"L{r['lv']}: {r['total']} products" for r in level_counts)
-            details="\n\n".join(
-                f"#{r['id']} {r['title']} | L{r['level_required']} | Shop #{r['shop_id']}\n"
-                f"{r['currency']} {r['price']} | Stock {r['stock']} | Active {r['active']}\n"
-                f"Change level: /setproductlevel {r['id']} LEVEL"
-                for r in rows)
-            await q.message.reply_text(
-                "🛍 PRODUCTS BY LEVEL\n\n"+(summary or "No products assigned.")+
-                "\n\nLATEST PRODUCTS\n"+(details or "No products."),
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]))
+            # Replace the old plain-text Products by Level summary with the level-picker catalogue UI.
+            await central.admin_catalog(update,ctx)
+            return
         elif action=="orders":
             await q.message.reply_text("📦 ORDER MANAGEMENT\nUse /orders to view pending orders and Mark Delivered controls.\nUse /orderdone ORDER_ID or /orderreject ORDER_ID REASON when appropriate.",
               reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]))
@@ -571,6 +1049,18 @@ async def admin_panel_callback(update,ctx):
           reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]))
     finally:
         c.close()
+
+async def audit_callback(update,ctx):
+    q=update.callback_query
+    if q.from_user.id!=ADMIN_ID:
+        await q.answer("Admin only",show_alert=True); return
+    await q.answer()
+    try:
+        _,category,page=q.data.split(":")
+        await audit.show(update,category,int(page))
+    except Exception:
+        log.exception("Audit screen failed")
+        await q.message.reply_text("Audit log could not be loaded.")
 
 async def admin_orders(update,ctx):
     if update.effective_user.id != ADMIN_ID:
@@ -735,7 +1225,7 @@ async def dashboard(update,ctx):
 
 def main():
     if not TOKEN or not ADMIN_ID: raise RuntimeError("BOT_TOKEN and ADMIN_ID are required.")
-    v3.setup(); v3.ensure_catalog_schema()
+    v3.setup(); v3.ensure_catalog_schema(); central.setup(); central.resale_setup()
     c=v4.db()
     try:
         columns={row["name"] for row in c.execute("PRAGMA table_info(payment_requests)").fetchall()}
@@ -748,21 +1238,28 @@ def main():
     for cmd,fn in [("help",help_command),("support",support_command),("admin",admin_panel),("verifywallet",v3.verify_wallet),
       ("buy",v4.buy),("addproduct",addproduct),("setproductlevel",v4.setproductlevel),("setlevel",v4.setlevel),("setfx",v4.setfx),("setfee",v4.setfee),
       ("products",v4.products),("setprice",lambda u,c:v4.edit_product(u,c,"setprice")),("setstock",lambda u,c:v4.edit_product(u,c,"setstock")),
-      ("orders",admin_orders),("orderdone",v4.orderdone),("orderreject",v4.orderreject),("myproducts",v4.myproducts),("myorders",v4.myorders),("history",v4.history),("levels",v4.levels)]:
+      ("orders",admin_orders),("orderdone",v4.orderdone),("orderreject",v4.orderreject),("myproducts",v4.myproducts),("myorders",v4.myorders),("history",v4.history),("levels",v4.levels),("centralcatalog",central.admin_catalog),("centralprice",central.set_price),("centralstock",central.set_stock),("centralactive",central.set_active),("centralorders",central.orders),("centralbuy",central.buy)]:
         app.add_handler(CommandHandler(cmd,fn))
     app.add_handler(CallbackQueryHandler(approved_callback,pattern=r"^(approve|reject):[0-9]+$"))
     app.add_handler(CallbackQueryHandler(level_callback,pattern=r"^lv:[1-5]$"))
     app.add_handler(CallbackQueryHandler(level_pay_callback,pattern=r"^lvpay:[1-5]$"))
     app.add_handler(CallbackQueryHandler(level_back_callback,pattern=r"^lvback$"))
     app.add_handler(CallbackQueryHandler(network_callback,pattern=r"^net:[0-9]+:(trc|bep)$"))
-    app.add_handler(CallbackQueryHandler(menu_callback,pattern=r"^m:(market|deposit|depositstart|deposits|depositdone|withdraw|wallet|products|orders|history|profile|dashboard|support)$"))
-    app.add_handler(CallbackQueryHandler(admin_panel_callback,pattern=r"^adm:(home|owners|shops|payments|levelpayments|withdrawals|products|orders|levels|settings|back)$"))
+    app.add_handler(CallbackQueryHandler(menu_callback,pattern=r"^m:(market|level1|sellermarket|deposit|depositstart|depositfund|deposit_fund|deposit-fund|depositdone|deposits|withdraw|withdrawsetup|withdrawsetupedit|wallet|products|orders|history|profile|dashboard|support)$"))
+    app.add_handler(CallbackQueryHandler(admin_panel_callback,pattern=r"^adm:(home|owners|shops|payments|levelpayments|withdrawals|withdrawwallets|products|orders|levels|settings|central|resale|audit|back)$"))
+    app.add_handler(CallbackQueryHandler(central.resale_callback,pattern=r"^rs:(list:[0-9]+|listmenu|market|review:[0-9]+|buy:[0-9]+:[0-9]+)$"))
+    app.add_handler(CallbackQueryHandler(audit_callback,pattern=r"^audit:(all|payments|levels|wallet|orders|products):[0-9]+$"))
     app.add_handler(CallbackQueryHandler(delivered_callback,pattern=r"^order:delivered:[0-9]+$"))
+    app.add_handler(CallbackQueryHandler(central.admin_level_callback,pattern=r"^ccadminlevel:1$"))
+    app.add_handler(CallbackQueryHandler(central.owner_level_callback,pattern=r"^cclevel:1$"))
+    app.add_handler(CallbackQueryHandler(central.admin_callback,pattern=r"^cc:(view|orders|price|stock|toggle|fulfill|refund)(:[0-9]+)?$"))
+    app.add_handler(CallbackQueryHandler(central.owner_buy_callback,pattern=r"^ccbuy:[0-9]+:[0-9]+$"))
     app.add_handler(CallbackQueryHandler(v4.payment_review,pattern=r"^pay:(approve|reject):[0-9]+$"))
-    app.add_handler(CallbackQueryHandler(v4.withdrawal_review,pattern=r"^wd:(paid|reject):[0-9]+$"))
+    app.add_handler(CallbackQueryHandler(withdrawal_review_callback,pattern=r"^wd:(paid|reject):[0-9]+$"))
     app.add_handler(MessageHandler(filters.PHOTO,v4.payment_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,text_handler))
     print("SHOP IN INDIA V5 Telegram UI started.")
+    asyncio.set_event_loop(asyncio.new_event_loop())
     app.run_polling()
 
 if __name__=="__main__": main()

@@ -937,7 +937,7 @@ async def admin_panel_callback(update,ctx):
         elif action in ("payments","levelpayments"):
             payment_type="wallet_deposit" if action=="payments" else "level_activation"
             section_title="PENDING DEPOSITS" if action=="payments" else "PENDING LEVEL PAYMENTS"
-            rows=c.execute("SELECT id,owner_id,payment_type,amount,currency,network,status,screenshot_file_id,shop_id FROM payment_requests WHERE status='pending' AND payment_type=? ORDER BY id DESC LIMIT 25",(payment_type,)).fetchall()
+            rows=c.execute("SELECT id,owner_id,payment_type,amount,currency,network,status,screenshot_file_id,shop_id,transaction_hash FROM payment_requests WHERE status='pending' AND payment_type=? ORDER BY id DESC LIMIT 25",(payment_type,)).fetchall()
             await q.message.reply_text(f"<b>💳 {section_title}</b>\n━━━━━━━━━━━━━━━━━━\nReview every request separately. Verify the transaction before approving.",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]),parse_mode="HTML")
             if not rows:
@@ -948,7 +948,7 @@ async def admin_panel_callback(update,ctx):
                          f"Owner: <code>{r['owner_id']}</code> • Shop: <code>{r['shop_id']}</code>\n"
                          f"Type: {html.escape(str(r['payment_type']))}\n"
                          f"Amount: <b>{float(r['amount']):g} {html.escape(str(r['currency']))}</b>\n"
-                         f"Network: {html.escape(str(r['network'] or 'Not selected'))}\n🟡 <b>STATUS: PENDING</b>")
+                         f"Network: {html.escape(str(r['network'] or 'Not selected'))}\nTransaction Hash: <code>{html.escape(str(r['transaction_hash'] or 'Not provided'))}</code>\n🟡 <b>STATUS: PENDING</b>")
                 back_label="⬅️ Deposits" if action=="payments" else "⬅️ Level Payments"
                 kb=InlineKeyboardMarkup([[InlineKeyboardButton("✅ APPROVE",callback_data=f"pay:approve:{r['id']}"),InlineKeyboardButton("❌ REJECT",callback_data=f"pay:reject:{r['id']}")],[InlineKeyboardButton(back_label,callback_data=f"adm:{action}"),InlineKeyboardButton("🏠 Admin Panel",callback_data="adm:home")]])
                 if r['screenshot_file_id']:

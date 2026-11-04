@@ -32,8 +32,7 @@ def owner_kb():
       [InlineKeyboardButton("💸 Withdraw",callback_data="m:withdraw"),InlineKeyboardButton("👛 Wallet",callback_data="m:wallet")],
       [InlineKeyboardButton("📦 My Products",callback_data="m:products"),InlineKeyboardButton("🧾 My Orders",callback_data="m:orders")],
       [InlineKeyboardButton("📊 Profit & History",callback_data="m:history"),InlineKeyboardButton("👤 My Account",callback_data="m:profile")],
-      [InlineKeyboardButton("💬 Support",callback_data="m:support")],
-      [InlineKeyboardButton("💳 DEPOSIT FUNDS",callback_data="m:deposit")]
+      [InlineKeyboardButton("💬 Support",callback_data="m:support")]
     ])
 
 

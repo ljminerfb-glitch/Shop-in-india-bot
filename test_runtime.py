@@ -118,7 +118,7 @@ def fixture():
     CREATE TABLE products(id INTEGER PRIMARY KEY AUTOINCREMENT, shop_id INTEGER NOT NULL, title TEXT, description TEXT, price REAL, currency TEXT, active INTEGER, stock INTEGER);
     CREATE TABLE transactions(id INTEGER PRIMARY KEY AUTOINCREMENT,buyer_shop_id INTEGER,seller_shop_id INTEGER,product_id INTEGER,quantity INTEGER,total_amount REAL,currency TEXT,status TEXT,created_at TEXT,completed_at TEXT);
     CREATE TABLE orders(id INTEGER PRIMARY KEY AUTOINCREMENT,buyer_id INTEGER,product_id INTEGER,quantity INTEGER,status TEXT,created_at TEXT);
-    CREATE TABLE payment_requests(id INTEGER PRIMARY KEY AUTOINCREMENT,owner_id INTEGER,shop_id INTEGER,payment_type TEXT,level INTEGER,amount REAL,currency TEXT,network TEXT,screenshot_file_id TEXT,tx_hash TEXT,status TEXT,admin_note TEXT,created_at TEXT,reviewed_at TEXT);
+    CREATE TABLE payment_requests(id INTEGER PRIMARY KEY AUTOINCREMENT,owner_id INTEGER,shop_id INTEGER,payment_type TEXT,level INTEGER,amount REAL,currency TEXT,network TEXT,screenshot_file_id TEXT,tx_hash TEXT,transaction_hash TEXT,status TEXT,admin_note TEXT,created_at TEXT,reviewed_at TEXT);
     CREATE TABLE payment_history(id INTEGER PRIMARY KEY AUTOINCREMENT,owner_id INTEGER,shop_id INTEGER,payment_type TEXT,amount REAL,currency TEXT,status TEXT,reference TEXT,admin_note TEXT,actor_id INTEGER,created_at TEXT,reviewed_at TEXT);
     CREATE TABLE withdrawals(id INTEGER PRIMARY KEY AUTOINCREMENT,owner_id INTEGER,shop_id INTEGER,amount REAL,currency TEXT,network TEXT,wallet_address TEXT,status TEXT,admin_note TEXT,created_at TEXT,reviewed_at TEXT);
     CREATE TABLE owner_wallets(owner_id INTEGER PRIMARY KEY,network TEXT NOT NULL,address TEXT NOT NULL,updated_at TEXT NOT NULL,verified INTEGER NOT NULL DEFAULT 0);
@@ -492,16 +492,21 @@ def test_merchant_deposit_screenshot_and_admin_approval():
     require("m:dashboard" in callback_data(done_message.replies[0]),
             "Screenshot prompt is missing Back to Dashboard")
 
+    owner_ctx.user_data["deposit_tx_hash"]="TXID1234567890abcdef"
     photo_update,photo_message=message_update(101,None)
     photo_message.photo=[SimpleNamespace(file_id="merchant-proof-photo")]
     asyncio.run(v4.payment_photo(photo_update,owner_ctx))
     require(any(x.get("photo") and x["args"][0]==999999 for x in owner_ctx.bot.sent),
             "Payment screenshot was not forwarded to Admin")
     c=v4.db()
-    request=c.execute("SELECT status,screenshot_file_id FROM payment_requests WHERE id=?",(rid,)).fetchone()
+    request=c.execute("SELECT status,screenshot_file_id,transaction_hash FROM payment_requests WHERE id=?",(rid,)).fetchone()
     credits=c.execute("SELECT COUNT(*) FROM ledger WHERE owner_id=101 AND entry_type='deposit_credit'").fetchone()[0]
     require(request["status"]=="pending" and request["screenshot_file_id"]=="merchant-proof-photo",
             "Screenshot was not saved while leaving request pending")
+    require(request["transaction_hash"]=="TXID1234567890abcdef",
+            "Deposit transaction hash was not saved in the request")
+    require(any("TXID1234567890abcdef" in x.get("kwargs",{}).get("caption","") for x in owner_ctx.bot.sent),
+            "Saved transaction hash was not included in the Admin proof card")
     require(credits==credits_before,"Wallet was credited before Admin approval")
     c.close()
 
@@ -516,7 +521,39 @@ def test_merchant_deposit_screenshot_and_admin_approval():
     require(credits_after==credits_before+1 and credit is not None and abs(float(credit["amount"])-12.5)<1e-8,
             "Approved deposit did not credit the merchant wallet exactly once")
     c.close()
-    print("PASS: Deposit Center, network selection, I HAVE DEPOSITED, screenshot delivery and Admin approval")
+    # A rejected deposit must leave Pending and must never credit the wallet.
+    c=v4.db()
+    cur=c.execute("""INSERT INTO payment_requests(owner_id,shop_id,payment_type,level,amount,currency,network,status,created_at)
+                     VALUES(101,1,'wallet_deposit',0,3.0,'USDT','USDT TRC20','pending',?)""",(v4.now(),))
+    rejected_id=cur.lastrowid
+    c.commit(); c.close()
+    reject_update,reject_message,_=callback_update(999999,f"pay:reject:{rejected_id}")
+    asyncio.run(v4.payment_review(reject_update,context()))
+    c=v4.db()
+    rejected=c.execute("SELECT status,admin_note FROM payment_requests WHERE id=?",(rejected_id,)).fetchone()
+    reject_credit=c.execute("SELECT COUNT(*) FROM ledger WHERE owner_id=101 AND entry_type='deposit_credit' AND note LIKE ?",(f"%#{rejected_id}%",)).fetchone()[0]
+    c.close()
+    require(rejected["status"]=="rejected" and rejected["admin_note"]=="This is fake screenshot",
+            "Rejected deposit did not leave Pending with the rejection reason")
+    require(reject_credit==0,"Rejected deposit incorrectly credited the wallet")
+
+    # Level activation goes directly to screenshot upload; it must not use the wallet-deposit confirmation button.
+    c=v4.db()
+    cur=c.execute("""INSERT INTO payment_requests(owner_id,shop_id,payment_type,level,amount,currency,network,status,created_at)
+                     VALUES(202,2,'level_activation',2,10.0,'USDT','not_selected','pending',?)""",(v4.now(),))
+    level_rid=cur.lastrowid
+    c.commit(); c.close()
+    level_ctx=context()
+    level_update,level_message,_=callback_update(202,f"net:{level_rid}:trc")
+    asyncio.run(v5.network_callback(level_update,level_ctx))
+    level_buttons=callback_data(level_message.replies[0])
+    require(level_ctx.user_data.get("state")=="payment_proof",
+            "Level activation network selection did not proceed directly to payment proof")
+    require("m:depositdone" not in level_buttons,
+            "Level activation incorrectly displayed the wallet-deposit confirmation button")
+    require("USDT TRC20" in level_message.replies[0]["text"],
+            "Level activation network screen did not show the selected network")
+    print("PASS: Deposit Center, transaction hash, approval/rejection lifecycle and level activation network flow")
 
 
 def test_usdt_trc20_withdrawal_flow():

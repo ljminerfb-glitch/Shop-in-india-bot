@@ -136,13 +136,18 @@ def ensure_schema(db_path=None):
             created_at TEXT NOT NULL, updated_at TEXT NOT NULL, completed_at TEXT, admin_note TEXT)""")
 
         defaults = [
-            (1, 5, 12, 1.25, 2.50), (2, 20, 45, 3.50, 6.50),
+            (1, 5, 12, 1.25, 2.50), (2, 50, 50, 2.00, 6.50),
             (3, 150, 80, 9.80, 17.40), (4, 150, 200, 15.00, 25.00),
             (5, 400, 0, 20.00, 35.00),
         ]
         conn.executemany("""INSERT OR IGNORE INTO level_settings
             (level,activation_usdt,product_target,profit_min,profit_max)
             VALUES(?,?,?,?,?)""", defaults)
+        # Correct only the legacy Level 2 defaults; preserve any deliberate admin edits.
+        conn.execute("""UPDATE level_settings
+            SET activation_usdt=50,product_target=50,profit_min=2.00,profit_max=6.50
+            WHERE level=2 AND activation_usdt=20 AND product_target=45
+              AND profit_min=3.50 AND profit_max=6.50""")
         conn.execute("INSERT OR IGNORE INTO platform_settings(setting_key,setting_value) VALUES('platform_fee_percent','5')")
         conn.execute("INSERT OR IGNORE INTO platform_settings(setting_key,setting_value) VALUES('usdt_inr_rate','110')")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_product_audit_product ON product_audit(product_id,id DESC)")

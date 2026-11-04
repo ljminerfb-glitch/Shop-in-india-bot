@@ -99,6 +99,32 @@ def message_update(user_id, text):
     return update, message
 
 
+def product_card_ids(sent):
+    ids=[]
+    for item in sent:
+        raw=item["kwargs"].get("caption")
+        if raw is None and len(item.get("args",()))>1 and isinstance(item["args"][1],str):
+            raw=item["args"][1]
+        if isinstance(raw,str) and raw.startswith("<b>#"):
+            try:
+                ids.append(int(raw.split("#",1)[1].split(None,1)[0]))
+            except (ValueError,IndexError):
+                pass
+    return ids
+
+
+def sent_callback_data(item):
+    markup=item["kwargs"].get("reply_markup")
+    if not markup:
+        return []
+    return [
+        button.callback_data
+        for row in markup.inline_keyboard
+        for button in row
+        if getattr(button,"callback_data",None)
+    ]
+
+
 def callback_data(reply):
     markup = reply["kwargs"].get("reply_markup")
     if not markup:
@@ -177,6 +203,36 @@ def test_level1_catalogue_quantity_buttons():
     update,_,_=callback_update(101,"m:catalogue")
     ctx=context()
     asyncio.run(cc.show_owner_level_products(update,ctx,shop))
+    expected_ids=[int(r[0]) for r in v4.db().execute(
+        "SELECT id FROM central_catalog WHERE active=1 AND level_required=1 ORDER BY id").fetchall()]
+    require(product_card_ids(ctx.bot.sent)==expected_ids[:5],
+            f"First Level 1 page should show exactly the first five products: {product_card_ids(ctx.bot.sent)!r}")
+    nav=next(x for x in ctx.bot.sent if "ccpage:1" in sent_callback_data(x))
+    require("PAGE 1/3" in nav["kwargs"].get("text",""),
+            "First catalogue page indicator or Next 5 button is missing")
+    before=len(ctx.bot.sent)
+    next_update,_,_=callback_update(101,"ccpage:1")
+    asyncio.run(cc.owner_catalog_page_callback(next_update,ctx))
+    next_page_sent=ctx.bot.sent[before:]
+    require(product_card_ids(next_page_sent)==expected_ids[5:10],
+            "Next 5 did not show products 6 through 10")
+    next_nav=next(x for x in next_page_sent if x["kwargs"].get("reply_markup"))
+    next_nav_buttons=sent_callback_data(next_nav)
+    require("ccpage:0" in next_nav_buttons and "ccpage:2" in next_nav_buttons,
+            "Middle page must provide Previous 5 and Next 5 buttons")
+    before=len(ctx.bot.sent)
+    last_update,_,_=callback_update(101,"ccpage:2")
+    asyncio.run(cc.owner_catalog_page_callback(last_update,ctx))
+    last_page_sent=ctx.bot.sent[before:]
+    require(product_card_ids(last_page_sent)==expected_ids[10:],
+            "Final catalogue page should show only the remaining products")
+    last_nav=next(x for x in last_page_sent if x["kwargs"].get("reply_markup"))
+    require("ccpage:3" not in sent_callback_data(last_nav) and
+            "ccpage:1" in sent_callback_data(last_nav),
+            "Final page must hide Next 5 and keep Previous 5")
+    # Re-open page one for the per-product quantity-button assertions below.
+    ctx=context()
+    asyncio.run(cc.show_owner_level_products(update,ctx,shop))
     item=next(x for x in ctx.bot.sent if x["kwargs"].get("reply_markup") and
               any(getattr(b,"callback_data",None)==f"ccbuy:{pid}:1"
                   for row in x["kwargs"]["reply_markup"].inline_keyboard for b in row))
@@ -208,6 +264,30 @@ def test_level1_catalogue_quantity_buttons():
             f"ccbuy:{pid}:4" not in callbacks,
             "Catalogue offers quantities above available stock")
     print("PASS: Level 1 catalogue Buy ×1–×10 buttons and stock cap")
+
+
+def test_admin_catalogue_pagination():
+    update,_,_=callback_update(999999,"ccadminlevel:1")
+    ctx=context()
+    asyncio.run(cc.admin_level_callback(update,ctx))
+    ids=[int(r[0]) for r in v4.db().execute(
+        "SELECT id FROM central_catalog WHERE level_required=1 ORDER BY id").fetchall()]
+    require(product_card_ids(ctx.bot.sent)==ids[:5],
+            "Admin Level 1 page must show only the first five products")
+    nav=next(x for x in ctx.bot.sent if "ccadminpage:1" in sent_callback_data(x))
+    require("PAGE 1/3" in nav["kwargs"].get("text",""),
+            "Admin catalogue page indicator or Next 5 button is missing")
+    before=len(ctx.bot.sent)
+    next_update,_,_=callback_update(999999,"ccadminpage:1")
+    asyncio.run(cc.admin_catalog_page_callback(next_update,ctx))
+    page_two=ctx.bot.sent[before:]
+    require(product_card_ids(page_two)==ids[5:10],
+            "Admin Next 5 did not show products 6 through 10")
+    nav_two=next(x for x in page_two if x["kwargs"].get("reply_markup"))
+    buttons=sent_callback_data(nav_two)
+    require("ccadminpage:0" in buttons and "ccadminpage:2" in buttons,
+            "Admin middle page must provide Previous 5 and Next 5")
+    print("PASS: Admin Level 1 catalogue shows five products per page with Previous/Next")
 
 
 def test_central_purchase_and_auto_listing():
@@ -907,6 +987,7 @@ def main():
     test_runtime_schema_bootstrap()
     fixture()
     test_level1_catalogue_quantity_buttons()
+    test_admin_catalogue_pagination()
     pid, listing_id, inventory_id = test_central_purchase_and_auto_listing()
     test_owner_wallet_and_inventory_design()
     test_list_stock_profit_screen()

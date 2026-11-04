@@ -3,6 +3,7 @@ name: Runtime smoke tests
 on:
   push:
     branches:
+      - main
       - feature/central-usdt-catalogue
   pull_request:
     branches:

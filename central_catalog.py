@@ -248,7 +248,9 @@ async def orders(update,ctx):
     if update.effective_user.id != v4.ADMIN_ID: return
     from telegram import InlineKeyboardMarkup, InlineKeyboardButton
     c=v4.db()
-    rows=c.execute("""SELECT o.id,o.buyer_owner_id,o.buyer_shop_id,o.quantity,o.total_usdt,o.status,o.created_at,p.title
+    rows=c.execute("""SELECT o.id,o.buyer_owner_id,o.buyer_shop_id,o.quantity,o.total_usdt,o.status,o.created_at,p.title,
+      (SELECT entry_type FROM ledger l WHERE l.transaction_id=o.id AND l.owner_id=o.buyer_owner_id
+       AND l.entry_type IN ('central_purchase_debit','resale_purchase_debit') ORDER BY l.id LIMIT 1) purchase_type
       FROM central_orders o JOIN central_catalog p ON p.id=o.catalog_id ORDER BY o.id DESC LIMIT 50""").fetchall()
     c.close()
     orders_text="<b>📦 CENTRAL CATALOGUE ORDERS</b>\n━━━━━━━━━━━━━━━━━━\n"
@@ -263,8 +265,9 @@ async def orders(update,ctx):
     for r in rows:
         buttons=[]
         if r["status"]=="paid":
-            buttons=[[InlineKeyboardButton("✅ Mark Fulfilled",callback_data=f"cc:fulfill:{r['id']}"),
-                      InlineKeyboardButton("↩️ Refund + Restock",callback_data=f"cc:refund:{r['id']}")]]
+            buttons=[[InlineKeyboardButton("✅ Mark Fulfilled",callback_data=f"cc:fulfill:{r['id']}")]]
+            if r["purchase_type"]=="central_purchase_debit":
+                buttons[0].append(InlineKeyboardButton("↩️ Refund + Restock",callback_data=f"cc:refund:{r['id']}"))
         buttons.append([InlineKeyboardButton("⬅️ Central Catalogue",callback_data="adm:central"),
                         InlineKeyboardButton("🏠 Admin Panel",callback_data="adm:home")])
         await update.effective_message.reply_text(
@@ -327,16 +330,43 @@ async def admin_callback(update,ctx):
                 label="fulfilled"
                 details=f"Central order #{oid} marked fulfilled"
             else:
-                c.execute("UPDATE central_orders SET status='refunded' WHERE id=? AND status='paid'",(oid,))
-                if c.execute("SELECT changes()").fetchone()[0]!=1:
+                purchase=c.execute("""SELECT entry_type FROM ledger
+                    WHERE transaction_id=? AND owner_id=?
+                      AND entry_type IN ('central_purchase_debit','resale_purchase_debit')
+                    ORDER BY id LIMIT 1""",(oid,order["buyer_owner_id"])).fetchone()
+                if not purchase or purchase["entry_type"]!="central_purchase_debit":
+                    c.rollback()
+                    await q.message.reply_text(
+                        "Automatic refund is only available for original Central Catalogue purchases. "
+                        "This order is a merchant-to-merchant resale; review both wallets and stock before any manual correction.")
+                    return
+                inventory=c.execute("""SELECT id,quantity,remaining_quantity FROM central_inventory
+                    WHERE order_id=? AND owner_id=? AND shop_id=? ORDER BY id LIMIT 1""",
+                    (oid,order["buyer_owner_id"],order["buyer_shop_id"])).fetchone()
+                if not inventory or int(inventory["remaining_quantity"])!=int(order["quantity"]):
+                    c.rollback()
+                    await q.message.reply_text(
+                        "Refund blocked: some or all items have already been resold or used. "
+                        "No wallet, inventory, listing, or catalogue stock was changed.")
+                    return
+                changed=c.execute("UPDATE central_orders SET status='refunded' WHERE id=? AND status='paid'",(oid,))
+                if changed.rowcount!=1:
                     raise RuntimeError("Order already processed")
+                # Revoke the buyer's untouched inventory and every active listing created from it.
+                c.execute("""UPDATE resale_listings SET remaining_quantity=0,status='cancelled'
+                    WHERE inventory_id=? AND status='active'""",(inventory["id"],))
+                c.execute("""UPDATE central_inventory SET remaining_quantity=0,status='refunded'
+                    WHERE id=? AND owner_id=? AND remaining_quantity=?""",
+                    (inventory["id"],order["buyer_owner_id"],order["quantity"]))
+                if c.execute("SELECT changes()").fetchone()[0]!=1:
+                    raise RuntimeError("Inventory changed during refund")
                 c.execute("UPDATE central_catalog SET stock=stock+?,updated_at=? WHERE id=?",
                           (order["quantity"],v4.now(),order["catalog_id"]))
                 c.execute("""INSERT INTO ledger(transaction_id,shop_id,owner_id,entry_type,amount,currency,note,created_at)
                   VALUES(?,?,?,'central_purchase_refund_credit',?,'USDT',?,?)""",
                   (oid,order["buyer_shop_id"],order["buyer_owner_id"],order["total_usdt"],f"Refund for central order #{oid}",v4.now()))
-                label="refunded + stock restored"
-                details=f"Central order #{oid} refunded {order['total_usdt']} USDT; stock restored"
+                label="refunded + inventory revoked + stock restored"
+                details=f"Central order #{oid} refunded {order['total_usdt']} USDT; buyer inventory/listings revoked and shared stock restored"
             c.execute("INSERT INTO admin_audit(admin_id,owner_id,action,details,created_at) VALUES(?,?,?,?,?)",
               (v4.ADMIN_ID,order["buyer_owner_id"],f"central_order_{action}",details,v4.now()))
             c.commit()

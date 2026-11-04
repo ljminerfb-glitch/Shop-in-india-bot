@@ -13,6 +13,7 @@ os.environ["ADMIN_ID"] = "999999"
 
 import bot_v4 as v4
 import central_catalog as cc
+import runtime_schema
 import bot_v5 as v5
 
 
@@ -492,7 +493,6 @@ def test_merchant_deposit_screenshot_and_admin_approval():
     require("m:dashboard" in callback_data(done_message.replies[0]),
             "Screenshot prompt is missing Back to Dashboard")
 
-    owner_ctx.user_data["deposit_tx_hash"]="TXID1234567890abcdef"
     photo_update,photo_message=message_update(101,None)
     photo_message.photo=[SimpleNamespace(file_id="merchant-proof-photo")]
     asyncio.run(v4.payment_photo(photo_update,owner_ctx))
@@ -503,10 +503,8 @@ def test_merchant_deposit_screenshot_and_admin_approval():
     credits=c.execute("SELECT COUNT(*) FROM ledger WHERE owner_id=101 AND entry_type='deposit_credit'").fetchone()[0]
     require(request["status"]=="pending" and request["screenshot_file_id"]=="merchant-proof-photo",
             "Screenshot was not saved while leaving request pending")
-    require(request["transaction_hash"]=="TXID1234567890abcdef",
-            "Deposit transaction hash was not saved in the request")
-    require(any("TXID1234567890abcdef" in x.get("kwargs",{}).get("caption","") for x in owner_ctx.bot.sent),
-            "Saved transaction hash was not included in the Admin proof card")
+    require(request["transaction_hash"] in (None, ""),
+            "A TXID was unexpectedly added when the merchant skipped the optional TXID step")
     require(credits==credits_before,"Wallet was credited before Admin approval")
     c.close()
 
@@ -521,6 +519,38 @@ def test_merchant_deposit_screenshot_and_admin_approval():
     require(credits_after==credits_before+1 and credit is not None and abs(float(credit["amount"])-12.5)<1e-8,
             "Approved deposit did not credit the merchant wallet exactly once")
     c.close()
+
+    # The optional TXID button must lead to a real state transition and persist the hash.
+    c=v4.db()
+    cur=c.execute("""INSERT INTO payment_requests(owner_id,shop_id,payment_type,level,amount,currency,network,status,created_at)
+        VALUES(101,1,'wallet_deposit',0,4.0,'USDT','not_selected','pending',?)""",(v4.now(),))
+    txid_rid=int(cur.lastrowid)
+    c.commit(); c.close()
+    txid_network_update,txid_network_message,_=callback_update(101,f"net:{txid_rid}:trc")
+    txid_ctx=context()
+    asyncio.run(v5.network_callback(txid_network_update,txid_ctx))
+    require(f"txid:{txid_rid}" in callback_data(txid_network_message.replies[0]),
+            "Deposit address screen is missing optional TXID action")
+    txid_update,txid_prompt,_=callback_update(101,f"txid:{txid_rid}")
+    asyncio.run(v5.txid_callback(txid_update,txid_ctx))
+    require(txid_ctx.user_data.get("state")=="deposit_tx_hash",
+            "Optional TXID button did not start TXID entry")
+    hash_update,hash_message=message_update(101,"TXID1234567890abcdef")
+    asyncio.run(v5.text_handler(hash_update,txid_ctx))
+    require(txid_ctx.user_data.get("state")=="payment_proof",
+            "Valid TXID did not continue to screenshot upload")
+    proof_update,proof_message=message_update(101,None)
+    proof_message.photo=[SimpleNamespace(file_id="txid-proof-photo")]
+    asyncio.run(v4.payment_photo(proof_update,txid_ctx))
+    c=v4.db()
+    txid_row=c.execute("SELECT transaction_hash,screenshot_file_id,status FROM payment_requests WHERE id=?",(txid_rid,)).fetchone()
+    c.close()
+    require(txid_row["transaction_hash"]=="TXID1234567890abcdef" and
+            txid_row["screenshot_file_id"]=="txid-proof-photo" and txid_row["status"]=="pending",
+            "Optional TXID and screenshot were not saved together for Admin review")
+    require(any("TXID1234567890abcdef" in x.get("kwargs",{}).get("caption","") for x in txid_ctx.bot.sent),
+            "Admin proof card did not include the saved TXID")
+
     # A rejected deposit must leave Pending and must never credit the wallet.
     c=v4.db()
     cur=c.execute("""INSERT INTO payment_requests(owner_id,shop_id,payment_type,level,amount,currency,network,status,created_at)
@@ -737,7 +767,137 @@ def test_usdt_balance_reconciliation():
     print("PASS: Wallet reconciliation distinguishes remaining sale proceeds from net withdrawable balance")
 
 
+def test_runtime_schema_bootstrap():
+    old_v4_db, old_v3_db = v4.DB, v4.v3.DB
+    with tempfile.TemporaryDirectory(prefix="shopindia_fresh_") as tmp:
+        fresh_db = str(Path(tmp) / "fresh.db")
+        try:
+            v4.DB = fresh_db
+            v4.v3.DB = fresh_db
+            v4.v3.setup()
+            require(runtime_schema.ensure_schema(fresh_db) == "ok",
+                    "Fresh database schema bootstrap failed")
+            v4.v3.ensure_catalog_schema()
+            cc.setup()
+            cc.resale_setup()
+            conn = sqlite3.connect(fresh_db)
+            names = {r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'")}
+            required = {"users", "shops", "products", "payment_requests", "withdrawals",
+                        "payment_history", "level_settings", "platform_settings", "ledger",
+                        "v4_orders", "central_catalog", "central_orders", "central_inventory",
+                        "resale_listings"}
+            require(required.issubset(names),
+                    f"Fresh install missing tables: {sorted(required - names)}")
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(payment_requests)")}
+            require({"transaction_hash", "tx_hash", "screenshot_file_id"}.issubset(cols),
+                    "Fresh payment_requests schema is missing proof columns")
+            conn.execute("INSERT INTO shops(owner_id,shop_name,status,created_at,level) VALUES(777,'Preserved Shop','approved','2026-01-01',1)")
+            conn.commit()
+            conn.close()
+            require(runtime_schema.ensure_schema(fresh_db) == "ok",
+                    "Second schema bootstrap was not idempotent")
+            conn = sqlite3.connect(fresh_db)
+            preserved = conn.execute("SELECT shop_name FROM shops WHERE owner_id=777").fetchone()
+            require(preserved and preserved[0] == "Preserved Shop",
+                    "Repeated schema bootstrap changed existing shop data")
+            require(conn.execute("SELECT COUNT(*) FROM level_settings").fetchone()[0] == 5,
+                    "Default shop levels were not initialized")
+            conn.close()
+        finally:
+            v4.DB = old_v4_db
+            v4.v3.DB = old_v3_db
+    print("PASS: Fresh-install schema bootstrap, required tables, and repeat-run data preservation")
+
+
+def test_admin_refund_safety():
+    c=v4.db()
+    pid=int(c.execute("SELECT id FROM central_catalog ORDER BY id LIMIT 1").fetchone()[0])
+    c.execute("UPDATE central_catalog SET stock=10 WHERE id=?",(pid,))
+    stock_before=int(c.execute("SELECT stock FROM central_catalog WHERE id=?",(pid,)).fetchone()[0])
+    cur=c.execute("""INSERT INTO central_orders(catalog_id,buyer_shop_id,buyer_owner_id,quantity,
+        unit_price_usdt,total_usdt,status,created_at) VALUES(?,1,101,2,2.5,5,'paid',?)""",
+        (pid,v4.now()))
+    oid=int(cur.lastrowid)
+    cur=c.execute("""INSERT INTO central_inventory(owner_id,shop_id,catalog_id,order_id,quantity,
+        remaining_quantity,unit_cost_usdt,status,created_at)
+        VALUES(101,1,?,?,2,2,2.5,'owned',?)""",(pid,oid,v4.now()))
+    inv_id=int(cur.lastrowid)
+    cur=c.execute("""INSERT INTO resale_listings(inventory_id,owner_id,shop_id,catalog_id,quantity,
+        remaining_quantity,unit_cost_usdt,ask_price_usdt,status,created_at)
+        VALUES(?,101,1,?,2,2,2.5,3.3,'active',?)""",(inv_id,pid,v4.now()))
+    listing_id=int(cur.lastrowid)
+    c.execute("""INSERT INTO ledger(transaction_id,shop_id,owner_id,entry_type,amount,currency,note,created_at)
+        VALUES(?,1,101,'central_purchase_debit',5,'USDT','refund safety test',?)""",(oid,v4.now()))
+    c.commit(); c.close()
+
+    update,message,query=callback_update(999999,f"cc:refund:{oid}")
+    asyncio.run(cc.admin_callback(update,context()))
+    c=v4.db()
+    order=c.execute("SELECT status FROM central_orders WHERE id=?",(oid,)).fetchone()
+    inventory=c.execute("SELECT remaining_quantity,status FROM central_inventory WHERE id=?",(inv_id,)).fetchone()
+    listing=c.execute("SELECT remaining_quantity,status FROM resale_listings WHERE id=?",(listing_id,)).fetchone()
+    stock_after=int(c.execute("SELECT stock FROM central_catalog WHERE id=?",(pid,)).fetchone()[0])
+    refund_count=c.execute("""SELECT COUNT(*) FROM ledger WHERE transaction_id=?
+        AND entry_type='central_purchase_refund_credit'""",(oid,)).fetchone()[0]
+    c.close()
+    require(order["status"]=="refunded","Safe catalogue refund did not close the order")
+    require(inventory["remaining_quantity"]==0 and inventory["status"]=="refunded",
+            "Refund did not revoke the buyer's unused inventory")
+    require(listing["remaining_quantity"]==0 and listing["status"]=="cancelled",
+            "Refund left a live resale listing behind")
+    require(stock_after==stock_before+2 and refund_count==1,
+            "Refund did not restore catalogue stock and wallet exactly once")
+
+    # Refuse a refund if any item from the original purchase has already been resold.
+    c=v4.db()
+    cur=c.execute("""INSERT INTO central_orders(catalog_id,buyer_shop_id,buyer_owner_id,quantity,
+        unit_price_usdt,total_usdt,status,created_at) VALUES(?,1,101,2,2.5,5,'paid',?)""",
+        (pid,v4.now()))
+    sold_oid=int(cur.lastrowid)
+    cur=c.execute("""INSERT INTO central_inventory(owner_id,shop_id,catalog_id,order_id,quantity,
+        remaining_quantity,unit_cost_usdt,status,created_at)
+        VALUES(101,1,?,?,2,1,2.5,'owned',?)""",(pid,sold_oid,v4.now()))
+    sold_inv=int(cur.lastrowid)
+    c.execute("""INSERT INTO resale_listings(inventory_id,owner_id,shop_id,catalog_id,quantity,
+        remaining_quantity,unit_cost_usdt,ask_price_usdt,status,created_at)
+        VALUES(?,101,1,?,2,1,2.5,3.3,'active',?)""",(sold_inv,pid,v4.now()))
+    c.execute("""INSERT INTO ledger(transaction_id,shop_id,owner_id,entry_type,amount,currency,note,created_at)
+        VALUES(?,1,101,'central_purchase_debit',5,'USDT','sold refund safety test',?)""",(sold_oid,v4.now()))
+    c.commit(); c.close()
+    sold_update,sold_message,_=callback_update(999999,f"cc:refund:{sold_oid}")
+    asyncio.run(cc.admin_callback(sold_update,context()))
+    c=v4.db()
+    sold_order=c.execute("SELECT status FROM central_orders WHERE id=?",(sold_oid,)).fetchone()
+    sold_stock=int(c.execute("SELECT stock FROM central_catalog WHERE id=?",(pid,)).fetchone()[0])
+    sold_refunds=c.execute("""SELECT COUNT(*) FROM ledger WHERE transaction_id=?
+        AND entry_type='central_purchase_refund_credit'""",(sold_oid,)).fetchone()[0]
+    c.close()
+    require(sold_order["status"]=="paid" and sold_stock==stock_after and sold_refunds==0,
+            "Refund was not blocked after inventory had been resold")
+
+    # Merchant-to-merchant resale orders must never replenish central shared stock.
+    c=v4.db()
+    cur=c.execute("""INSERT INTO central_orders(catalog_id,buyer_shop_id,buyer_owner_id,quantity,
+        unit_price_usdt,total_usdt,status,created_at) VALUES(?,2,202,1,3.3,3.3,'paid',?)""",
+        (pid,v4.now()))
+    resale_oid=int(cur.lastrowid)
+    c.execute("""INSERT INTO ledger(transaction_id,shop_id,owner_id,entry_type,amount,currency,note,created_at)
+        VALUES(?,2,202,'resale_purchase_debit',3.3,'USDT','resale refund guard',?)""",(resale_oid,v4.now()))
+    c.commit(); c.close()
+    resale_update,resale_message,_=callback_update(999999,f"cc:refund:{resale_oid}")
+    asyncio.run(cc.admin_callback(resale_update,context()))
+    c=v4.db()
+    resale_order=c.execute("SELECT status FROM central_orders WHERE id=?",(resale_oid,)).fetchone()
+    resale_stock=int(c.execute("SELECT stock FROM central_catalog WHERE id=?",(pid,)).fetchone()[0])
+    c.close()
+    require(resale_order["status"]=="paid" and resale_stock==stock_after,
+            "Merchant resale refund incorrectly changed central shared stock")
+    print("PASS: Refund revokes unused inventory, blocks sold-stock refunds, and protects resale orders")
+
+
 def main():
+    test_runtime_schema_bootstrap()
     fixture()
     test_level1_catalogue_quantity_buttons()
     pid, listing_id, inventory_id = test_central_purchase_and_auto_listing()
@@ -749,6 +909,7 @@ def main():
     test_merchant_deposit_screenshot_and_admin_approval()
     test_usdt_trc20_withdrawal_flow()
     test_failed_central_purchases(pid)
+    test_admin_refund_safety()
     test_usdt_balance_reconciliation()
     print("PASS: All isolated Telegram-handler end-to-end tests completed.")
 

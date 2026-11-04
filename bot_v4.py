@@ -318,14 +318,15 @@ async def payment_photo(update,ctx):
     c=db()
     row=c.execute("SELECT * FROM payment_requests WHERE id=? AND owner_id=? AND status='pending'",(rid,update.effective_user.id)).fetchone()
     if not row: c.close(); ctx.user_data.clear(); await update.message.reply_text("Pending request nahi mili."); return
-    c.execute("UPDATE payment_requests SET screenshot_file_id=? WHERE id=?",(photo,rid)); c.commit(); c.close()
+    tx_hash=(ctx.user_data.get("deposit_tx_hash") or "").strip()
+    c.execute("UPDATE payment_requests SET screenshot_file_id=?,transaction_hash=COALESCE(?,transaction_hash) WHERE id=?",(photo,tx_hash or None,rid)); c.commit(); c.close()
     ctx.user_data.clear()
     kb=InlineKeyboardMarkup([[InlineKeyboardButton("Approve",callback_data=f"pay:approve:{rid}"),InlineKeyboardButton("Reject",callback_data=f"pay:reject:{rid}")]])
     try:
         rate=usdt_inr_rate()
         inr_equiv=round(float(row['amount'])*rate,2) if row['currency']=='USDT' else None
         conversion=f"\nRate: 1 USDT = INR {rate:,.2f}\nINR equivalent: ₹{inr_equiv:,.2f}" if inr_equiv is not None else ""
-        await ctx.bot.send_photo(ADMIN_ID,photo=photo,caption=f"PAYMENT PROOF #{rid}\nOwner: {row['owner_id']}\nShop: {row['shop_id']}\nType: {row['payment_type']} L{row['level']}\nAmount: {row['amount']} {row['currency']}{conversion}\nNetwork: {row['network']}\nVerify transaction independently before approving.",reply_markup=kb)
+        await ctx.bot.send_photo(ADMIN_ID,photo=photo,caption=f"PAYMENT PROOF #{rid}\nOwner: {row['owner_id']}\nShop: {row['shop_id']}\nType: {row['payment_type']} L{row['level']}\nAmount: {row['amount']} {row['currency']}{conversion}\nNetwork: {row['network']}\nTransaction Hash: {row['transaction_hash'] or 'Not provided'}\nVerify transaction independently before approving.",reply_markup=kb)
     except Exception:
         log.exception("Payment proof admin delivery failed")
         await update.message.reply_text("Proof save ho gaya, lekin Admin ko Telegram notification nahi ja saki. Admin se contact karein.")
@@ -368,7 +369,7 @@ async def payment_review(update,ctx):
             "UPDATE payment_requests SET status=?,reviewed_at=?,admin_note=? "
             "WHERE id=? AND status='pending'",
             (status,reviewed_at,
-             "Admin verified manually" if action=="approve" else "Admin rejected proof",
+             "Admin verified manually" if action=="approve" else ("This is fake screenshot" if r["payment_type"]=="wallet_deposit" else "Admin rejected proof"),
              rid))
         if cur.rowcount != 1:
             c.rollback()

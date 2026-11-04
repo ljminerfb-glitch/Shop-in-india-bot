@@ -323,7 +323,7 @@ async def payment_photo(update,ctx):
         c.execute("UPDATE payment_requests SET screenshot_file_id=?,transaction_hash=COALESCE(?,transaction_hash) WHERE id=?",(photo,tx_hash or None,rid))
     except Exception:
         c.execute("UPDATE payment_requests SET screenshot_file_id=? WHERE id=?",(photo,rid))
-    saved_hash=(row["transaction_hash"] if "transaction_hash" in row.keys() else row["tx_hash"])
+    saved_hash=tx_hash or (row["transaction_hash"] if "transaction_hash" in row.keys() else (row["tx_hash"] if "tx_hash" in row.keys() else None))
     c.commit(); c.close()
     ctx.user_data.clear()
     kb=InlineKeyboardMarkup([
@@ -377,7 +377,7 @@ async def payment_review(update,ctx):
             "UPDATE payment_requests SET status=?,reviewed_at=?,admin_note=? "
             "WHERE id=? AND status='pending'",
             (status,reviewed_at,
-             "Admin verified manually" if action=="approve" else "This is fake screenshot",
+             "Admin verified manually" if action=="approve" else ("This is fake screenshot" if r["payment_type"]=="wallet_deposit" else "Admin rejected proof"),
              rid))
         if cur.rowcount != 1:
             c.rollback()

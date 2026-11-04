@@ -3,7 +3,7 @@ services:
     name: shop-in-india-bot
     runtime: python
     buildCommand: pip install -r requirements.txt
-    startCommand: python bot.py
+    startCommand: python bot_v5.py
     envVars:
       - key: BOT_TOKEN
         sync: false

@@ -289,6 +289,7 @@ async def menu_callback(update,ctx):
                 if status=="rejected": body+=f"\n  Reason: {html.escape(str(r['admin_note'] or 'No reason provided'))}"
                 body+="\n"
         await q.message.reply_text(body,reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back to Dashboard",callback_data="m:dashboard")]]),parse_mode="HTML")
+    # Merchant confirms the transfer before the screenshot is accepted for Admin review.
     elif action=="depositdone":
         rid=ctx.user_data.get("payment_request_id")
         if not rid or ctx.user_data.get("state")!="await_deposit_done":

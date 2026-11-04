@@ -493,7 +493,6 @@ def test_merchant_deposit_screenshot_and_admin_approval():
     require("m:dashboard" in callback_data(done_message.replies[0]),
             "Screenshot prompt is missing Back to Dashboard")
 
-    owner_ctx.user_data["deposit_tx_hash"]="TXID1234567890abcdef"
     photo_update,photo_message=message_update(101,None)
     photo_message.photo=[SimpleNamespace(file_id="merchant-proof-photo")]
     asyncio.run(v4.payment_photo(photo_update,owner_ctx))
@@ -504,10 +503,8 @@ def test_merchant_deposit_screenshot_and_admin_approval():
     credits=c.execute("SELECT COUNT(*) FROM ledger WHERE owner_id=101 AND entry_type='deposit_credit'").fetchone()[0]
     require(request["status"]=="pending" and request["screenshot_file_id"]=="merchant-proof-photo",
             "Screenshot was not saved while leaving request pending")
-    require(request["transaction_hash"]=="TXID1234567890abcdef",
-            "Deposit transaction hash was not saved in the request")
-    require(any("TXID1234567890abcdef" in x.get("kwargs",{}).get("caption","") for x in owner_ctx.bot.sent),
-            "Saved transaction hash was not included in the Admin proof card")
+    require(request["transaction_hash"] in (None, ""),
+            "A TXID was unexpectedly added when the merchant skipped the optional TXID step")
     require(credits==credits_before,"Wallet was credited before Admin approval")
     c.close()
 
@@ -522,6 +519,38 @@ def test_merchant_deposit_screenshot_and_admin_approval():
     require(credits_after==credits_before+1 and credit is not None and abs(float(credit["amount"])-12.5)<1e-8,
             "Approved deposit did not credit the merchant wallet exactly once")
     c.close()
+
+    # The optional TXID button must lead to a real state transition and persist the hash.
+    c=v4.db()
+    cur=c.execute("""INSERT INTO payment_requests(owner_id,shop_id,payment_type,level,amount,currency,network,status,created_at)
+        VALUES(101,1,'wallet_deposit',0,4.0,'USDT','not_selected','pending',?)""",(v4.now(),))
+    txid_rid=int(cur.lastrowid)
+    c.commit(); c.close()
+    txid_network_update,txid_network_message,_=callback_update(101,f"net:{txid_rid}:trc")
+    txid_ctx=context()
+    asyncio.run(v5.network_callback(txid_network_update,txid_ctx))
+    require(f"txid:{txid_rid}" in callback_data(txid_network_message.replies[0]),
+            "Deposit address screen is missing optional TXID action")
+    txid_update,txid_prompt,_=callback_update(101,f"txid:{txid_rid}")
+    asyncio.run(v5.txid_callback(txid_update,txid_ctx))
+    require(txid_ctx.user_data.get("state")=="deposit_tx_hash",
+            "Optional TXID button did not start TXID entry")
+    hash_update,hash_message=message_update(101,"TXID1234567890abcdef")
+    asyncio.run(v5.text_handler(hash_update,txid_ctx))
+    require(txid_ctx.user_data.get("state")=="payment_proof",
+            "Valid TXID did not continue to screenshot upload")
+    proof_update,proof_message=message_update(101,None)
+    proof_message.photo=[SimpleNamespace(file_id="txid-proof-photo")]
+    asyncio.run(v4.payment_photo(proof_update,txid_ctx))
+    c=v4.db()
+    txid_row=c.execute("SELECT transaction_hash,screenshot_file_id,status FROM payment_requests WHERE id=?",(txid_rid,)).fetchone()
+    c.close()
+    require(txid_row["transaction_hash"]=="TXID1234567890abcdef" and
+            txid_row["screenshot_file_id"]=="txid-proof-photo" and txid_row["status"]=="pending",
+            "Optional TXID and screenshot were not saved together for Admin review")
+    require(any("TXID1234567890abcdef" in x.get("kwargs",{}).get("caption","") for x in txid_ctx.bot.sent),
+            "Admin proof card did not include the saved TXID")
+
     # A rejected deposit must leave Pending and must never credit the wallet.
     c=v4.db()
     cur=c.execute("""INSERT INTO payment_requests(owner_id,shop_id,payment_type,level,amount,currency,network,status,created_at)
@@ -832,7 +861,7 @@ def test_admin_refund_safety():
     sold_inv=int(cur.lastrowid)
     c.execute("""INSERT INTO resale_listings(inventory_id,owner_id,shop_id,catalog_id,quantity,
         remaining_quantity,unit_cost_usdt,ask_price_usdt,status,created_at)
-        VALUES(?,101,1,2,2,1,2.5,3.3,'active',?)""",(sold_inv,v4.now()))
+        VALUES(?,101,1,?,2,1,2.5,3.3,'active',?)""",(sold_inv,pid,v4.now()))
     c.execute("""INSERT INTO ledger(transaction_id,shop_id,owner_id,entry_type,amount,currency,note,created_at)
         VALUES(?,1,101,'central_purchase_debit',5,'USDT','sold refund safety test',?)""",(sold_oid,v4.now()))
     c.commit(); c.close()

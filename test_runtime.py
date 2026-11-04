@@ -119,6 +119,7 @@ def fixture():
     CREATE TABLE transactions(id INTEGER PRIMARY KEY AUTOINCREMENT,buyer_shop_id INTEGER,seller_shop_id INTEGER,product_id INTEGER,quantity INTEGER,total_amount REAL,currency TEXT,status TEXT,created_at TEXT,completed_at TEXT);
     CREATE TABLE orders(id INTEGER PRIMARY KEY AUTOINCREMENT,buyer_id INTEGER,product_id INTEGER,quantity INTEGER,status TEXT,created_at TEXT);
     CREATE TABLE payment_requests(id INTEGER PRIMARY KEY AUTOINCREMENT,owner_id INTEGER,shop_id INTEGER,payment_type TEXT,level INTEGER,amount REAL,currency TEXT,network TEXT,screenshot_file_id TEXT,tx_hash TEXT,status TEXT,admin_note TEXT,created_at TEXT,reviewed_at TEXT);
+    CREATE TABLE payment_history(id INTEGER PRIMARY KEY AUTOINCREMENT,owner_id INTEGER,shop_id INTEGER,payment_type TEXT,amount REAL,currency TEXT,status TEXT,reference TEXT,admin_note TEXT,actor_id INTEGER,created_at TEXT,reviewed_at TEXT);
     CREATE TABLE withdrawals(id INTEGER PRIMARY KEY AUTOINCREMENT,owner_id INTEGER,shop_id INTEGER,amount REAL,currency TEXT,network TEXT,wallet_address TEXT,status TEXT,admin_note TEXT,created_at TEXT,reviewed_at TEXT);
     CREATE TABLE owner_wallets(owner_id INTEGER PRIMARY KEY,network TEXT NOT NULL,address TEXT NOT NULL,updated_at TEXT NOT NULL,verified INTEGER NOT NULL DEFAULT 0);
     CREATE TABLE admin_audit(id INTEGER PRIMARY KEY AUTOINCREMENT,admin_id INTEGER,owner_id INTEGER,action TEXT,details TEXT,created_at TEXT);
@@ -426,9 +427,10 @@ def test_merchant_deposit_screenshot_and_admin_approval():
     require(owner_ctx.user_data.get("state")=="deposit_amount","Make Deposit did not start amount entry")
     amount_update,amount_message=message_update(101,"12.5")
     asyncio.run(v5.text_handler(amount_update,owner_ctx))
-    require("Choose payment network" in amount_message.replies[-1]["text"],
+    amount_screen=owner_ctx.bot.sent[-1]["kwargs"]
+    require("Choose payment network" in amount_screen["text"],
             "Deposit amount did not lead to network selection")
-    network_button=next(button for row in amount_message.replies[-1]["kwargs"]["reply_markup"].inline_keyboard
+    network_button=next(button for row in amount_screen["reply_markup"].inline_keyboard
                         for button in row if button.callback_data and button.callback_data.startswith("net:"))
     rid=int(network_button.callback_data.split(":")[1])
 

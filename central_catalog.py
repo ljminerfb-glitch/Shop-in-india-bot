@@ -97,7 +97,7 @@ def balance(c, owner_id):
 
 def catalogue_text(c):
     rows=c.execute("SELECT id,title,price_usdt,stock,active FROM central_catalog ORDER BY id").fetchall()
-    return "🛍 CENTRAL LEVEL 1 CATALOGUE\n\n"+ "\n\n".join(
+    return "🛍 CENTRAL CATALOGUE\n\n"+ "\n\n".join(
       f"#{r['id']} {r['title']}\nPrice: {float(r['price_usdt']):g} USDT | Stock: {r['stock']} | Active: {'Yes' if r['active'] else 'No'}"
       for r in rows)
 
@@ -695,8 +695,11 @@ async def list_inventory(update,ctx):
                if int(shop["level"])==2 and unit_cost else f"Resale price: {price:g} USDT / item\n")
             + (f"💚 <b>Expected profit: +{low_profit:g} to +{high_profit:g} USDT / sold item</b>\n"
                if int(shop["level"])==2 else f"💚 <b>Expected profit: +{low_profit:g} USDT / sold item</b>\n")
-            + f"🟢 Listed stock potential: <b>+{listed_profit_low:g} to +{listed_profit_high:g} USDT</b>\n"
-            + f"🟢 Free stock potential: <b>+{free_profit_low:g} to +{free_profit_high:g} USDT</b>\n\n"
+            + (f"🟢 Listed stock potential: <b>+{listed_profit_low:g} USDT</b>\n"
+               f"🟢 Free stock potential: <b>+{free_profit_low:g} USDT</b>\n"
+               if int(shop["level"])==1 else
+               f"🟢 Listed stock potential: <b>+{listed_profit_low:g} to +{listed_profit_high:g} USDT</b>\n"
+               f"🟢 Free stock potential: <b>+{free_profit_low:g} to +{free_profit_high:g} USDT</b>\n")
             + "<i>Profit is credited after a sale is completed.</i>"
         )
         await update.effective_message.reply_text(details,reply_markup=InlineKeyboardMarkup([x for x in kb if x]),parse_mode="HTML")
@@ -729,8 +732,8 @@ async def resale_callback(update,ctx):
                 JOIN central_catalog p ON p.id=i.catalog_id WHERE i.id=? AND i.owner_id=?""",
                 (inv_id,q.from_user.id)).fetchone()
             if not inv: c.rollback(); await safe_callback_answer(q, "Inventory not found",show_alert=True); return
-            seller_shop=v4.shop_for(q.from_user.id)
-            if not seller_shop or seller_shop["status"]!="approved" or int(seller_shop["level"])!=int(inv["level_required"]):
+            seller_shop=c.execute("SELECT id,owner_id,status,level FROM shops WHERE id=?",(inv["shop_id"],)).fetchone()
+            if not seller_shop or int(seller_shop["owner_id"])!=q.from_user.id or seller_shop["status"]!="approved" or int(seller_shop["level"])!=int(inv["level_required"]):
                 c.rollback(); await safe_callback_answer(q,"Inventory level does not match your approved shop",show_alert=True); return
             listed=c.execute("SELECT COALESCE(SUM(remaining_quantity),0) FROM resale_listings WHERE inventory_id=? AND status='active'",(inv_id,)).fetchone()[0]
             qty=int(inv["remaining_quantity"])-int(listed)

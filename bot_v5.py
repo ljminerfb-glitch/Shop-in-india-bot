@@ -1187,6 +1187,8 @@ def main():
     app.add_handler(CallbackQueryHandler(central.resale_callback,pattern=r"^rs:(list:[0-9]+|listmenu|market|review:[0-9]+|buy:[0-9]+:[0-9]+)$"))
     app.add_handler(CallbackQueryHandler(audit_callback,pattern=r"^audit:(all|payments|levels|wallet|orders|products):[0-9]+$"))
     app.add_handler(CallbackQueryHandler(delivered_callback,pattern=r"^order:delivered:[0-9]+$"))
+    app.add_handler(CallbackQueryHandler(central.admin_level_callback,pattern=r"^ccadminlevel:1$"))
+    app.add_handler(CallbackQueryHandler(central.owner_level_callback,pattern=r"^cclevel:1$"))
     app.add_handler(CallbackQueryHandler(central.admin_callback,pattern=r"^cc:(view|orders|price|stock|toggle|fulfill|refund)(:[0-9]+)?$"))
     app.add_handler(CallbackQueryHandler(central.owner_buy_callback,pattern=r"^ccbuy:[0-9]+:[0-9]+$"))
     app.add_handler(CallbackQueryHandler(v4.payment_review,pattern=r"^pay:(approve|reject):[0-9]+$"))

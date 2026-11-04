@@ -376,7 +376,7 @@ async def payment_review(update,ctx):
             "UPDATE payment_requests SET status=?,reviewed_at=?,admin_note=? "
             "WHERE id=? AND status='pending'",
             (status,reviewed_at,
-             "Admin verified manually" if action=="approve" else "Admin rejected proof",
+             "Admin verified manually" if action=="approve" else "This is fake screenshot",
              rid))
         if cur.rowcount != 1:
             c.rollback()

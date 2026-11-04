@@ -715,7 +715,7 @@ async def text_handler(update,ctx):
         finally:
             c.close()
         available=available_withdrawal_usdt(update.effective_user.id)
-        ctx.user_data["state"]="withdraw_amount"
+        ctx.user_data.pop("state",None)
         await edit_screen(ctx,update,
             "<b>✅ WITHDRAW ADDRESS SAVED</b>\\n━━━━━━━━━━━━━━━━━━\\n"
             f"Address: <code>{html.escape(address)}</code>\\n\\n"

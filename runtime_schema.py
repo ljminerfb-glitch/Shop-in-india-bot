@@ -25,6 +25,14 @@ def ensure_schema(db_path=None):
         conn.execute("PRAGMA foreign_keys=ON")
         conn.execute("PRAGMA journal_mode=WAL")
 
+        # Ensure the legacy product table exists on a clean installation.
+        conn.execute("""CREATE TABLE IF NOT EXISTS products (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, shop_id INTEGER NOT NULL,
+            title TEXT NOT NULL, description TEXT, price REAL NOT NULL DEFAULT 0,
+            currency TEXT NOT NULL DEFAULT 'INR', active INTEGER NOT NULL DEFAULT 0,
+            stock INTEGER NOT NULL DEFAULT 1, level_required INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT, updated_at TEXT)""")
+
         # Core V3 tables are created by bot_v3.setup(); extend them safely.
         if "shops" in {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}:
             _add_columns(conn, "shops", [

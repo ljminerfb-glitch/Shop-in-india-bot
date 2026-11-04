@@ -177,7 +177,8 @@ async def _send_admin_level_page(update,ctx,level=1,page=0):
         q.message.chat_id,
         f"<b>PAGE {page+1}/{last_page+1}</b> • Products {start+1 if total else 0}–{min(start+CATALOGUE_PAGE_SIZE,total)} of {total}",
         reply_markup=_catalogue_page_keyboard(
-            page,total,f"ccadminpage:{level}","⬅️ Back to Levels","adm:central","adm:home"),
+            page,total,("ccadminpage" if level==1 else "ccadminpage:2"),
+            "⬅️ Back to Levels","adm:central","adm:home"),
         parse_mode="HTML")
 
 
@@ -595,7 +596,8 @@ async def show_owner_level_products(update,ctx,shop,page=0,track_visit=True,leve
         update.effective_chat.id,
         f"<b>PAGE {page+1}/{last_page+1}</b> • Products {start+1 if total else 0}–{min(start+CATALOGUE_PAGE_SIZE,total)} of {total}",
         reply_markup=_catalogue_page_keyboard(
-            page,total,f"ccpage:{level}","⬅️ Back to My Products","m:products","m:dashboard"),
+            page,total,("ccpage" if level==1 else "ccpage:2"),
+            "⬅️ Back to My Products","m:products","m:dashboard"),
         parse_mode="HTML")
 
 

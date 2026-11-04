@@ -2,6 +2,7 @@
 from pathlib import Path
 import logging
 import html
+import secrets
 import bot_v4 as v4
 
 log = logging.getLogger("central_catalog")
@@ -48,8 +49,19 @@ def setup(c=None):
           shop_id INTEGER NOT NULL, catalog_id INTEGER NOT NULL,
           order_id INTEGER NOT NULL, quantity INTEGER NOT NULL,
           remaining_quantity INTEGER NOT NULL, unit_cost_usdt REAL NOT NULL,
+          resale_margin_usdt REAL NOT NULL DEFAULT 0.8,
+          pricing_level INTEGER NOT NULL DEFAULT 1,
           status TEXT NOT NULL DEFAULT 'owned', created_at TEXT NOT NULL,
           UNIQUE(order_id))""")
+        inventory_cols={r["name"] for r in conn.execute("PRAGMA table_info(central_inventory)").fetchall()}
+        if "resale_margin_usdt" not in inventory_cols:
+            conn.execute("ALTER TABLE central_inventory ADD COLUMN resale_margin_usdt REAL NOT NULL DEFAULT 0.8")
+        if "pricing_level" not in inventory_cols:
+            conn.execute("ALTER TABLE central_inventory ADD COLUMN pricing_level INTEGER NOT NULL DEFAULT 1")
+        conn.execute("""CREATE TABLE IF NOT EXISTS merchant_catalogue_pricing (
+          shop_id INTEGER NOT NULL, owner_id INTEGER NOT NULL, catalog_id INTEGER NOT NULL,
+          level INTEGER NOT NULL, margin_usdt REAL NOT NULL, created_at TEXT NOT NULL,
+          PRIMARY KEY(shop_id,catalog_id,level))""")
         conn.execute("""CREATE TABLE IF NOT EXISTS catalogue_visits (
           owner_id INTEGER PRIMARY KEY, visits INTEGER NOT NULL DEFAULT 0,
           last_seen TEXT NOT NULL)""")
@@ -60,6 +72,43 @@ def setup(c=None):
         conn.commit()
     finally:
         if own: conn.close()
+
+
+def get_or_create_merchant_margin(c,owner_id,shop_id,catalog_id,level):
+    """Stable per-shop/product markup. L1 keeps +0.8; L2 gets a saved random +2..3."""
+    level=int(level)
+    if level==1:
+        return 0.8
+    if level!=2:
+        raise ValueError("Merchant-specific random margins are configured for Level 2 only.")
+    row=c.execute("""SELECT margin_usdt FROM merchant_catalogue_pricing
+        WHERE shop_id=? AND catalog_id=? AND level=?""",
+        (shop_id,catalog_id,level)).fetchone()
+    if row:
+        return round(float(row["margin_usdt"]),2)
+
+    # Select cent increments in [2.00, 3.00]. Margins are unique within a
+    # merchant's products and, where choices remain, across merchants for the same product.
+    used_shop={int(round(float(r[0])*100)) for r in c.execute(
+        "SELECT margin_usdt FROM merchant_catalogue_pricing WHERE shop_id=? AND level=?",
+        (shop_id,level)).fetchall()}
+    used_product={int(round(float(r[0])*100)) for r in c.execute(
+        "SELECT margin_usdt FROM merchant_catalogue_pricing WHERE catalog_id=? AND level=?",
+        (catalog_id,level)).fetchall()}
+    choices=[n for n in range(200,301) if n not in used_shop and n not in used_product]
+    if not choices:
+        choices=[n for n in range(200,301) if n not in used_shop]
+    if not choices:
+        choices=list(range(200,301))
+    margin=secrets.choice(choices)/100.0
+    c.execute("""INSERT OR IGNORE INTO merchant_catalogue_pricing
+        (shop_id,owner_id,catalog_id,level,margin_usdt,created_at)
+        VALUES(?,?,?,?,?,?)""",(shop_id,owner_id,catalog_id,level,margin,v4.now()))
+    saved=c.execute("""SELECT margin_usdt FROM merchant_catalogue_pricing
+        WHERE shop_id=? AND catalog_id=? AND level=?""",
+        (shop_id,catalog_id,level)).fetchone()
+    return round(float(saved["margin_usdt"]),2)
+
 
 def balance(c, owner_id):
     row=c.execute("""SELECT
@@ -220,12 +269,16 @@ async def set_active(update,ctx):
     c.commit(); c.close()
     await update.effective_message.reply_text("Catalogue status updated." if cur.rowcount else "Central product not found.")
 
-async def buy(update,ctx):
+async def buy(update,ctx,catalogue_level=None):
     if len(ctx.args)!=2:
         await update.effective_message.reply_text("Usage: /centralbuy PRODUCT_ID QUANTITY"); return
     shop=v4.shop_for(update.effective_user.id)
-    if not shop or shop["status"]!="approved" or int(shop["level"])!=1:
-        await update.effective_message.reply_text("Approved Level 1 shop required. Higher and lower levels cannot use this catalogue."); return
+    if not shop or shop["status"]!="approved" or int(shop["level"]) not in (1,2):
+        await update.effective_message.reply_text("Approved Level 1 or Level 2 shop required."); return
+    shop_level=int(shop["level"])
+    selected_level=shop_level if catalogue_level is None else int(catalogue_level)
+    if selected_level!=shop_level:
+        await update.effective_message.reply_text("You can only purchase from your currently active shop level."); return
     try:
         pid=int(ctx.args[0]); qty=int(ctx.args[1])
         if pid<1 or qty<1 or qty>1000: raise ValueError()
@@ -234,12 +287,16 @@ async def buy(update,ctx):
     c=v4.db()
     try:
         c.execute("BEGIN IMMEDIATE")
-        p=c.execute("SELECT * FROM central_catalog WHERE id=? AND active=1 AND level_required=1",(pid,)).fetchone()
+        p=c.execute("SELECT * FROM central_catalog WHERE id=? AND active=1 AND level_required<=?",
+                    (pid,selected_level)).fetchone()
         if not p or float(p["price_usdt"])<=0:
             c.rollback(); await update.effective_message.reply_text("Product unavailable. Admin has not set its USDT price yet."); return
         if int(p["stock"])<qty:
             c.rollback(); await update.effective_message.reply_text(f"Insufficient central stock. Available: {p['stock']}"); return
-        total=round(float(p["price_usdt"])*qty,6)
+        unit_cost=round(float(p["price_usdt"]),6)
+        margin=get_or_create_merchant_margin(c,update.effective_user.id,shop["id"],pid,selected_level)
+        ask_price=round(unit_cost+margin,6)
+        total=round(unit_cost*qty,6)
         available=balance(c,update.effective_user.id)
         if available+1e-9<total:
             c.rollback()
@@ -263,38 +320,53 @@ async def buy(update,ctx):
             ])
             await update.effective_message.reply_text(deposit_text,reply_markup=deposit_kb)
             return
-        c.execute("UPDATE central_catalog SET stock=stock-?,updated_at=? WHERE id=? AND stock>=?",(qty,v4.now(),pid,qty))
+        c.execute("UPDATE central_catalog SET stock=stock-?,updated_at=? WHERE id=? AND stock>=?",
+                  (qty,v4.now(),pid,qty))
         if c.execute("SELECT changes()").fetchone()[0]!=1:
             c.rollback(); await update.effective_message.reply_text("Stock changed. Please retry."); return
         cur=c.execute("""INSERT INTO central_orders(catalog_id,buyer_shop_id,buyer_owner_id,quantity,unit_price_usdt,total_usdt,status,created_at)
-          VALUES(?,?,?,?,?,?,'paid',?)""",(pid,shop["id"],update.effective_user.id,qty,p["price_usdt"],total,v4.now()))
+          VALUES(?,?,?,?,?,?,'paid',?)""",
+          (pid,shop["id"],update.effective_user.id,qty,unit_cost,total,v4.now()))
         oid=cur.lastrowid
-        c.execute("""INSERT INTO central_inventory(owner_id,shop_id,catalog_id,order_id,quantity,remaining_quantity,unit_cost_usdt,status,created_at)
-          VALUES(?,?,?,?,?,?,?,'owned',?)""",
-          (update.effective_user.id,shop["id"],pid,oid,qty,qty,float(p["price_usdt"]),v4.now()))
-        inventory_id=c.execute("SELECT last_insert_rowid()").fetchone()[0]
-        # Every approved Level 1 buyer gets an automatic resale listing at cost + 0.8 USDT/item.
+        cur=c.execute("""INSERT INTO central_inventory
+          (owner_id,shop_id,catalog_id,order_id,quantity,remaining_quantity,unit_cost_usdt,
+           resale_margin_usdt,pricing_level,status,created_at)
+          VALUES(?,?,?,?,?,?,?,?,?,'owned',?)""",
+          (update.effective_user.id,shop["id"],pid,oid,qty,qty,unit_cost,margin,selected_level,v4.now()))
+        inventory_id=cur.lastrowid
         resale_setup(c)
-        ask_price=round(float(p["price_usdt"])+0.8,6)
-        c.execute("""INSERT INTO resale_listings(inventory_id,owner_id,shop_id,catalog_id,quantity,remaining_quantity,
-                     unit_cost_usdt,ask_price_usdt,status,created_at)
-                     VALUES(?,?,?,?,?,?,?,?, 'active',?)""",
-                  (inventory_id,update.effective_user.id,shop["id"],pid,qty,qty,float(p["price_usdt"]),ask_price,v4.now()))
-        remaining_stock=int(p['stock'])-qty
+        c.execute("""INSERT INTO resale_listings
+          (inventory_id,owner_id,shop_id,catalog_id,quantity,remaining_quantity,
+           unit_cost_usdt,ask_price_usdt,seller_level,status,created_at)
+          VALUES(?,?,?,?,?,?,?,?,?,'active',?)""",
+          (inventory_id,update.effective_user.id,shop["id"],pid,qty,qty,unit_cost,ask_price,selected_level,v4.now()))
+        remaining_stock=int(p["stock"])-qty
         c.execute("""INSERT INTO ledger(transaction_id,shop_id,owner_id,entry_type,amount,currency,note,created_at)
-          VALUES(?,?,?,'central_purchase_debit',?,'USDT',?,?)""",(oid,shop["id"],update.effective_user.id,total,f"Central catalogue order #{oid}",v4.now()))
+          VALUES(?,?,?,'central_purchase_debit',?,'USDT',?,?)""",
+          (oid,shop["id"],update.effective_user.id,total,f"Central catalogue order #{oid}",v4.now()))
         c.execute("""INSERT INTO admin_audit(admin_id,owner_id,action,details,created_at)
-          VALUES(?,?,?,?,?)""",(v4.ADMIN_ID,update.effective_user.id,"central_order_paid",f"Order #{oid}; product #{pid}; qty {qty}; {total} USDT",v4.now()))
+          VALUES(?,?,?,?,?)""",
+          (v4.ADMIN_ID,update.effective_user.id,"central_order_paid",
+           f"Level {selected_level} order #{oid}; product #{pid}; qty {qty}; cost {total:g} USDT; resale margin +{margin:g} USDT/item",
+           v4.now()))
         c.commit()
     except Exception:
         c.rollback(); log.exception("Central catalogue purchase failed")
         await update.effective_message.reply_text("Purchase failed safely. No wallet debit or stock deduction was committed.")
         return
     finally: c.close()
-    await update.effective_message.reply_text(f"✅ Purchase successful\nOrder #{oid}\n{p['title']} × {qty}\nTotal paid: {total:g} USDT\nRemaining shared stock: {remaining_stock}\nRemaining USDT wallet: {balance_after_text(total,available)}")
+    await update.effective_message.reply_text(
+        f"✅ Purchase successful\nOrder #{oid}\n{p['title']} × {qty}\n"
+        f"Total paid: {total:g} USDT\nYour Level {selected_level} resale margin: +{margin:g} USDT / item\n"
+        f"Your resale price: {ask_price:g} USDT / item\n"
+        f"Remaining shared stock: {remaining_stock}\nRemaining USDT wallet: {balance_after_text(total,available)}")
     try:
-        await ctx.bot.send_message(v4.ADMIN_ID,f"🛒 CENTRAL ORDER #{oid}\n{p['title']} × {qty}\nOwner: {update.effective_user.id} | Shop #{shop['id']}\nPaid: {total:g} USDT")
+        await ctx.bot.send_message(v4.ADMIN_ID,
+            f"🛒 LEVEL {selected_level} CENTRAL ORDER #{oid}\n{p['title']} × {qty}\n"
+            f"Owner: {update.effective_user.id} | Shop #{shop['id']}\n"
+            f"Paid: {total:g} USDT | Resale markup: +{margin:g} USDT/item")
     except Exception: log.exception("Admin central order notification failed")
+
 
 def balance_after_text(total, before):
     return f"{max(0.0, before-total):.6f}".rstrip("0").rstrip(".")
@@ -440,27 +512,33 @@ async def admin_callback(update,ctx):
 
 async def owner_market(update,ctx,shop):
     from telegram import InlineKeyboardMarkup, InlineKeyboardButton
-    if not shop or shop["status"] != "approved" or int(shop["level"]) != 1:
+    if not shop or shop["status"]!="approved" or int(shop["level"]) not in (1,2):
         await update.callback_query.message.reply_text(
-            "This catalogue is available only to approved Level 1 shops.",
+            "Central catalogue is available to approved Level 1 and Level 2 shops.",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back",callback_data="m:dashboard")]]))
         return
+    level=int(shop["level"])
+    label="LEVEL 1" if level==1 else "LEVEL 2"
     await update.callback_query.message.reply_text(
-        "<b>🛒 BUY PRODUCT</b>\n━━━━━━━━━━━━━━━━━━\nPick your level:",
+        "<b>🛒 BUY PRODUCT</b>\n━━━━━━━━━━━━━━━━━━\nPick your active shop level:",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🟦 LEVEL 1",callback_data="cclevel:1")],
-            [InlineKeyboardButton("⬅️ Back to My Products",callback_data="m:products"),InlineKeyboardButton("🏠 Dashboard",callback_data="m:dashboard")]]),
+            [InlineKeyboardButton(f"🟦 {label}",callback_data=f"cclevel:{level}")],
+            [InlineKeyboardButton("⬅️ Back to My Products",callback_data="m:products"),
+             InlineKeyboardButton("🏠 Dashboard",callback_data="m:dashboard")]]),
         parse_mode="HTML")
 
 
 async def owner_level_callback(update,ctx):
     q=update.callback_query
     shop=v4.shop_for(q.from_user.id)
-    if not shop or shop["status"]!="approved" or int(shop["level"])!=1:
-        await safe_callback_answer(q,"Approved Level 1 shop required",show_alert=True); return
+    try:
+        requested=int(q.data.split(":",1)[1])
+    except (ValueError,IndexError):
+        await safe_callback_answer(q,"Invalid catalogue level",show_alert=True); return
+    if not shop or shop["status"]!="approved" or int(shop["level"])!=requested or requested not in (1,2):
+        await safe_callback_answer(q,f"Approved Level {requested} shop required",show_alert=True); return
     await safe_callback_answer(q)
-    if q.data=="cclevel:1":
-        await show_owner_level_products(update,ctx,shop)
+    await show_owner_level_products(update,ctx,shop,catalogue_level=requested)
 
 
 async def owner_catalog_page_callback(update,ctx):
@@ -474,14 +552,29 @@ async def owner_catalog_page_callback(update,ctx):
     except (ValueError,IndexError):
         await safe_callback_answer(q,"Invalid page",show_alert=True); return
     await safe_callback_answer(q)
-    await show_owner_level_products(update,ctx,shop,page=page,track_visit=False)
+    await show_owner_level_products(update,ctx,shop,page=page,track_visit=False,catalogue_level=1)
 
 
-async def show_owner_level_products(update,ctx,shop,page=0,track_visit=True):
+async def owner_catalog2_page_callback(update,ctx):
+    q=update.callback_query
+    shop=v4.shop_for(q.from_user.id)
+    if not shop or shop["status"]!="approved" or int(shop["level"])!=2:
+        await safe_callback_answer(q,"Approved Level 2 shop required",show_alert=True); return
+    try:
+        page=int(q.data.split(":",1)[1])
+        if page<0: raise ValueError()
+    except (ValueError,IndexError):
+        await safe_callback_answer(q,"Invalid page",show_alert=True); return
+    await safe_callback_answer(q)
+    await show_owner_level_products(update,ctx,shop,page=page,track_visit=False,catalogue_level=2)
+
+
+async def show_owner_level_products(update,ctx,shop,page=0,track_visit=True,catalogue_level=1):
     from telegram import InlineKeyboardMarkup, InlineKeyboardButton
-    if not shop or shop["status"] != "approved" or int(shop["level"]) != 1:
+    catalogue_level=int(catalogue_level)
+    if not shop or shop["status"]!="approved" or int(shop["level"])!=catalogue_level or catalogue_level not in (1,2):
         await update.callback_query.message.reply_text(
-            "This central catalogue is available only to approved Level 1 shops.",
+            f"This central catalogue is available only to approved Level {catalogue_level} shops.",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back",callback_data="m:dashboard")]]))
         return
     setup()
@@ -492,7 +585,13 @@ async def show_owner_level_products(update,ctx,shop,page=0,track_visit=True):
               ON CONFLICT(owner_id) DO UPDATE SET visits=visits+1,last_seen=excluded.last_seen""",
               (update.effective_user.id,v4.now()))
         total_visitors=c.execute("SELECT COUNT(*) FROM catalogue_visits").fetchone()[0]
-        rows=c.execute("SELECT * FROM central_catalog WHERE active=1 AND level_required=1 ORDER BY id").fetchall()
+        rows=c.execute("""SELECT * FROM central_catalog
+            WHERE active=1 AND level_required<=? ORDER BY id""",(catalogue_level,)).fetchall()
+        margins={}
+        if catalogue_level==2:
+            for p in rows:
+                margins[int(p["id"])]=get_or_create_merchant_margin(
+                    c,update.effective_user.id,shop["id"],int(p["id"]),catalogue_level)
         c.commit()
     finally: c.close()
     total=len(rows)
@@ -500,27 +599,35 @@ async def show_owner_level_products(update,ctx,shop,page=0,track_visit=True):
     page=max(0,min(int(page),last_page))
     start=page*CATALOGUE_PAGE_SIZE
     page_rows=rows[start:start+CATALOGUE_PAGE_SIZE]
+    level_heading=f"CENTRAL LEVEL {catalogue_level} CATALOGUE"
+    formula_text=("Each product gets a saved, merchant-specific random margin from +2.00 to +3.00 USDT per item."
+                  if catalogue_level==2 else "Level 1 resale margin remains +0.80 USDT per item.")
     await update.callback_query.message.reply_text(
-        f"<b>🛍 CENTRAL LEVEL 1 CATALOGUE</b>\n━━━━━━━━━━━━━━━━━━\n"
+        f"<b>🛍 {level_heading}</b>\n━━━━━━━━━━━━━━━━━━\n"
         f"Showing {start+1 if total else 0}–{min(start+CATALOGUE_PAGE_SIZE,total)} of {total} products\n"
         f"{total_visitors} unique visitors\n"
-        "<i>Margin figures are references, not guaranteed income. Actual profit is recorded after a completed sale.</i>",
+        f"<i>{formula_text} Actual profit is recorded after a completed sale.</i>",
         reply_markup=InlineKeyboardMarkup([[
             InlineKeyboardButton("⬅️ Back to My Products",callback_data="m:products"),
             InlineKeyboardButton("🏠 Dashboard",callback_data="m:dashboard")]]),
         parse_mode="HTML")
     for p in page_rows:
         price=float(p["price_usdt"] or 0); stock=int(p["stock"] or 0)
+        margin=float(margins.get(int(p["id"]),0.8))
+        ask_price=round(price+margin,6)
+        pricing_text=(f"Your random margin: <b>+{margin:.2f} USDT / item</b>\n"
+                      f"Expected resale price: <b>{ask_price:g} USDT / item</b>\n"
+                      if catalogue_level==2 else "")
         caption=(f"<b>#{p['id']} {html.escape(str(p['title']))}</b>\n"
                  f"{html.escape(str(p['description'] or ''))}\n\n"
                  f"Price: <b>{price:g} USDT</b>\n"
+                 f"{pricing_text}"
                  f"Available stock: <b>{stock}</b>\n"+
                  ("Select a quantity below to buy." if price>0 and stock>0 else "🔴 Unavailable — Admin must set price and stock."))
-        # Offer every quantity from 1 through 10, capped by available stock.
-        # Keep numeric labels short and put only two buttons on each row.
         quantities=list(range(1,min(10,stock)+1)) if stock>0 else []
+        callback_prefix="ccbuy" if catalogue_level==1 else "ccbuy2"
         buttons=[
-            [InlineKeyboardButton(str(n),callback_data=f"ccbuy:{p['id']}:{n}")
+            [InlineKeyboardButton(str(n),callback_data=f"{callback_prefix}:{p['id']}:{n}")
              for n in quantities[pos:pos+2]]
             for pos in range(0,len(quantities),2)
         ]
@@ -538,11 +645,12 @@ async def show_owner_level_products(update,ctx,shop,page=0,track_visit=True):
         except Exception:
             log.exception("Could not send catalogue item")
             await ctx.bot.send_message(update.effective_chat.id,caption,reply_markup=kb,parse_mode="HTML")
+    page_prefix="ccpage" if catalogue_level==1 else "cc2page"
     await ctx.bot.send_message(
         update.effective_chat.id,
         f"<b>PAGE {page+1}/{last_page+1}</b> • Products {start+1 if total else 0}–{min(start+CATALOGUE_PAGE_SIZE,total)} of {total}",
         reply_markup=_catalogue_page_keyboard(
-            page,total,"ccpage","⬅️ Back to My Products","m:products","m:dashboard"),
+            page,total,page_prefix,"⬅️ Back to My Products","m:products","m:dashboard"),
         parse_mode="HTML")
 
 
@@ -552,10 +660,22 @@ async def owner_buy_callback(update,ctx):
     try:
         _,pid_s,qty_s=q.data.split(":")
         ctx.args=[pid_s,qty_s]
-        await buy(update,ctx)
+        await buy(update,ctx,catalogue_level=1)
     except Exception:
-        log.exception("Catalogue button purchase failed")
+        log.exception("Level 1 catalogue button purchase failed")
         await q.message.reply_text("Purchase could not be completed. Please retry with /centralbuy PRODUCT_ID QUANTITY.")
+
+
+async def owner_buy2_callback(update,ctx):
+    q=update.callback_query
+    await q.answer()
+    try:
+        _,pid_s,qty_s=q.data.split(":")
+        ctx.args=[pid_s,qty_s]
+        await buy(update,ctx,catalogue_level=2)
+    except Exception:
+        log.exception("Level 2 catalogue button purchase failed")
+        await q.message.reply_text("Purchase could not be completed. Please retry from the Level 2 catalogue.")
 
 
 # --- Owner resale listings and Admin direct-purchase market ---
@@ -567,7 +687,14 @@ def resale_setup(c=None):
           owner_id INTEGER NOT NULL, shop_id INTEGER NOT NULL, catalog_id INTEGER NOT NULL,
           quantity INTEGER NOT NULL, remaining_quantity INTEGER NOT NULL,
           unit_cost_usdt REAL NOT NULL, ask_price_usdt REAL NOT NULL,
+          seller_level INTEGER NOT NULL DEFAULT 1,
           status TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL)""")
+        listing_cols={r["name"] for r in conn.execute("PRAGMA table_info(resale_listings)").fetchall()}
+        if "seller_level" not in listing_cols:
+            conn.execute("ALTER TABLE resale_listings ADD COLUMN seller_level INTEGER NOT NULL DEFAULT 1")
+        conn.execute("""UPDATE resale_listings SET seller_level=COALESCE(
+            (SELECT level FROM shops WHERE shops.id=resale_listings.shop_id),1)
+            WHERE seller_level IS NULL OR seller_level=1""")
         conn.execute("""CREATE TABLE IF NOT EXISTS admin_resale_orders(
           id INTEGER PRIMARY KEY AUTOINCREMENT, listing_id INTEGER NOT NULL,
           seller_owner_id INTEGER NOT NULL, seller_shop_id INTEGER NOT NULL,
@@ -580,41 +707,46 @@ def resale_setup(c=None):
           quantity INTEGER NOT NULL, remaining_quantity INTEGER NOT NULL,
           unit_cost_usdt REAL NOT NULL, created_at TEXT NOT NULL)""")
         if own:
-            # Normalize existing active Level 1 listings to the fixed 0.8 USDT/item margin.
             conn.execute("""UPDATE resale_listings SET ask_price_usdt=ROUND(unit_cost_usdt+0.8,6)
-              WHERE status='active' AND remaining_quantity>0
-                AND shop_id IN (SELECT id FROM shops WHERE status='approved' AND level=1)""")
-            # Idempotently publish remaining stock bought by every approved Level 1 merchant.
+              WHERE status='active' AND remaining_quantity>0 AND seller_level=1""")
             conn.execute("""INSERT INTO resale_listings
-              (inventory_id,owner_id,shop_id,catalog_id,quantity,remaining_quantity,unit_cost_usdt,ask_price_usdt,status,created_at)
+              (inventory_id,owner_id,shop_id,catalog_id,quantity,remaining_quantity,
+               unit_cost_usdt,ask_price_usdt,seller_level,status,created_at)
               SELECT i.id,i.owner_id,i.shop_id,i.catalog_id,i.remaining_quantity,i.remaining_quantity,
-                     i.unit_cost_usdt,ROUND(i.unit_cost_usdt+0.8,6),'active',?
+                     i.unit_cost_usdt,ROUND(i.unit_cost_usdt+0.8,6),1,'active',?
               FROM central_inventory i JOIN shops s ON s.id=i.shop_id
-              WHERE i.remaining_quantity>0 AND s.status='approved' AND s.level=1
+              WHERE i.remaining_quantity>0 AND i.pricing_level=1 AND s.status='approved' AND s.level=1
                 AND NOT EXISTS (SELECT 1 FROM resale_listings l
                                 WHERE l.inventory_id=i.id AND l.status='active' AND l.remaining_quantity>0)""",(v4.now(),))
             conn.commit()
     finally:
         if own: conn.close()
 
+
 async def list_inventory(update,ctx):
     from telegram import InlineKeyboardMarkup, InlineKeyboardButton
     if update.effective_user.id==v4.ADMIN_ID: return
     shop=v4.shop_for(update.effective_user.id)
-    if not shop or shop["status"]!="approved" or int(shop["level"])!=1:
-        await update.effective_message.reply_text("<b>🔒 LEVEL 1 ACCESS REQUIRED</b>\nYour shop must be approved and active at Level 1.",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Dashboard",callback_data="m:dashboard")]]),parse_mode="HTML"); return
+    level=int(shop["level"]) if shop else 0
+    if not shop or shop["status"]!="approved" or level not in (1,2):
+        await update.effective_message.reply_text("<b>🔒 LEVEL 1 OR 2 ACCESS REQUIRED</b>\nYour shop must be approved and active at Level 1 or Level 2.",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Dashboard",callback_data="m:dashboard")]]),parse_mode="HTML"); return
     resale_setup(); c=v4.db()
-    rows=c.execute("""SELECT i.id,i.catalog_id,i.remaining_quantity,i.unit_cost_usdt,p.title,
-      COALESCE((SELECT SUM(l.remaining_quantity) FROM resale_listings l WHERE l.inventory_id=i.id AND l.status='active'),0) listed
-      FROM central_inventory i JOIN central_catalog p ON p.id=i.catalog_id
-      WHERE i.owner_id=? AND i.remaining_quantity>0 ORDER BY i.id DESC""",(update.effective_user.id,)).fetchall(); c.close()
+    try:
+        rows=c.execute("""SELECT i.id,i.catalog_id,i.remaining_quantity,i.unit_cost_usdt,
+             i.resale_margin_usdt,i.pricing_level,p.title,
+             COALESCE((SELECT SUM(l.remaining_quantity) FROM resale_listings l
+                       WHERE l.inventory_id=i.id AND l.status='active'),0) listed
+          FROM central_inventory i JOIN central_catalog p ON p.id=i.catalog_id
+          WHERE i.owner_id=? AND i.remaining_quantity>0 AND i.pricing_level=?
+          ORDER BY i.id DESC""",(update.effective_user.id,level)).fetchall()
+    finally: c.close()
     if not rows:
-        await update.effective_message.reply_text("<b>📦 LIST MY STOCK</b>\nNo available inventory to list right now.",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Dashboard",callback_data="m:dashboard")]]),parse_mode="HTML"); return
+        await update.effective_message.reply_text("<b>📦 LIST MY STOCK</b>\nNo available inventory for your active level right now.",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Dashboard",callback_data="m:dashboard")]]),parse_mode="HTML"); return
     for r in rows:
         free=max(0,int(r["remaining_quantity"])-int(r["listed"]))
-        price=round(float(r["unit_cost_usdt"])+0.8,6)
         unit_cost=round(float(r["unit_cost_usdt"]),6)
-        profit_each=round(price-unit_cost,6)
+        profit_each=round(float(r["resale_margin_usdt"]),2)
+        price=round(unit_cost+profit_each,6)
         listed_profit=round(profit_each*int(r["listed"]),6)
         free_profit=round(profit_each*free,6)
         kb=[[InlineKeyboardButton(f"🏷️ List {free} items",callback_data=f"rs:list:{r['id']}")] if free else []]
@@ -627,12 +759,13 @@ async def list_inventory(update,ctx):
             "<b>PRICE & PROFIT</b>\n"
             f"Your cost: {unit_cost:g} USDT / item\n"
             f"Resale price: {price:g} USDT / item\n"
-            f"💚 <b>Expected profit: +{profit_each:g} USDT / sold item</b>\n"
+            f"💚 <b>Expected profit: +{profit_each:.2f} USDT / sold item</b>\n"
             f"🟢 Listed stock potential: <b>+{listed_profit:g} USDT</b>\n"
             f"🟢 Free stock potential: <b>+{free_profit:g} USDT</b>\n\n"
-            "<i>Profit is credited after a sale is completed.</i>"
+            "<i>Your margin is saved per merchant and product; it does not change when you reopen this screen. Profit is credited after a sale.</i>"
         )
         await update.effective_message.reply_text(details,reply_markup=InlineKeyboardMarkup([x for x in kb if x]),parse_mode="HTML")
+
 
 async def safe_callback_answer(query, *args, **kwargs):
     """Answer Telegram callbacks without crashing when Telegram has expired the query."""
@@ -663,9 +796,15 @@ async def resale_callback(update,ctx):
             listed=c.execute("SELECT COALESCE(SUM(remaining_quantity),0) FROM resale_listings WHERE inventory_id=? AND status='active'",(inv_id,)).fetchone()[0]
             qty=int(inv["remaining_quantity"])-int(listed)
             if qty<=0: c.rollback(); await safe_callback_answer(q, "No unlisted stock left",show_alert=True); return
-            price=round(float(inv["unit_cost_usdt"])+0.8,6)
-            c.execute("""INSERT INTO resale_listings(inventory_id,owner_id,shop_id,catalog_id,quantity,remaining_quantity,unit_cost_usdt,ask_price_usdt,status,created_at)
-              VALUES(?,?,?,?,?,?,?,?, 'active',?)""",(inv_id,q.from_user.id,inv["shop_id"],inv["catalog_id"],qty,qty,inv["unit_cost_usdt"],price,v4.now()))
+            margin=round(float(inv["resale_margin_usdt"]),2)
+            price=round(float(inv["unit_cost_usdt"])+margin,6)
+            seller_level=int(inv["pricing_level"])
+            c.execute("""INSERT INTO resale_listings
+              (inventory_id,owner_id,shop_id,catalog_id,quantity,remaining_quantity,
+               unit_cost_usdt,ask_price_usdt,seller_level,status,created_at)
+              VALUES(?,?,?,?,?,?,?,?,?,'active',?)""",
+              (inv_id,q.from_user.id,inv["shop_id"],inv["catalog_id"],qty,qty,
+               inv["unit_cost_usdt"],price,seller_level,v4.now()))
             lid=c.execute("SELECT last_insert_rowid()").fetchone()[0]
             c.execute("INSERT INTO admin_audit(admin_id,owner_id,action,details,created_at) VALUES(?,?,?,?,?)",(v4.ADMIN_ID,q.from_user.id,"resale_listed",f"Listing #{lid}; {inv['title']}; qty {qty}; {price} USDT",v4.now()))
             c.commit()
@@ -680,7 +819,7 @@ async def resale_callback(update,ctx):
             f"<b>{html.escape(str(inv['title']))}</b> × {qty}\n"
             f"Cost: {cost:g} USDT / item\nAsking price: {price:g} USDT / item\n"
             f"💚 Expected profit if all sell: <b>+{expected_profit:g} USDT</b>\n\n"
-            "Your listing is now available in the Level 1 resale market.",
+            f"Your listing is now available in the Level {seller_level} resale market.",
             parse_mode="HTML")
         try: await ctx.bot.send_message(v4.ADMIN_ID,f"📣 NEW RESALE LISTING #{lid}\n{inv['title']} ×{qty}\nSeller: {q.from_user.id} | Shop #{inv['shop_id']}\nAsking: {price:g} USDT each",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Review / Buy",callback_data=f"rs:review:{lid}")],[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]))
         except Exception: log.exception("Admin listing notification failed")
@@ -709,11 +848,23 @@ async def resale_callback(update,ctx):
         return
     if action=="market":
         shop=v4.shop_for(q.from_user.id)
-        if not shop or shop["status"]!="approved" or int(shop["level"])!=1:
-            await safe_callback_answer(q, "Approved Level 1 shop required",show_alert=True); return
-        c=v4.db(); rows=c.execute("""SELECT l.id,l.remaining_quantity,l.ask_price_usdt,p.title,s.shop_name FROM resale_listings l JOIN central_catalog p ON p.id=l.catalog_id JOIN shops s ON s.id=l.shop_id WHERE l.status='active' AND l.remaining_quantity>0 AND l.owner_id<>? AND s.status='approved' AND s.level=1 ORDER BY l.id DESC LIMIT 30""",(q.from_user.id,)).fetchall(); c.close()
-        await safe_callback_answer(q, )
-        if not rows: await q.message.reply_text("<b>🛍 LEVEL 1 RESALE MARKET</b>\nNo merchant listings available right now.",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Dashboard",callback_data="m:dashboard")]]),parse_mode="HTML"); return
+        level=int(shop["level"]) if shop else 0
+        if not shop or shop["status"]!="approved" or level not in (1,2):
+            await safe_callback_answer(q, "Approved Level 1 or Level 2 shop required",show_alert=True); return
+        c=v4.db()
+        rows=c.execute("""SELECT l.id,l.remaining_quantity,l.ask_price_usdt,p.title,s.shop_name
+          FROM resale_listings l JOIN central_catalog p ON p.id=l.catalog_id
+          JOIN shops s ON s.id=l.shop_id
+          WHERE l.status='active' AND l.remaining_quantity>0 AND l.owner_id<>?
+            AND l.seller_level=? AND s.status='approved' AND s.level=?
+          ORDER BY l.id DESC LIMIT 30""",(q.from_user.id,level,level)).fetchall()
+        c.close()
+        await safe_callback_answer(q)
+        if not rows:
+            await q.message.reply_text(
+                f"<b>🛍 LEVEL {level} RESALE MARKET</b>\nNo other Level {level} merchant listings available right now.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Dashboard",callback_data="m:dashboard")]]),
+                parse_mode="HTML"); return
         for r in rows:
             buttons=[[InlineKeyboardButton("Buy 1",callback_data=f"rs:buy:{r['id']}:1")]]
             if int(r["remaining_quantity"])>=5:
@@ -728,7 +879,9 @@ async def resale_callback(update,ctx):
         return
     if action=="buy":
         shop=v4.shop_for(q.from_user.id)
-        if not shop or shop["status"]!="approved" or int(shop["level"])!=1: await safe_callback_answer(q, "Approved Level 1 shop required",show_alert=True); return
+        buyer_level=int(shop["level"]) if shop else 0
+        if not shop or shop["status"]!="approved" or buyer_level not in (1,2):
+            await safe_callback_answer(q, "Approved Level 1 or Level 2 shop required",show_alert=True); return
         lid,qty=int(parts[2]),int(parts[3])
         c=v4.db()
         try:
@@ -736,8 +889,9 @@ async def resale_callback(update,ctx):
             l=c.execute("SELECT * FROM resale_listings WHERE id=? AND status='active'",(lid,)).fetchone()
             if not l or int(l["owner_id"])==q.from_user.id or qty<1 or qty>int(l["remaining_quantity"]): c.rollback(); await safe_callback_answer(q, "Listing/quantity unavailable",show_alert=True); return
             seller_shop=c.execute("SELECT status,level FROM shops WHERE id=?",(l["shop_id"],)).fetchone()
-            if not seller_shop or seller_shop["status"]!="approved" or int(seller_shop["level"])!=1:
-                c.rollback(); await safe_callback_answer(q, "Only approved Level 1 seller listings are available",show_alert=True); return
+            if (not seller_shop or seller_shop["status"]!="approved"
+                or int(seller_shop["level"])!=buyer_level or int(l["seller_level"])!=buyer_level):
+                c.rollback(); await safe_callback_answer(q, "Buyer and seller must have the same active level (Level 1 or Level 2).",show_alert=True); return
             total=round(float(l["ask_price_usdt"])*qty,6); bal=balance(c,q.from_user.id)
             if bal+1e-9<total: c.rollback(); await safe_callback_answer(q, "Insufficient USDT balance",show_alert=True); return
             changed=c.execute("UPDATE resale_listings SET remaining_quantity=remaining_quantity-?,status=CASE WHEN remaining_quantity-?=0 THEN 'sold' ELSE status END WHERE id=? AND status='active' AND remaining_quantity>=?",(qty,qty,lid,qty))
@@ -747,7 +901,14 @@ async def resale_callback(update,ctx):
             changed=c.execute("UPDATE central_inventory SET remaining_quantity=remaining_quantity-? WHERE id=? AND owner_id=? AND remaining_quantity>=?",(qty,l["inventory_id"],l["owner_id"],qty))
             if changed.rowcount != 1:
                 raise RuntimeError("Seller inventory changed; resale purchase rolled back")
-            c.execute("""INSERT INTO central_inventory(owner_id,shop_id,catalog_id,order_id,quantity,remaining_quantity,unit_cost_usdt,status,created_at) VALUES(?,?,?,?,?,?,?,'owned',?)""",(q.from_user.id,shop["id"],l["catalog_id"],oid,qty,qty,l["ask_price_usdt"],v4.now()))
+            buyer_margin=get_or_create_merchant_margin(
+                c,q.from_user.id,shop["id"],int(l["catalog_id"]),buyer_level)
+            c.execute("""INSERT INTO central_inventory
+              (owner_id,shop_id,catalog_id,order_id,quantity,remaining_quantity,unit_cost_usdt,
+               resale_margin_usdt,pricing_level,status,created_at)
+              VALUES(?,?,?,?,?,?,?,?,?,'owned',?)""",
+              (q.from_user.id,shop["id"],l["catalog_id"],oid,qty,qty,l["ask_price_usdt"],
+               buyer_margin,buyer_level,v4.now()))
             c.execute("""INSERT INTO ledger(transaction_id,shop_id,owner_id,entry_type,amount,currency,note,created_at) VALUES(?,?,?,'resale_purchase_debit',?,'USDT',?,?)""",(oid,shop["id"],q.from_user.id,total,f"Resale purchase listing #{lid}",v4.now()))
             profit=round((float(l["ask_price_usdt"])-float(l["unit_cost_usdt"]))*qty,6)
             c.execute("""INSERT INTO ledger(transaction_id,shop_id,owner_id,entry_type,amount,currency,note,created_at) VALUES(?,?,?,'resale_sale_credit',?,'USDT',?,?)""",(oid,l["shop_id"],l["owner_id"],total,f"Resale sale listing #{lid}",v4.now()))

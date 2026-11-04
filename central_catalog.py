@@ -248,7 +248,9 @@ async def orders(update,ctx):
     if update.effective_user.id != v4.ADMIN_ID: return
     from telegram import InlineKeyboardMarkup, InlineKeyboardButton
     c=v4.db()
-    rows=c.execute("""SELECT o.id,o.buyer_owner_id,o.buyer_shop_id,o.quantity,o.total_usdt,o.status,o.created_at,p.title
+    rows=c.execute("""SELECT o.id,o.buyer_owner_id,o.buyer_shop_id,o.quantity,o.total_usdt,o.status,o.created_at,p.title,
+      (SELECT entry_type FROM ledger l WHERE l.transaction_id=o.id AND l.owner_id=o.buyer_owner_id
+       AND l.entry_type IN ('central_purchase_debit','resale_purchase_debit') ORDER BY l.id LIMIT 1) purchase_type
       FROM central_orders o JOIN central_catalog p ON p.id=o.catalog_id ORDER BY o.id DESC LIMIT 50""").fetchall()
     c.close()
     orders_text="<b>📦 CENTRAL CATALOGUE ORDERS</b>\n━━━━━━━━━━━━━━━━━━\n"
@@ -263,8 +265,9 @@ async def orders(update,ctx):
     for r in rows:
         buttons=[]
         if r["status"]=="paid":
-            buttons=[[InlineKeyboardButton("✅ Mark Fulfilled",callback_data=f"cc:fulfill:{r['id']}"),
-                      InlineKeyboardButton("↩️ Refund + Restock",callback_data=f"cc:refund:{r['id']}")]]
+            buttons=[[InlineKeyboardButton("✅ Mark Fulfilled",callback_data=f"cc:fulfill:{r['id']}")]]
+            if r["purchase_type"]=="central_purchase_debit":
+                buttons[0].append(InlineKeyboardButton("↩️ Refund + Restock",callback_data=f"cc:refund:{r['id']}"))
         buttons.append([InlineKeyboardButton("⬅️ Central Catalogue",callback_data="adm:central"),
                         InlineKeyboardButton("🏠 Admin Panel",callback_data="adm:home")])
         await update.effective_message.reply_text(

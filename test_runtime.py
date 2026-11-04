@@ -180,10 +180,17 @@ def test_level1_catalogue_quantity_buttons():
     item=next(x for x in ctx.bot.sent if x["kwargs"].get("reply_markup") and
               any(getattr(b,"callback_data",None)==f"ccbuy:{pid}:1"
                   for row in x["kwargs"]["reply_markup"].inline_keyboard for b in row))
-    callbacks=[b.callback_data for row in item["kwargs"]["reply_markup"].inline_keyboard
+    markup=item["kwargs"]["reply_markup"]
+    callbacks=[b.callback_data for row in markup.inline_keyboard
                for b in row if getattr(b,"callback_data",None)]
+    visible_labels=[b.text for row in markup.inline_keyboard
+                    for b in row if getattr(b,"callback_data",None)]
     expected=[f"ccbuy:{pid}:{n}" for n in range(1,11)]
-    require(callbacks[:10]==expected,"Level 1 catalogue does not show Buy ×1 through Buy ×10")
+    require(callbacks[:10]==expected,"Level 1 catalogue does not show quantities 1 through 10")
+    require(visible_labels[:10]==[str(n) for n in range(1,11)],
+            f"Quantity button labels are not visible numbers: {visible_labels[:10]!r}")
+    require([len(row) for row in markup.inline_keyboard[:5]]==[2,2,2,2,2],
+            "Quantity buttons are not arranged in compact two-button rows")
     require("m:products" in callbacks and "m:dashboard" in callbacks,
             "Catalogue quantity buttons lost their Back/Dashboard navigation")
     c=v4.db()

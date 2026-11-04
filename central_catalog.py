@@ -408,9 +408,10 @@ async def show_owner_level_products(update,ctx,shop):
                  f"Price: <b>{price:g} USDT</b>\n"
                  f"Available stock: <b>{stock}</b>\n"+
                  ("Select a quantity below to buy." if price>0 and stock>0 else "🔴 Unavailable — Admin must set price and stock."))
-        quantities=[n for n in (1,2,5) if n<=stock] or [1]
+        # Offer every quantity from 1 through 10, capped by available stock.
+        quantities=list(range(1,min(10,stock)+1)) if stock>0 else []
         buttons=[[InlineKeyboardButton(f"🛒 Buy × {n}",callback_data=f"ccbuy:{p['id']}:{n}")
-                  for n in quantities]]
+                  for n in quantities]] if quantities else []
         buttons.append([
             InlineKeyboardButton("⬅️ Back to My Products",callback_data="m:products"),
             InlineKeyboardButton("🏠 Dashboard",callback_data="m:dashboard")])

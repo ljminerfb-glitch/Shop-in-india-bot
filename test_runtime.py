@@ -25,6 +25,7 @@ class Message:
     def __init__(self, text=None, chat_id=0):
         self.text = text
         self.caption = None
+        self.photo = None
         self.chat_id = chat_id
         self.message_id = 100
         self.replies = []
@@ -52,6 +53,10 @@ class FakeBot:
     async def send_message(self, *args, **kwargs):
         self.sent.append({"args": args, "kwargs": kwargs})
         return SimpleNamespace(message_id=101, chat_id=args[0] if args else kwargs.get("chat_id", 0))
+
+    async def send_photo(self, *args, **kwargs):
+        self.sent.append({"args": args, "kwargs": kwargs, "photo": True})
+        return SimpleNamespace(message_id=102, chat_id=args[0] if args else kwargs.get("chat_id", 0))
 
 
 class FakeQuery:
@@ -402,6 +407,73 @@ def test_failed_central_purchases(pid):
     print("PASS: Insufficient wallet and stock rejected without mutations")
 
 
+def test_merchant_deposit_screenshot_and_admin_approval():
+    owner_ctx=context()
+
+    dashboard=v5.owner_kb()
+    dashboard_callbacks=[button.callback_data for row in dashboard.inline_keyboard for button in row]
+    require(dashboard_callbacks.count("m:deposit")==1 and "m:deposits" not in dashboard_callbacks,
+            "Dashboard still shows duplicate Deposit and Deposits entries")
+
+    center_update,center_message,_=callback_update(101,"m:deposit")
+    asyncio.run(v5.menu_callback(center_update,owner_ctx))
+    center_buttons=callback_data(center_message.replies[0])
+    require("m:depositstart" in center_buttons and "m:deposits" in center_buttons and "m:dashboard" in center_buttons,
+            "Deposit Center is missing Make Deposit, Deposit History, or Back buttons")
+
+    start_update,start_message,_=callback_update(101,"m:depositstart")
+    asyncio.run(v5.menu_callback(start_update,owner_ctx))
+    require(owner_ctx.user_data.get("state")=="deposit_amount","Make Deposit did not start amount entry")
+    amount_update,amount_message=message_update(101,"12.5")
+    asyncio.run(v5.text_handler(amount_update,owner_ctx))
+    require("Choose payment network" in amount_message.replies[-1]["text"],
+            "Deposit amount did not lead to network selection")
+    network_button=next(button for row in amount_message.replies[-1]["kwargs"]["reply_markup"].inline_keyboard
+                        for button in row if button.callback_data and button.callback_data.startswith("net:"))
+    rid=int(network_button.callback_data.split(":")[1])
+
+    network_update,network_message,_=callback_update(101,network_button.callback_data)
+    asyncio.run(v5.network_callback(network_update,owner_ctx))
+    network_buttons=callback_data(network_message.replies[0])
+    require("m:depositdone" in network_buttons and "I HAVE DEPOSITED" in network_message.replies[0]["text"],
+            "Payment address screen is missing I HAVE DEPOSITED confirmation")
+    require("m:dashboard" in network_buttons,"Payment address screen is missing Back to Dashboard")
+
+    done_update,done_message,_=callback_update(101,"m:depositdone")
+    asyncio.run(v5.menu_callback(done_update,owner_ctx))
+    require(owner_ctx.user_data.get("state")=="payment_proof",
+            "I HAVE DEPOSITED did not switch merchant to screenshot upload")
+    require("UPLOAD YOUR PAYMENT SCREENSHOT" in done_message.replies[0]["text"],
+            "Merchant was not asked for a payment screenshot")
+    require("m:dashboard" in callback_data(done_message.replies[0]),
+            "Screenshot prompt is missing Back to Dashboard")
+
+    photo_update,photo_message=message_update(101,None)
+    photo_message.photo=[SimpleNamespace(file_id="merchant-proof-photo")]
+    asyncio.run(v4.payment_photo(photo_update,owner_ctx))
+    require(any(x.get("photo") and x["args"][0]==999999 for x in owner_ctx.bot.sent),
+            "Payment screenshot was not forwarded to Admin")
+    c=v4.db()
+    request=c.execute("SELECT status,screenshot_file_id FROM payment_requests WHERE id=?",(rid,)).fetchone()
+    credits=c.execute("SELECT COUNT(*) FROM ledger WHERE owner_id=101 AND entry_type='deposit_credit'").fetchone()[0]
+    require(request["status"]=="pending" and request["screenshot_file_id"]=="merchant-proof-photo",
+            "Screenshot was not saved while leaving request pending")
+    require(credits==0,"Wallet was credited before Admin approval")
+    c.close()
+
+    admin_update,admin_message,_=callback_update(999999,f"pay:approve:{rid}")
+    admin_message.photo=[SimpleNamespace(file_id="merchant-proof-photo")]
+    asyncio.run(v4.payment_review(admin_update,context()))
+    c=v4.db()
+    request=c.execute("SELECT status FROM payment_requests WHERE id=?",(rid,)).fetchone()
+    credit=c.execute("SELECT amount FROM ledger WHERE owner_id=101 AND entry_type='deposit_credit' ORDER BY id DESC LIMIT 1").fetchone()
+    require(request["status"]=="approved","Admin approval did not update deposit status")
+    require(credit is not None and abs(float(credit["amount"])-12.5)<1e-8,
+            "Approved deposit did not credit the merchant wallet exactly once")
+    c.close()
+    print("PASS: Deposit Center, network selection, I HAVE DEPOSITED, screenshot delivery and Admin approval")
+
+
 def test_usdt_trc20_withdrawal_flow():
     available=v5.available_withdrawal_usdt(101)
     require(abs(available-6.8)<1e-8,"Withdrawable balance must use completed USDT resale proceeds only")
@@ -592,6 +664,7 @@ def main():
     test_resale_buyer_guards_and_sale(listing_id, inventory_id)
     test_admin_resale_flow(listing_id, inventory_id)
     test_usdt_trc20_withdrawal_flow()
+    test_merchant_deposit_screenshot_and_admin_approval()
     test_failed_central_purchases(pid)
     test_usdt_balance_reconciliation()
     print("PASS: All isolated Telegram-handler end-to-end tests completed.")

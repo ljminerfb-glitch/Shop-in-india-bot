@@ -725,12 +725,17 @@ async def resale_callback(update,ctx):
         inv_id=int(parts[2]); c=v4.db()
         try:
             c.execute("BEGIN IMMEDIATE")
-            inv=c.execute("""SELECT i.*,p.title FROM central_inventory i JOIN central_catalog p ON p.id=i.catalog_id WHERE i.id=? AND i.owner_id=?""",(inv_id,q.from_user.id)).fetchone()
+            inv=c.execute("""SELECT i.*,p.title,p.level_required FROM central_inventory i
+                JOIN central_catalog p ON p.id=i.catalog_id WHERE i.id=? AND i.owner_id=?""",
+                (inv_id,q.from_user.id)).fetchone()
             if not inv: c.rollback(); await safe_callback_answer(q, "Inventory not found",show_alert=True); return
+            seller_shop=v4.shop_for(q.from_user.id)
+            if not seller_shop or seller_shop["status"]!="approved" or int(seller_shop["level"])!=int(inv["level_required"]):
+                c.rollback(); await safe_callback_answer(q,"Inventory level does not match your approved shop",show_alert=True); return
             listed=c.execute("SELECT COALESCE(SUM(remaining_quantity),0) FROM resale_listings WHERE inventory_id=? AND status='active'",(inv_id,)).fetchone()[0]
             qty=int(inv["remaining_quantity"])-int(listed)
             if qty<=0: c.rollback(); await safe_callback_answer(q, "No unlisted stock left",show_alert=True); return
-            price=round(float(inv["unit_cost_usdt"])+0.8,6)
+            price=_resale_ask_price(c,float(inv["unit_cost_usdt"]),int(inv["level_required"]))
             c.execute("""INSERT INTO resale_listings(inventory_id,owner_id,shop_id,catalog_id,quantity,remaining_quantity,unit_cost_usdt,ask_price_usdt,status,created_at)
               VALUES(?,?,?,?,?,?,?,?, 'active',?)""",(inv_id,q.from_user.id,inv["shop_id"],inv["catalog_id"],qty,qty,inv["unit_cost_usdt"],price,v4.now()))
             lid=c.execute("SELECT last_insert_rowid()").fetchone()[0]
@@ -747,7 +752,7 @@ async def resale_callback(update,ctx):
             f"<b>{html.escape(str(inv['title']))}</b> × {qty}\n"
             f"Cost: {cost:g} USDT / item\nAsking price: {price:g} USDT / item\n"
             f"💚 Expected profit if all sell: <b>+{expected_profit:g} USDT</b>\n\n"
-            "Your listing is now available in the Level 1 resale market.",
+            f"Your listing is now available in the Level {int(inv['level_required'])} resale market.",
             parse_mode="HTML")
         try: await ctx.bot.send_message(v4.ADMIN_ID,f"📣 NEW RESALE LISTING #{lid}\n{inv['title']} ×{qty}\nSeller: {q.from_user.id} | Shop #{inv['shop_id']}\nAsking: {price:g} USDT each",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Review / Buy",callback_data=f"rs:review:{lid}")],[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]))
         except Exception: log.exception("Admin listing notification failed")
@@ -776,11 +781,19 @@ async def resale_callback(update,ctx):
         return
     if action=="market":
         shop=v4.shop_for(q.from_user.id)
-        if not shop or shop["status"]!="approved" or int(shop["level"])!=1:
-            await safe_callback_answer(q, "Approved Level 1 shop required",show_alert=True); return
-        c=v4.db(); rows=c.execute("""SELECT l.id,l.remaining_quantity,l.ask_price_usdt,p.title,s.shop_name FROM resale_listings l JOIN central_catalog p ON p.id=l.catalog_id JOIN shops s ON s.id=l.shop_id WHERE l.status='active' AND l.remaining_quantity>0 AND l.owner_id<>? AND s.status='approved' AND s.level=1 ORDER BY l.id DESC LIMIT 30""",(q.from_user.id,)).fetchall(); c.close()
-        await safe_callback_answer(q, )
-        if not rows: await q.message.reply_text("<b>🛍 LEVEL 1 RESALE MARKET</b>\nNo merchant listings available right now.",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Dashboard",callback_data="m:dashboard")]]),parse_mode="HTML"); return
+        if not shop or shop["status"]!="approved" or int(shop["level"]) not in (1,2):
+            await safe_callback_answer(q, "Approved Level 1 or Level 2 shop required",show_alert=True); return
+        level=int(shop["level"])
+        c=v4.db()
+        rows=c.execute("""SELECT l.id,l.remaining_quantity,l.ask_price_usdt,p.title,s.shop_name
+            FROM resale_listings l JOIN central_catalog p ON p.id=l.catalog_id
+            JOIN shops s ON s.id=l.shop_id
+            WHERE l.status='active' AND l.remaining_quantity>0 AND l.owner_id<>?
+              AND s.status='approved' AND s.level=? AND p.level_required=?
+            ORDER BY l.id DESC LIMIT 30""",(q.from_user.id,level,level)).fetchall()
+        c.close()
+        await safe_callback_answer(q)
+        if not rows: await q.message.reply_text(f"<b>🛍 LEVEL {level} RESALE MARKET</b>\nNo merchant listings available right now.",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Dashboard",callback_data="m:dashboard")]]),parse_mode="HTML"); return
         for r in rows:
             buttons=[[InlineKeyboardButton("Buy 1",callback_data=f"rs:buy:{r['id']}:1")]]
             if int(r["remaining_quantity"])>=5:
@@ -795,16 +808,23 @@ async def resale_callback(update,ctx):
         return
     if action=="buy":
         shop=v4.shop_for(q.from_user.id)
-        if not shop or shop["status"]!="approved" or int(shop["level"])!=1: await safe_callback_answer(q, "Approved Level 1 shop required",show_alert=True); return
+        if not shop or shop["status"]!="approved" or int(shop["level"]) not in (1,2):
+            await safe_callback_answer(q, "Approved Level 1 or Level 2 shop required",show_alert=True); return
+        buyer_level=int(shop["level"])
         lid,qty=int(parts[2]),int(parts[3])
         c=v4.db()
         try:
             c.execute("BEGIN IMMEDIATE")
-            l=c.execute("SELECT * FROM resale_listings WHERE id=? AND status='active'",(lid,)).fetchone()
-            if not l or int(l["owner_id"])==q.from_user.id or qty<1 or qty>int(l["remaining_quantity"]): c.rollback(); await safe_callback_answer(q, "Listing/quantity unavailable",show_alert=True); return
+            l=c.execute("""SELECT l.*,p.level_required FROM resale_listings l
+                JOIN central_catalog p ON p.id=l.catalog_id
+                WHERE l.id=? AND l.status='active'""",(lid,)).fetchone()
+            if not l or int(l["owner_id"])==q.from_user.id or qty<1 or qty>int(l["remaining_quantity"]):
+                c.rollback(); await safe_callback_answer(q, "Listing/quantity unavailable",show_alert=True); return
+            if int(l["level_required"])!=buyer_level:
+                c.rollback(); await safe_callback_answer(q, "This listing belongs to a different level",show_alert=True); return
             seller_shop=c.execute("SELECT status,level FROM shops WHERE id=?",(l["shop_id"],)).fetchone()
-            if not seller_shop or seller_shop["status"]!="approved" or int(seller_shop["level"])!=1:
-                c.rollback(); await safe_callback_answer(q, "Only approved Level 1 seller listings are available",show_alert=True); return
+            if not seller_shop or seller_shop["status"]!="approved" or int(seller_shop["level"])!=buyer_level:
+                c.rollback(); await safe_callback_answer(q, "Only approved merchants at your level can sell here",show_alert=True); return
             total=round(float(l["ask_price_usdt"])*qty,6); bal=balance(c,q.from_user.id)
             if bal+1e-9<total: c.rollback(); await safe_callback_answer(q, "Insufficient USDT balance",show_alert=True); return
             changed=c.execute("UPDATE resale_listings SET remaining_quantity=remaining_quantity-?,status=CASE WHEN remaining_quantity-?=0 THEN 'sold' ELSE status END WHERE id=? AND status='active' AND remaining_quantity>=?",(qty,qty,lid,qty))
@@ -827,7 +847,7 @@ async def resale_callback(update,ctx):
         await safe_callback_answer(q, "Purchased")
         await q.message.reply_text(
             f"<b>✅ PURCHASE CONFIRMED</b>\n━━━━━━━━━━━━━━━━━━\n"
-            f"Quantity: <b>{qty}</b> item(s)\nTotal paid: <b>{total:g} USDT</b>\nOrder: <code>#{oid}</code>",
+            f"Level: <b>{buyer_level}</b>\nQuantity: <b>{qty}</b> item(s)\nTotal paid: <b>{total:g} USDT</b>\nOrder: <code>#{oid}</code>",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Marketplace",callback_data="rs:market")],[InlineKeyboardButton("🏠 Dashboard",callback_data="m:dashboard")]]),
             parse_mode="HTML")
         try: await ctx.bot.send_message(l["owner_id"],f"🎉 Your resale listing #{lid} sold {qty} item(s). Sale proceeds: {total:g} USDT; recorded profit: {max(0,profit):g} USDT.")

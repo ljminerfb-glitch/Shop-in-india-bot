@@ -164,10 +164,12 @@ def fixture():
     INSERT INTO users(tg_id,created_at,role,status) VALUES(101,'2026-01-01','shop_owner','approved');
     INSERT INTO shops(owner_id,shop_name,status,created_at,level) VALUES(202,'Buyer L1','approved','2026-01-01',1);
     INSERT INTO users(tg_id,created_at,role,status) VALUES(202,'2026-01-01','shop_owner','approved');
-    INSERT INTO shops(owner_id,shop_name,status,created_at,level) VALUES(303,'Buyer L2','approved','2026-01-01',2);
+    INSERT INTO shops(owner_id,shop_name,status,created_at,level) VALUES(303,'Seller L2','approved','2026-01-01',2);
     INSERT INTO users(tg_id,created_at,role,status) VALUES(303,'2026-01-01','shop_owner','approved');
+    INSERT INTO shops(owner_id,shop_name,status,created_at,level) VALUES(404,'Buyer L2','approved','2026-01-01',2);
+    INSERT INTO users(tg_id,created_at,role,status) VALUES(404,'2026-01-01','shop_owner','approved');
     INSERT INTO level_settings VALUES(1,5,12,1.25,2.5);
-    INSERT INTO level_settings VALUES(2,10,24,1.5,3.0);
+    INSERT INTO level_settings VALUES(2,50,50,2.0,6.5);
     """)
     c.commit()
     c.close()
@@ -292,7 +294,7 @@ def test_admin_catalogue_pagination():
             "Admin Next 5 did not show products 6 through 10")
     nav_two=next(x for x in page_two if any(cb.startswith("ccadminpage:") for cb in sent_callback_data(x)))
     buttons=sent_callback_data(nav_two)
-    require("ccadminpage:0" in buttons and "ccadminpage:2" in buttons,
+    require("ccadminpage:1:0" in buttons and "ccadminpage:1:2" in buttons,
             "Admin middle page must provide Previous 5 and Next 5")
     print("PASS: Admin Level 1 catalogue shows five products per page with Previous/Next")
 
@@ -404,13 +406,13 @@ def test_seller_market_screen(listing_id):
 
 
 def test_resale_buyer_guards_and_sale(listing_id, inventory_id):
-    # Level 2 buyer is blocked server-side.
+    # Level 2 can use its own resale market but cannot buy a Level 1 listing.
     add_deposit(303, 3, 20)
     before_l2 = cc.balance(v4.db(), 303)
     update, message, query = callback_update(303, "rs:buy:%d:1" % listing_id)
     asyncio.run(cc.resale_callback(update, context()))
-    require(query.answers[-1]["kwargs"].get("show_alert") is True, "Level 2 buyer was not blocked")
-    require("Approved Level 1" in query.answers[-1]["args"][0], "Level 2 rejection message unclear")
+    require(query.answers[-1]["kwargs"].get("show_alert") is True, "Cross-level Level 2 purchase was not blocked")
+    require("different level" in query.answers[-1]["args"][0], "Cross-level rejection message unclear")
 
     # A Level 1 buyer completes the real callback handler.
     add_deposit(202, 2, 20)
@@ -445,8 +447,8 @@ def test_resale_buyer_guards_and_sale(listing_id, inventory_id):
     asyncio.run(cc.resale_callback(update, context()))
     require(query.answers[-1]["kwargs"].get("show_alert") is True,
             "Non-Level 1 seller listing was not blocked")
-    require("Only approved Level 1 seller" in query.answers[-1]["args"][0],
-            "Non-Level 1 seller rejection message unclear")
+    require("your level" in query.answers[-1]["args"][0],
+            "Different-level seller rejection message unclear")
     c = v4.db()
     require(c.execute("SELECT remaining_quantity FROM resale_listings WHERE id=?", (listing_id,)).fetchone()[0] == 1,
             "Listing changed after invalid seller rejection")
@@ -457,6 +459,109 @@ def test_resale_buyer_guards_and_sale(listing_id, inventory_id):
             "Level 2 buyer wallet changed after rejection")
     print("PASS: Level 2 buyer denied; Level 1 buyer purchase, seller proceeds and 0.8 profit ledger")
     print("PASS: Non-Level 1 seller listing blocked without stock change")
+
+
+def test_level2_catalogue_and_purchase_flow():
+    c=v4.db()
+    rows=c.execute(
+        "SELECT id,title,price_usdt,stock,image_path FROM central_catalog WHERE level_required=2 ORDER BY id"
+    ).fetchall()
+    require(len(rows)==50, f"Level 2 catalogue should contain 50 products, found {len(rows)}")
+    require(all(int(r["stock"])==50 for r in rows), "Every new Level 2 product must begin with 50 stock")
+    root=Path(__file__).resolve().parent
+    require(all((root/str(r["image_path"])).is_file() for r in rows),
+            "A Level 2 product image path is missing on disk")
+    ids=[int(r["id"]) for r in rows]
+    first_pid=ids[0]
+    c.close()
+
+    admin_update,_,_=callback_update(999999,"ccadminlevel:2")
+    admin_ctx=context()
+    asyncio.run(cc.admin_level_callback(admin_update,admin_ctx))
+    require(product_card_ids(admin_ctx.bot.sent)==ids[:5],
+            "Admin Level 2 first page did not show exactly products 1–5")
+    admin_nav=next(x for x in admin_ctx.bot.sent if "ccadminpage:2:1" in sent_callback_data(x))
+    require("PAGE 1/10" in sent_text(admin_nav),
+            "Admin Level 2 page count or Next 5 navigation is wrong")
+    before=len(admin_ctx.bot.sent)
+    admin_next,_,_=callback_update(999999,"ccadminpage:2:1")
+    asyncio.run(cc.admin_catalog_page_callback(admin_next,admin_ctx))
+    require(product_card_ids(admin_ctx.bot.sent[before:])==ids[5:10],
+            "Admin Level 2 Next 5 did not show products 6–10")
+
+    owner_update,_,_=callback_update(303,"cclevel:2")
+    owner_ctx=context()
+    asyncio.run(cc.owner_level_callback(owner_update,owner_ctx))
+    require(product_card_ids(owner_ctx.bot.sent)==ids[:5],
+            "Level 2 merchant catalogue did not show the first five Level 2 products")
+    first_card=next(x for x in owner_ctx.bot.sent if product_card_ids([x]))
+    require(any(cb.startswith(f"ccbuy:{first_pid}:") for cb in sent_callback_data(first_card)),
+            "Level 2 product quantity purchase buttons are missing")
+
+    add_deposit(303,3,300)
+    replies=run_central_buy(303,first_pid,2)
+    require(any("Purchase successful" in x["text"] for x in replies),
+            f"Level 2 central purchase failed: {replies!r}")
+    c=v4.db()
+    stock=int(c.execute("SELECT stock FROM central_catalog WHERE id=?",(first_pid,)).fetchone()[0])
+    require(stock==48, f"Level 2 central stock should fall from 50 to 48, got {stock}")
+    inv=c.execute(
+        "SELECT * FROM central_inventory WHERE owner_id=303 AND catalog_id=? AND remaining_quantity=2",
+        (first_pid,)
+    ).fetchone()
+    require(inv is not None, "Level 2 buyer inventory was not created")
+    listing=c.execute(
+        "SELECT * FROM resale_listings WHERE owner_id=303 AND inventory_id=? AND status='active'",
+        (inv["id"],)
+    ).fetchone()
+    require(listing is not None, "Level 2 purchase did not create an automatic resale listing")
+    margin_pct=(float(listing["ask_price_usdt"])/float(listing["unit_cost_usdt"])-1.0)*100.0
+    require(2.0 <= margin_pct <= 6.5,
+            f"Level 2 resale margin is outside 2.0–6.5%: {margin_pct:.4f}%")
+    listing_id=int(listing["id"])
+    c.close()
+
+    add_deposit(404,4,300)
+    market_update,market_message,_=callback_update(404,"rs:market")
+    asyncio.run(cc.resale_callback(market_update,context()))
+    market_buttons=[cb for reply in market_message.replies for cb in callback_data(reply)]
+    require(f"rs:buy:{listing_id}:1" in market_buttons,
+            "Level 2 resale market did not show the Level 2 seller listing")
+    buy_update,buy_message,buy_query=callback_update(404,f"rs:buy:{listing_id}:1")
+    asyncio.run(cc.resale_callback(buy_update,context()))
+    require(buy_query.answers[-1]["args"][0]=="Purchased",
+            "Level 2 merchant-to-merchant resale purchase did not complete")
+    require(any("Level: <b>2</b>" in x["text"] for x in buy_message.replies),
+            "Level 2 resale success confirmation did not identify the level")
+
+    before_l1=cc.balance(v4.db(),202)
+    cross_update,_,cross_query=callback_update(202,f"rs:buy:{listing_id}:1")
+    asyncio.run(cc.resale_callback(cross_update,context()))
+    require(cross_query.answers[-1]["kwargs"].get("show_alert") is True,
+            "Level 1 shop was allowed to buy a Level 2 listing")
+    require("different level" in cross_query.answers[-1]["args"][0],
+            "Cross-level Level 1 rejection message is unclear")
+    require(abs(cc.balance(v4.db(),202)-before_l1)<1e-8,
+            "Cross-level rejected purchase changed the Level 1 wallet")
+
+    c=v4.db()
+    remaining=int(c.execute("SELECT remaining_quantity FROM resale_listings WHERE id=?",(listing_id,)).fetchone()[0])
+    require(remaining==1, f"Level 2 resale listing should have one unit remaining, got {remaining}")
+    seller_profit=c.execute(
+        "SELECT amount FROM ledger WHERE owner_id=303 AND entry_type='resale_profit_credit' ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    require(seller_profit is not None and float(seller_profit["amount"])>0,
+            "Level 2 resale seller profit was not recorded")
+    c.close()
+
+    admin_card=next(x for x in admin_ctx.bot.sent if product_card_ids([x]))
+    admin_data=sent_callback_data(admin_card)
+    require(any(cb.startswith("cc:price:") for cb in admin_data)
+            and any(cb.startswith("cc:stock:") for cb in admin_data)
+            and any(cb.startswith("cc:toggle:") for cb in admin_data),
+            "Level 2 admin product controls are incomplete")
+    print("PASS: Level 2 50-product catalogue, 5-item pagination, images, stock, purchase and resale margin")
+    print("PASS: Level 2 resale stays within level; cross-level wallet/stock protection works")
 
 
 def test_admin_resale_flow(listing_id, inventory_id):
@@ -897,6 +1002,16 @@ def test_runtime_schema_bootstrap():
                     "Repeated schema bootstrap changed existing shop data")
             require(conn.execute("SELECT COUNT(*) FROM level_settings").fetchone()[0] == 5,
                     "Default shop levels were not initialized")
+            level2_settings=conn.execute(
+                "SELECT activation_usdt,product_target,profit_min,profit_max FROM level_settings WHERE level=2"
+            ).fetchone()
+            require(tuple(level2_settings)==(50.0,50,2.0,6.5),
+                    f"Level 2 defaults are wrong: {tuple(level2_settings)!r}")
+            level2_products=conn.execute(
+                "SELECT COUNT(*),MIN(stock),MAX(stock) FROM central_catalog WHERE level_required=2"
+            ).fetchone()
+            require(tuple(level2_products)==(50,50,50),
+                    f"Level 2 catalogue seed must have 50 products with 50 stock each: {tuple(level2_products)!r}")
             conn.close()
         finally:
             v4.DB = old_v4_db
@@ -1000,6 +1115,7 @@ def main():
     test_list_stock_profit_screen()
     test_seller_market_screen(listing_id)
     test_resale_buyer_guards_and_sale(listing_id, inventory_id)
+    test_level2_catalogue_and_purchase_flow()
     test_admin_resale_flow(listing_id, inventory_id)
     test_merchant_deposit_screenshot_and_admin_approval()
     test_usdt_trc20_withdrawal_flow()

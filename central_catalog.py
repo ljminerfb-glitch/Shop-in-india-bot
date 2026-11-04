@@ -439,9 +439,14 @@ async def show_owner_level_products(update,ctx,shop):
                  f"Available stock: <b>{stock}</b>\n"+
                  ("Select a quantity below to buy." if price>0 and stock>0 else "🔴 Unavailable — Admin must set price and stock."))
         # Offer every quantity from 1 through 10, capped by available stock.
+        # Keep the numeric labels short and put only two buttons on each row:
+        # ten long labels in one row are visually truncated by Telegram clients.
         quantities=list(range(1,min(10,stock)+1)) if stock>0 else []
-        buttons=[[InlineKeyboardButton(f"🛒 Buy × {n}",callback_data=f"ccbuy:{p['id']}:{n}")
-                  for n in quantities]] if quantities else []
+        buttons=[
+            [InlineKeyboardButton(str(n),callback_data=f"ccbuy:{p['id']}:{n}")
+             for n in quantities[start:start+2]]
+            for start in range(0,len(quantities),2)
+        ]
         buttons.append([
             InlineKeyboardButton("⬅️ Back to My Products",callback_data="m:products"),
             InlineKeyboardButton("🏠 Dashboard",callback_data="m:dashboard")])

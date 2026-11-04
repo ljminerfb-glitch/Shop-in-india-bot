@@ -501,7 +501,7 @@ async def menu_callback(update,ctx):
             f"#{r['id']} {html.escape(str(r['title']))}\nShop: {html.escape(str(r['shop_name']))}\n"
             f"{html.escape(str(r['currency']))} {float(r['price']):g} | Stock: {r['stock']}\n"
             f"<code>/buy {r['id']} QUANTITY</code>"
-            for r in rows) if rows else "\nNo INR products are published. Your same-level USDT listings appear above."
+            for r in rows) if rows else f"\nNo INR products are published. Your USDT listings appear above in the Level {level} marketplace."
         await q.message.reply_text(legacy_body[:4000],reply_markup=back_dashboard_kb(),parse_mode="HTML")
     elif action=="products":
         c=v4.db()

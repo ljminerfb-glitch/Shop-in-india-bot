@@ -181,7 +181,7 @@ async def level_pay_callback(update,ctx):
     finally:
         c.close()
 
-    ctx.user_data.update({"state":"payment_proof","payment_request_id":rid})
+    ctx.user_data.update({"state":"await_deposit_done","payment_request_id":rid})
     kb=InlineKeyboardMarkup([[
         InlineKeyboardButton("🔵 USDT TRC20",callback_data=f"net:{rid}:trc"),
         InlineKeyboardButton("🔵 USDT BEP20",callback_data=f"net:{rid}:bep")
@@ -219,7 +219,7 @@ async def network_callback(update,ctx):
     rate=v4.usdt_inr_rate(c)
     c.commit()
     c.close()
-    ctx.user_data.update({"state":"payment_proof","payment_request_id":rid,
+    ctx.user_data.update({"state":"await_deposit_done","payment_request_id":rid,
                           "screen_message_id":q.message.message_id,"screen_chat_id":q.message.chat_id})
     kb=InlineKeyboardMarkup([
         [InlineKeyboardButton("📋 Copy Deposit Address",copy_text=CopyTextButton(text=address))],
@@ -737,7 +737,7 @@ async def text_handler(update,ctx):
             await update.message.reply_text("Deposit request not found or already reviewed.",reply_markup=back_dashboard_kb()); ctx.user_data.pop("state",None); return
         ctx.user_data["deposit_tx_hash"]=tx_hash
         ctx.user_data["state"]="payment_proof"
-        await update.message.reply_text("📸 <b>Now send your payment screenshot/photo.</b>\\nTransaction hash saved. Please send a clear screenshot showing the transfer details.",parse_mode="HTML",reply_markup=back_dashboard_kb())
+        await update.message.reply_text("📸 <b>Now send your payment screenshot/photo.</b>\nTransaction hash saved. Please send a clear screenshot showing the transfer details.",parse_mode="HTML",reply_markup=back_dashboard_kb())
         return
     if state=="deposit_amount":
         try:

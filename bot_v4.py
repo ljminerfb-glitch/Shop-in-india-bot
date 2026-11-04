@@ -320,7 +320,10 @@ async def payment_photo(update,ctx):
     if not row: c.close(); ctx.user_data.clear(); await update.message.reply_text("Pending request nahi mili."); return
     c.execute("UPDATE payment_requests SET screenshot_file_id=? WHERE id=?",(photo,rid)); c.commit(); c.close()
     ctx.user_data.clear()
-    kb=InlineKeyboardMarkup([[InlineKeyboardButton("Approve",callback_data=f"pay:approve:{rid}"),InlineKeyboardButton("Reject",callback_data=f"pay:reject:{rid}")]])
+    kb=InlineKeyboardMarkup([
+        [InlineKeyboardButton("Approve",callback_data=f"pay:approve:{rid}"),InlineKeyboardButton("Reject",callback_data=f"pay:reject:{rid}")],
+        [InlineKeyboardButton("⬅️ Pending Deposits",callback_data="adm:payments"),InlineKeyboardButton("🏠 Admin Panel",callback_data="adm:home")]
+    ])
     try:
         rate=usdt_inr_rate()
         inr_equiv=round(float(row['amount'])*rate,2) if row['currency']=='USDT' else None

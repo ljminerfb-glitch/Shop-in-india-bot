@@ -228,10 +228,10 @@ async def network_callback(update,ctx):
     rows.append([InlineKeyboardButton("⬅️ Back to Dashboard",callback_data="m:dashboard")])
     kb=InlineKeyboardMarkup(rows)
     await q.message.reply_text(
-        f"💳 <b>{network} DEPOSIT ADDRESS</b>\\n━━━━━━━━━━━━━━━━━━\\n\\n"
-        f"<b><i>Address:</i></b>\\n\\n<code>{address}</code>\\n\\n"
-        f"<b>Amount:</b> {float(r['amount']):g} USDT\\n"
-        f"<b>Rate:</b> 1 USDT = INR {rate:,.2f}\\n\\n"
+        f"💳 <b>{network} DEPOSIT ADDRESS</b>\n━━━━━━━━━━━━━━━━━━\n\n"
+        f"<b><i>Address:</i></b>\n\n<code>{address}</code>\n\n"
+        f"<b>Amount:</b> {float(r['amount']):g} USDT\n"
+        f"<b>Rate:</b> 1 USDT = INR {rate:,.2f}\n\n"
         "<i>Send USDT only on the selected network. After payment, upload your transaction screenshot. Admin will verify it manually.</i>",
         reply_markup=kb,parse_mode="HTML")
 

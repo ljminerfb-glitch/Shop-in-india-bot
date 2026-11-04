@@ -879,9 +879,11 @@ async def admin_panel_callback(update,ctx):
             payment_type="wallet_deposit" if action=="payments" else "level_activation"
             section_title="PENDING DEPOSITS" if action=="payments" else "PENDING LEVEL PAYMENTS"
             rows=c.execute("SELECT id,owner_id,payment_type,amount,currency,network,status,screenshot_file_id,shop_id FROM payment_requests WHERE status='pending' AND payment_type=? ORDER BY id DESC LIMIT 25",(payment_type,)).fetchall()
-            await q.message.reply_text(f"<b>💳 {section_title}</b>\n━━━━━━━━━━━━━━━━━━\nReview every request separately. Verify the transaction before approving.",parse_mode="HTML")
+            await q.message.reply_text(f"<b>💳 {section_title}</b>\n━━━━━━━━━━━━━━━━━━\nReview every request separately. Verify the transaction before approving.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]),parse_mode="HTML")
             if not rows:
-                await q.message.reply_text(f"No pending { 'deposits' if action=='payments' else 'level payments' }.")
+                await q.message.reply_text(f"No pending { 'deposits' if action=='payments' else 'level payments' }.",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]))
             for r in rows:
                 caption=(f"<b>💳 PAYMENT REQUEST #{r['id']}</b>\n━━━━━━━━━━━━━━━━━━\n"
                          f"Owner: <code>{r['owner_id']}</code> • Shop: <code>{r['shop_id']}</code>\n"

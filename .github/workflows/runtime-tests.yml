@@ -5,9 +5,11 @@ on:
     branches:
       - main
       - feature/central-usdt-catalogue
+      - feature/level2-merchant-workflow-20261105
   pull_request:
     branches:
       - main
+      - feature/catalogue-five-item-pagination-20261105
 
 jobs:
   runtime-smoke:
@@ -25,6 +27,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
       - name: Compile Python modules
-        run: python -m py_compile bot.py bot_v3.py bot_v4.py bot_v5.py central_catalog.py migrate_v3.py migrate_v4.py audit_dashboard.py
+        run: python -m py_compile bot.py bot_v3.py bot_v4.py bot_v5.py central_catalog.py runtime_schema.py level2/products.py migrate_v3.py migrate_v4.py audit_dashboard.py
       - name: Run isolated migration and runtime tests
         run: python test_runtime.py

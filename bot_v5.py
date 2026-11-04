@@ -224,7 +224,7 @@ async def network_callback(update,ctx):
                           "screen_message_id":q.message.message_id,"screen_chat_id":q.message.chat_id})
     rows=[[InlineKeyboardButton("📋 Copy Deposit Address",copy_text=CopyTextButton(text=address))]]
     if is_wallet_deposit:
-        rows.append([InlineKeyboardButton("✅ I HAVE DONE DEPOSIT",callback_data="m:depositdone")])
+        rows.append([InlineKeyboardButton("✅ I HAVE DEPOSITED",callback_data="m:depositdone")])
     rows.append([InlineKeyboardButton("⬅️ Back to Dashboard",callback_data="m:dashboard")])
     kb=InlineKeyboardMarkup(rows)
     await q.message.reply_text(
@@ -300,8 +300,13 @@ async def menu_callback(update,ctx):
         finally: c.close()
         if not row:
             await q.message.reply_text("This deposit request is no longer pending.",reply_markup=back_dashboard_kb()); return
-        ctx.user_data["state"]="deposit_tx_hash"
-        await q.message.reply_text("📸 <b>Send Payment Screenshot with Transaction Hash</b>\n━━━━━━━━━━━━━━━━━━\nFirst send your transaction hash (TXID), then upload the payment screenshot/photo.",reply_markup=back_dashboard_kb(),parse_mode="HTML")
+        ctx.user_data["state"]="payment_proof"
+        await q.message.reply_text(
+            "📸 <b>UPLOAD YOUR PAYMENT SCREENSHOT</b>\n━━━━━━━━━━━━━━━━━━\n"
+            "Please send a clear screenshot of your completed USDT deposit. "
+            "Your proof will be sent to Admin for manual verification. "
+            "Your deposit will be credited only after Admin approves it.",
+            reply_markup=back_dashboard_kb(),parse_mode="HTML")
     elif action=="depositstart":
         ctx.user_data["state"]="deposit_amount"
         await q.message.reply_text(

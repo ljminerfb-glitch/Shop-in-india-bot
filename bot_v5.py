@@ -511,20 +511,17 @@ async def menu_callback(update,ctx):
         central_rows=c.execute("""SELECT o.id,o.quantity,o.total_usdt,o.status,p.title FROM central_orders o
           JOIN central_catalog p ON p.id=o.catalog_id WHERE o.buyer_shop_id=? ORDER BY o.id DESC LIMIT 20""",(s["id"],)).fetchall()
         c.close()
-        seller_body="\n\n━━━━━━━━━━━━━━━━━━━━\n\n".join(
-            f"<b>ORDER #{r['id']}</b>\n"
-            f"Product: <b>#{r['product_id']}</b>\n"
-            f"Quantity: <b>{r['quantity']}</b>\n"
-            f"Amount: <b>INR {r['total_amount']:.2f}</b>\n"
-            f"Status: {'🟢' if r['status'] in ('delivered','completed') else '🔴' if r['status']=='rejected' else '🟡'} "
+        seller_body="\\n────────────────────\\n".join(
+            f"<b>#{r['id']}  Product #{r['product_id']}</b>\\n"
+            f"     Qty: <b>{r['quantity']}</b>    Total: <b>INR {r['total_amount']:.2f}</b>\\n"
+            f"     Status: {'🟢' if r['status'] in ('delivered','completed') else '🔴' if r['status']=='rejected' else '🟡'} "
             f"<b>{html.escape(str(r['status']).upper())}</b>"
             for r in rows)
-        central_body="\n\n━━━━━━━━━━━━━━━━━━━━\n\n".join(
-            f"<b>ORDER #{r['id']}</b>\n"
-            f"Product: <b>{html.escape(str(r['title']))}</b>\n"
-            f"Quantity: <b>{r['quantity']}</b>\n"
-            f"Amount: <b>{r['total_usdt']:g} USDT</b>\n"
-            f"Status: 🟢 <b>{html.escape(str(r['status']).upper())}</b>"
+        central_body="\\n────────────────────\\n".join(
+            f"<b>#{r['id']}  {html.escape(str(r['title']))}</b>\\n"
+            f"     Qty: <b>{r['quantity']}</b>    Total: <b>{r['total_usdt']:g} USDT</b>\\n"
+            f"     Status: {'🟢' if r['status'] in ('paid','completed','delivered') else '🔴' if r['status']=='rejected' else '🟡'} "
+            f"<b>{html.escape(str(r['status']).upper())}</b>"
             for r in central_rows)
         body=("<b>🧾 MY ORDERS</b>\n━━━━━━━━━━━━━━━━━━\n\n"
               "<b>INR SELLER MARKETPLACE</b>\n\n"+(seller_body or "No INR orders.")+

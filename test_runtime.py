@@ -166,6 +166,8 @@ def fixture():
     INSERT INTO users(tg_id,created_at,role,status) VALUES(202,'2026-01-01','shop_owner','approved');
     INSERT INTO shops(owner_id,shop_name,status,created_at,level) VALUES(303,'Buyer L2','approved','2026-01-01',2);
     INSERT INTO users(tg_id,created_at,role,status) VALUES(303,'2026-01-01','shop_owner','approved');
+    INSERT INTO shops(owner_id,shop_name,status,created_at,level) VALUES(404,'Second Buyer L2','approved','2026-01-01',2);
+    INSERT INTO users(tg_id,created_at,role,status) VALUES(404,'2026-01-01','shop_owner','approved');
     INSERT INTO level_settings VALUES(1,5,12,1.25,2.5);
     INSERT INTO level_settings VALUES(2,10,24,1.5,3.0);
     """)
@@ -410,7 +412,7 @@ def test_resale_buyer_guards_and_sale(listing_id, inventory_id):
     update, message, query = callback_update(303, "rs:buy:%d:1" % listing_id)
     asyncio.run(cc.resale_callback(update, context()))
     require(query.answers[-1]["kwargs"].get("show_alert") is True, "Level 2 buyer was not blocked")
-    require("Approved Level 1" in query.answers[-1]["args"][0], "Level 2 rejection message unclear")
+    require("same active level" in query.answers[-1]["args"][0], "Cross-level resale rejection message unclear")
 
     # A Level 1 buyer completes the real callback handler.
     add_deposit(202, 2, 20)
@@ -445,8 +447,8 @@ def test_resale_buyer_guards_and_sale(listing_id, inventory_id):
     asyncio.run(cc.resale_callback(update, context()))
     require(query.answers[-1]["kwargs"].get("show_alert") is True,
             "Non-Level 1 seller listing was not blocked")
-    require("Only approved Level 1 seller" in query.answers[-1]["args"][0],
-            "Non-Level 1 seller rejection message unclear")
+    require("same active level" in query.answers[-1]["args"][0],
+            "Different-level seller listing rejection message unclear")
     c = v4.db()
     require(c.execute("SELECT remaining_quantity FROM resale_listings WHERE id=?", (listing_id,)).fetchone()[0] == 1,
             "Listing changed after invalid seller rejection")
@@ -457,6 +459,153 @@ def test_resale_buyer_guards_and_sale(listing_id, inventory_id):
             "Level 2 buyer wallet changed after rejection")
     print("PASS: Level 2 buyer denied; Level 1 buyer purchase, seller proceeds and 0.8 profit ledger")
     print("PASS: Non-Level 1 seller listing blocked without stock change")
+
+
+def test_level2_catalogue_random_margin_and_resale():
+    c=v4.db()
+    products=c.execute("SELECT id FROM central_catalog ORDER BY id").fetchall()
+    pid=int(products[5]["id"])
+    c.execute("UPDATE central_catalog SET price_usdt=4,stock=20,active=1,level_required=1 WHERE id=?",(pid,))
+    c.commit(); c.close()
+
+    # Both Level 2 merchants open their catalogue. Each shop gets a stable,
+    # random margin per product, unique across that shop's products and distinct
+    # for the same product across merchants while unused cent values remain.
+    update,market_message,_=callback_update(303,"m:market")
+    asyncio.run(cc.owner_market(update,context(),v4.shop_for(303)))
+    require("cclevel:2" in callback_data(market_message.replies[0]),
+            "Level 2 merchant does not see the Level 2 catalogue option")
+
+    update,_,_=callback_update(303,"cclevel:2")
+    owner_ctx=context()
+    asyncio.run(cc.owner_level_callback(update,owner_ctx))
+    ids=[int(r[0]) for r in v4.db().execute(
+        "SELECT id FROM central_catalog WHERE active=1 AND level_required<=2 ORDER BY id").fetchall()]
+    require(product_card_ids(owner_ctx.bot.sent)==ids[:5],
+            "Level 2 first page must show the first five products")
+    l2_nav=next(x for x in owner_ctx.bot.sent if "cc2page:1" in sent_callback_data(x))
+    require("PAGE 1/3" in sent_text(l2_nav),
+            "Level 2 Next 5 navigation or page counter is missing")
+    before=len(owner_ctx.bot.sent)
+    next_page_update,_,_=callback_update(303,"cc2page:1")
+    asyncio.run(cc.owner_catalog2_page_callback(next_page_update,owner_ctx))
+    next_page_sent=owner_ctx.bot.sent[before:]
+    require(product_card_ids(next_page_sent)==ids[5:10],
+            "Level 2 Next 5 did not show products 6 through 10")
+    next_nav=next(x for x in next_page_sent if any(cb.startswith("cc2page:") for cb in sent_callback_data(x)))
+    require("cc2page:0" in sent_callback_data(next_nav) and
+            "cc2page:2" in sent_callback_data(next_nav),
+            "Level 2 middle page must provide Previous 5 and Next 5")
+    first_product_id=ids[0]
+    p1=next(x for x in owner_ctx.bot.sent if product_card_ids([x])==[first_product_id])
+    p1_caption=p1["kwargs"].get("caption") or p1["kwargs"].get("text")
+    if not p1_caption and len(p1.get("args",()))>1:
+        p1_caption=p1["args"][1]
+    require("Your random margin:" in p1_caption,
+            "Level 2 product card does not display its merchant-specific random margin")
+
+    c=v4.db()
+    first_margins=[float(r["margin_usdt"]) for r in c.execute(
+        "SELECT margin_usdt FROM merchant_catalogue_pricing WHERE shop_id=3 AND level=2 ORDER BY catalog_id").fetchall()]
+    m1=float(c.execute("""SELECT margin_usdt FROM merchant_catalogue_pricing
+        WHERE shop_id=3 AND catalog_id=? AND level=2""",(pid,)).fetchone()[0])
+    require(len(first_margins)==12 and len(set(first_margins))==12,
+            "Level 2 margins should be different for each product within a merchant")
+    require(all(2.0<=m<=3.0 for m in first_margins),
+            "Level 2 random margins must stay between 2.00 and 3.00 USDT")
+
+    # Reopening the catalogue must not reroll the merchant's saved values.
+    update,_,_=callback_update(303,"cclevel:2")
+    again=context()
+    asyncio.run(cc.owner_level_callback(update,again))
+    saved_again=float(c.execute("""SELECT margin_usdt FROM merchant_catalogue_pricing
+        WHERE shop_id=3 AND catalog_id=? AND level=2""",(pid,)).fetchone()[0])
+    require(saved_again==m1,"Reopening the catalogue changed the merchant's saved margin")
+    c.close()
+
+    # A different Level 2 merchant receives a different saved margin for the same product.
+    update,_,_=callback_update(404,"cclevel:2")
+    second_ctx=context()
+    asyncio.run(cc.owner_level_callback(update,second_ctx))
+    c=v4.db()
+    m2=float(c.execute("""SELECT margin_usdt FROM merchant_catalogue_pricing
+        WHERE shop_id=4 AND catalog_id=? AND level=2""",(pid,)).fetchone()[0])
+    require(2.0<=m2<=3.0 and m2!=m1,
+            "The same product must receive a different random margin for another merchant")
+    c.close()
+
+    add_deposit(303,3,100)
+    add_deposit(404,4,100)
+    # Level 2 purchases are charged at the shared catalogue cost. The saved
+    # merchant margin determines its automatic resale price.
+    update,message,query=callback_update(303,f"ccbuy2:{pid}:2")
+    buyer_ctx=context()
+    asyncio.run(cc.owner_buy2_callback(update,buyer_ctx))
+    require(any("Purchase successful" in r["text"] and f"Your Level 2 resale margin: +{m1:g} USDT / item" in r["text"]
+                for r in message.replies),
+            "Level 2 purchase did not confirm its saved resale margin")
+    c=v4.db()
+    inventory=c.execute("""SELECT * FROM central_inventory
+        WHERE owner_id=303 AND catalog_id=? ORDER BY id DESC LIMIT 1""",(pid,)).fetchone()
+    listing=c.execute("""SELECT * FROM resale_listings
+        WHERE owner_id=303 AND catalog_id=? AND status='active' ORDER BY id DESC LIMIT 1""",(pid,)).fetchone()
+    require(inventory and inventory["pricing_level"]==2 and
+            abs(float(inventory["resale_margin_usdt"])-m1)<1e-8,
+            "Level 2 inventory did not save its merchant-specific margin")
+    require(listing and listing["seller_level"]==2 and
+            abs(float(listing["ask_price_usdt"])-(4.0+m1))<1e-8,
+            "Level 2 automatic resale listing did not use cost + saved random margin")
+    listing_id=int(listing["id"])
+    c.close()
+
+    # Level 1 merchants cannot buy Level 2 listings.
+    update,_,query=callback_update(202,f"rs:buy:{listing_id}:1")
+    asyncio.run(cc.resale_callback(update,context()))
+    require(query.answers[-1]["kwargs"].get("show_alert") is True and
+            "same active level" in query.answers[-1]["args"][0],
+            "Cross-level Level 1 buyer was not blocked from a Level 2 listing")
+
+    # Level 2 merchants can see and buy the Level 2 listing.
+    update,market_message,_=callback_update(404,"rs:market")
+    asyncio.run(cc.resale_callback(update,context()))
+    require(any(f"rs:buy:{listing_id}:1" in callback_data(r) for r in market_message.replies),
+            "Level 2 resale market does not show another Level 2 merchant's listing")
+    update,buy_message,query=callback_update(404,f"rs:buy:{listing_id}:1")
+    asyncio.run(cc.resale_callback(update,context()))
+    require(query.answers[-1]["args"][0]=="Purchased",
+            "Level 2 merchant could not buy another Level 2 merchant's listing")
+
+    c=v4.db()
+    seller_remaining=int(c.execute("SELECT remaining_quantity FROM resale_listings WHERE id=?",(listing_id,)).fetchone()[0])
+    seller_profit=float(c.execute("""SELECT amount FROM ledger WHERE owner_id=303
+        AND entry_type='resale_profit_credit' AND note LIKE ? ORDER BY id DESC LIMIT 1""",
+        (f"Profit on resale listing #{listing_id}",)).fetchone()[0])
+    buyer_inv=c.execute("""SELECT * FROM central_inventory WHERE owner_id=404 AND catalog_id=?
+        ORDER BY id DESC LIMIT 1""",(pid,)).fetchone()
+    require(seller_remaining==1,"Level 2 seller listing quantity was not reduced after sale")
+    require(abs(seller_profit-m1)<1e-8,"Level 2 seller profit ledger did not credit its saved margin")
+    require(buyer_inv and buyer_inv["pricing_level"]==2 and
+            abs(float(buyer_inv["resale_margin_usdt"])-m2)<1e-8,
+            "Level 2 resale buyer did not receive its own merchant-specific margin")
+    c.close()
+
+    # List My Stock must use the same saved margin, rather than rerolling a price.
+    update,list_message=callback_update(404,"rs:listmenu")[:2]
+    ctx=context()
+    asyncio.run(cc.list_inventory(update,ctx))
+    require(any(pid_title in r["text"] and f"Expected profit: +{m2:.2f} USDT / sold item" in r["text"]
+                for r in list_message.replies for pid_title in [str(catalogue_title(catalogue_id=pid))]),
+            "Level 2 List My Stock did not show its saved margin")
+    print("PASS: Level 2 catalogue, saved random 2.00–3.00 USDT margins per merchant/product, same-level resale and profit credit")
+
+
+def catalogue_title(catalogue_id):
+    c=v4.db()
+    try:
+        row=c.execute("SELECT title FROM central_catalog WHERE id=?",(catalogue_id,)).fetchone()
+        return str(row["title"]) if row else ""
+    finally:
+        c.close()
 
 
 def test_admin_resale_flow(listing_id, inventory_id):
@@ -1001,6 +1150,7 @@ def main():
     test_seller_market_screen(listing_id)
     test_resale_buyer_guards_and_sale(listing_id, inventory_id)
     test_admin_resale_flow(listing_id, inventory_id)
+    test_level2_catalogue_random_margin_and_resale()
     test_merchant_deposit_screenshot_and_admin_approval()
     test_usdt_trc20_withdrawal_flow()
     test_failed_central_purchases(pid)

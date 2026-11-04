@@ -123,11 +123,19 @@ async def level_callback(update,ctx):
         return
 
     target="Unlimited product access" if not cfg["product_target"] else f"Access to up to {cfg['product_target']} products"
-    benefits=(
-        f"📦 Product access: {target}\n"
-        f"📈 Profit/margin reference: {float(cfg['profit_min']):g}%–{float(cfg['profit_max']):g}%\n"
-        "🔓 Marketplace access according to this level"
-    )
+    if lv==2:
+        benefits=(
+            f"📦 Product access: {target}\n"
+            "💚 Resale formula: purchase cost + random margin of 2.00–3.00 USDT per item\n"
+            "🎯 Every merchant gets a different saved margin for each product\n"
+            "🔓 Level 2 resale marketplace access"
+        )
+    else:
+        benefits=(
+            f"📦 Product access: {target}\n"
+            f"📈 Profit/margin reference: {float(cfg['profit_min']):g}%–{float(cfg['profit_max']):g}%\n"
+            "🔓 Marketplace access according to this level"
+        )
     kb=InlineKeyboardMarkup([
         [InlineKeyboardButton(f"💳 Continue to payment • {float(cfg['activation_usdt']):g} USDT",callback_data=f"lvpay:{lv}")],
         [InlineKeyboardButton("⬅️ Back to all levels",callback_data="lvback")]
@@ -137,7 +145,7 @@ async def level_callback(update,ctx):
         f"Activation price: <b>{float(cfg['activation_usdt']):g} USDT</b>\n"
         f"INR reference: ₹{float(cfg['activation_usdt'])*v4.usdt_inr_rate():,.2f}\n\n"
         f"<b>LEVEL BENEFITS</b>\n{html.escape(benefits)}\n\n"
-        "<i>Profit figures are references, not guaranteed earnings. Level activates after Admin verifies payment.</i>",
+        "<i>Margins are expected resale amounts, not guaranteed earnings. Profit is recorded only after a completed sale. Level activates after Admin verifies payment.</i>",
         reply_markup=kb,parse_mode="HTML")
 
 async def level_pay_callback(update,ctx):
@@ -445,6 +453,7 @@ async def menu_callback(update,ctx):
         await central.owner_market(update,ctx,s)
     elif action=="sellermarket":
         central.resale_setup()
+        level=int(s["level"])
         c=v4.db()
         try:
             rows=c.execute("""SELECT p.id,p.title,p.description,p.price,p.currency,p.stock,s.shop_name
@@ -455,16 +464,17 @@ async def menu_callback(update,ctx):
               FROM resale_listings l JOIN central_catalog p ON p.id=l.catalog_id
               JOIN shops sh ON sh.id=l.shop_id
               WHERE l.status='active' AND l.remaining_quantity>0 AND l.owner_id=?
-                AND sh.status='approved' AND sh.level=1
-              ORDER BY l.id DESC LIMIT 30""",(q.from_user.id,)).fetchall()
+                AND l.seller_level=? AND sh.status='approved' AND sh.level=?
+              ORDER BY l.id DESC LIMIT 30""",(q.from_user.id,level,level)).fetchall()
             resale=c.execute("""SELECT l.id,l.remaining_quantity,l.ask_price_usdt,p.title,sh.shop_name
               FROM resale_listings l JOIN central_catalog p ON p.id=l.catalog_id
               JOIN shops sh ON sh.id=l.shop_id
               WHERE l.status='active' AND l.remaining_quantity>0 AND l.owner_id<>?
-                AND sh.status='approved' AND sh.level=1
-              ORDER BY l.id DESC LIMIT 30""",(q.from_user.id,)).fetchall()
+                AND l.seller_level=? AND sh.status='approved' AND sh.level=?
+              ORDER BY l.id DESC LIMIT 30""",(q.from_user.id,level,level)).fetchall()
         finally: c.close()
-        body="<b>🏬 SELLER MARKETPLACE</b>\n━━━━━━━━━━━━━━━━━━\n<b>MY ACTIVE USDT LISTINGS</b>\n"
+        body=(f"<b>🏬 LEVEL {level} SELLER MARKETPLACE</b>\n━━━━━━━━━━━━━━━━━━\n"
+              "<b>MY ACTIVE USDT LISTINGS</b>\n")
         if own_resale:
             body+="\n\n".join(
                 f"<b>#{r['id']} {html.escape(str(r['title']))}</b>\n"
@@ -472,8 +482,8 @@ async def menu_callback(update,ctx):
                 f"Asking price: <b>{float(r['ask_price_usdt']):g} USDT / item</b>"
                 for r in own_resale)
         else:
-            body+="No active USDT listings yet. Approved Level 1 catalogue purchases are listed automatically."
-        body+="\n\n<b>OTHER LEVEL 1 MERCHANT LISTINGS</b>\n"
+            body+=f"No active Level {level} USDT listings yet."
+        body+=f"\n\n<b>OTHER LEVEL {level} MERCHANT LISTINGS</b>\n"
         if resale:
             body+="\n\n".join(
                 f"<b>#{r['id']} {html.escape(str(r['title']))}</b>\n"
@@ -481,7 +491,7 @@ async def menu_callback(update,ctx):
                 f"Price: <b>{float(r['ask_price_usdt']):g} USDT / item</b> | Stock: {r['remaining_quantity']}"
                 for r in resale)
         else:
-            body+="No other Level 1 merchant listings available right now."
+            body+=f"No other Level {level} merchant listings available right now."
         await q.message.reply_text(body[:4000],reply_markup=InlineKeyboardMarkup(
             [[InlineKeyboardButton(f"Buy #{r['id']} ×1",callback_data=f"rs:buy:{r['id']}:1"),
               InlineKeyboardButton("Buy ×5",callback_data=f"rs:buy:{r['id']}:5")] for r in resale]+
@@ -491,13 +501,14 @@ async def menu_callback(update,ctx):
             f"#{r['id']} {html.escape(str(r['title']))}\nShop: {html.escape(str(r['shop_name']))}\n"
             f"{html.escape(str(r['currency']))} {float(r['price']):g} | Stock: {r['stock']}\n"
             f"<code>/buy {r['id']} QUANTITY</code>"
-            for r in rows) if rows else "\nNo INR products are published. Your USDT listings appear above."
+            for r in rows) if rows else f"\nNo INR products are published. Your USDT listings appear above in the Level {level} marketplace."
         await q.message.reply_text(legacy_body[:4000],reply_markup=back_dashboard_kb(),parse_mode="HTML")
     elif action=="products":
         c=v4.db()
         try:
-            rows=c.execute("""SELECT i.catalog_id,i.quantity,i.remaining_quantity,i.unit_cost_usdt,i.status,
-                p.title FROM central_inventory i JOIN central_catalog p ON p.id=i.catalog_id
+            rows=c.execute("""SELECT i.catalog_id,i.quantity,i.remaining_quantity,i.unit_cost_usdt,
+                i.resale_margin_usdt,i.pricing_level,i.status,p.title
+                FROM central_inventory i JOIN central_catalog p ON p.id=i.catalog_id
                 WHERE i.owner_id=? ORDER BY i.id DESC LIMIT 30""",(q.from_user.id,)).fetchall()
             legacy=c.execute("SELECT id,title,price,currency,stock,active FROM products WHERE shop_id=? ORDER BY id DESC LIMIT 20",(s["id"],)).fetchall()
         finally: c.close()
@@ -508,15 +519,19 @@ async def menu_callback(update,ctx):
             for r in rows:
                 remaining=int(r["remaining_quantity"])
                 cost=float(r["unit_cost_usdt"])
+                margin=float(r["resale_margin_usdt"])
                 state="🟢 IN STOCK" if remaining>0 else "🔴 SOLD OUT"
-                expected=round(remaining*0.8,6) if int(s["level"])==1 else 0
-                margin=(f"💚 Expected margin: <b>+0.8 USDT / item</b> | Potential: <b>+{expected:g} USDT</b>\n"
-                        if int(s["level"])==1 and remaining>0 else "")
+                if remaining>0 and int(r["pricing_level"])==1:
+                    margin_text=(f"💚 Expected margin: <b>+{margin:g} USDT / item</b> | Potential: <b>+{remaining*margin:g} USDT</b>\n")
+                elif remaining>0:
+                    margin_text=(f"💚 Expected margin: <b>+{margin:.2f} USDT / item</b> | Potential: <b>+{remaining*margin:g} USDT</b>\n")
+                else:
+                    margin_text=""
                 body+=(
                     f"\n<b>{html.escape(str(r['title']))}</b>\n"
                     f"Available quantity: <b>{remaining}</b>\n"
                     f"Purchase cost: {cost:g} USDT / item\n"
-                    f"{margin}Status: {state}\n"
+                    f"{margin_text}Status: {state}\n"
                 )
         else:
             body+="No central catalogue purchases recorded yet."
@@ -525,7 +540,7 @@ async def menu_callback(update,ctx):
                 f"#{r['id']} {html.escape(str(r['title']))} — {html.escape(str(r['currency']))} {r['price']} | Stock {r['stock']}"
                 for r in legacy)
         await q.message.reply_text(body[:4000],reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🛍 LEVEL 1 PRODUCTS / CATALOGUE",callback_data="m:level1")],
+            [InlineKeyboardButton(f"🛍 LEVEL {int(s['level'])} PRODUCTS / CATALOGUE",callback_data="m:level1")],
             [InlineKeyboardButton("⬅️ Back",callback_data="m:dashboard"),
              InlineKeyboardButton("🏠 Dashboard",callback_data="m:dashboard")]]),parse_mode="HTML")
         await q.message.reply_text(
@@ -1280,10 +1295,12 @@ def main():
     app.add_handler(CallbackQueryHandler(delivered_callback,pattern=r"^order:delivered:[0-9]+$"))
     app.add_handler(CallbackQueryHandler(central.admin_level_callback,pattern=r"^ccadminlevel:1$"))
     app.add_handler(CallbackQueryHandler(central.admin_catalog_page_callback,pattern=r"^ccadminpage:[0-9]+$"))
-    app.add_handler(CallbackQueryHandler(central.owner_level_callback,pattern=r"^cclevel:1$"))
+    app.add_handler(CallbackQueryHandler(central.owner_level_callback,pattern=r"^cclevel:[12]$"))
     app.add_handler(CallbackQueryHandler(central.owner_catalog_page_callback,pattern=r"^ccpage:[0-9]+$"))
+    app.add_handler(CallbackQueryHandler(central.owner_catalog2_page_callback,pattern=r"^cc2page:[0-9]+$"))
     app.add_handler(CallbackQueryHandler(central.admin_callback,pattern=r"^cc:(view|orders|price|stock|toggle|fulfill|refund)(:[0-9]+)?$"))
     app.add_handler(CallbackQueryHandler(central.owner_buy_callback,pattern=r"^ccbuy:[0-9]+:[0-9]+$"))
+    app.add_handler(CallbackQueryHandler(central.owner_buy2_callback,pattern=r"^ccbuy2:[0-9]+:[0-9]+$"))
     app.add_handler(CallbackQueryHandler(v4.payment_review,pattern=r"^pay:(approve|reject):[0-9]+$"))
     app.add_handler(CallbackQueryHandler(withdrawal_review_callback,pattern=r"^wd:(paid|reject):[0-9]+$"))
     app.add_handler(MessageHandler(filters.PHOTO,v4.payment_photo))

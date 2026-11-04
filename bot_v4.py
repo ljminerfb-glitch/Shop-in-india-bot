@@ -430,15 +430,25 @@ async def payment_review(update,ctx):
             old_caption=q.message.caption or ""
             clean_caption=old_caption.split("\n\nREVIEW RESULT:",1)[0]
             await q.message.edit_caption(caption=clean_caption+result_line,
-                                         reply_markup=None)
+                                         reply_markup=InlineKeyboardMarkup([
+                                             [InlineKeyboardButton("⬅️ Back to Deposits",callback_data="adm:payments")],
+                                             [InlineKeyboardButton("🏠 Admin Panel",callback_data="adm:home")]
+                                         ]))
         else:
             old_text=q.message.text or ""
             clean_text=old_text.split("\n\nREVIEW RESULT:",1)[0]
             await q.message.edit_text(text=clean_text+result_line,
-                                      reply_markup=None)
+                                      reply_markup=InlineKeyboardMarkup([
+                                          [InlineKeyboardButton("⬅️ Back to Deposits",callback_data="adm:payments")],
+                                          [InlineKeyboardButton("🏠 Admin Panel",callback_data="adm:home")]
+                                      ]))
     except Exception:
         log.exception("Could not update reviewed payment Telegram card")
-        await q.message.reply_text(f"Payment request #{rid}: {status.upper()}. Database status saved.")
+        await q.message.reply_text(f"Payment request #{rid}: {status.upper()}. Database status saved.",
+                                   reply_markup=InlineKeyboardMarkup([
+                                       [InlineKeyboardButton("⬅️ Back to Deposits",callback_data="adm:payments")],
+                                       [InlineKeyboardButton("🏠 Admin Panel",callback_data="adm:home")]
+                                   ]))
 
     try:
         await ctx.bot.send_message(

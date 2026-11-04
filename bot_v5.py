@@ -26,9 +26,30 @@ def level_kb():
             callback_data=f"lv:{r['level']}")])
     return InlineKeyboardMarkup(buttons)
 
+def upgrade_level_kb(current_level):
+    """Offer only levels higher than the merchant's currently active level."""
+    c=v4.db()
+    try:
+        rows=c.execute(
+            "SELECT level,activation_usdt,product_target FROM level_settings WHERE level>? ORDER BY level",
+            (int(current_level),)
+        ).fetchall()
+    finally:
+        c.close()
+    buttons=[]
+    for row in rows:
+        target="Unlimited" if not row["product_target"] else f"{int(row['product_target'])} products"
+        buttons.append([InlineKeyboardButton(
+            f"⬆️ Upgrade to Level {int(row['level'])} • {float(row['activation_usdt']):g} USDT",
+            callback_data=f"lv:{int(row['level'])}")])
+    buttons.append([InlineKeyboardButton("⬅️ Back to Dashboard",callback_data="m:dashboard")])
+    return InlineKeyboardMarkup(buttons)
+
+
 def owner_kb():
     return InlineKeyboardMarkup([
       [InlineKeyboardButton("🛍 My Level Catalogue",callback_data="m:market")],
+      [InlineKeyboardButton("🚀 Upgrade Shop Level",callback_data="m:upgrade")],
       [InlineKeyboardButton("🏬 Seller Marketplace",callback_data="m:sellermarket"),InlineKeyboardButton("💳 Deposit",callback_data="m:deposit")],
       [InlineKeyboardButton("💸 Withdraw",callback_data="m:withdraw"),InlineKeyboardButton("👛 Wallet",callback_data="m:wallet")],
       [InlineKeyboardButton("📦 My Products",callback_data="m:products"),InlineKeyboardButton("🧾 My Orders",callback_data="m:orders")],
@@ -273,6 +294,32 @@ async def menu_callback(update,ctx):
     ctx.user_data["screen_message_id"]=q.message.message_id
     ctx.user_data["screen_chat_id"]=q.message.chat_id
     s=v4.shop_for(q.from_user.id)
+
+    if action=="upgrade":
+        if not s or s["status"]!="approved" or int(s["level"])<1:
+            await q.message.reply_text(
+                "Approved shop with an active level is required before upgrading.",
+                reply_markup=back_dashboard_kb())
+            return
+        current_level=int(s["level"])
+        c=v4.db()
+        try:
+            available=c.execute(
+                "SELECT COUNT(*) FROM level_settings WHERE level>?",(current_level,)
+            ).fetchone()[0]
+        finally:
+            c.close()
+        if not available:
+            await q.message.reply_text(
+                f"<b>🏆 YOU ARE ALREADY AT THE HIGHEST LEVEL</b>\nCurrent level: <b>{current_level}</b>",
+                reply_markup=back_dashboard_kb(),parse_mode="HTML")
+            return
+        await q.message.reply_text(
+            f"<b>🚀 UPGRADE YOUR SHOP</b>\n━━━━━━━━━━━━━━━━━━\n"
+            f"Current active level: <b>LEVEL {current_level}</b>\n"
+            "Select the next level you want to activate. Admin verifies the payment before the upgrade takes effect.",
+            reply_markup=upgrade_level_kb(current_level),parse_mode="HTML")
+        return
 
     if action=="dashboard":
         if not s or s["status"]!="approved" or int(s["level"])<1:
@@ -1299,7 +1346,7 @@ def main():
     app.add_handler(CallbackQueryHandler(level_back_callback,pattern=r"^lvback$"))
     app.add_handler(CallbackQueryHandler(network_callback,pattern=r"^net:[0-9]+:(trc|bep)$"))
     app.add_handler(CallbackQueryHandler(txid_callback,pattern=r"^txid:[0-9]+$"))
-    app.add_handler(CallbackQueryHandler(menu_callback,pattern=r"^m:(market|level1|sellermarket|deposit|depositstart|depositfund|deposit_fund|deposit-fund|depositdone|deposits|withdraw|withdrawsetup|withdrawsetupedit|wallet|products|orders|history|profile|dashboard|support)$"))
+    app.add_handler(CallbackQueryHandler(menu_callback,pattern=r"^m:(market|level1|upgrade|sellermarket|deposit|depositstart|depositfund|deposit_fund|deposit-fund|depositdone|deposits|withdraw|withdrawsetup|withdrawsetupedit|wallet|products|orders|history|profile|dashboard|support)$"))
     app.add_handler(CallbackQueryHandler(admin_panel_callback,pattern=r"^adm:(home|owners|shops|payments|levelpayments|withdrawals|withdrawwallets|products|orders|levels|settings|central|resale|audit|back)$"))
     app.add_handler(CallbackQueryHandler(central.resale_callback,pattern=r"^rs:(list:[0-9]+|listmenu|market|review:[0-9]+|buy:[0-9]+:[0-9]+)$"))
     app.add_handler(CallbackQueryHandler(audit_callback,pattern=r"^audit:(all|payments|levels|wallet|orders|products):[0-9]+$"))

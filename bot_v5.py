@@ -1,5 +1,5 @@
 """V5 Telegram-chat UI: inline level selection, owner panel and deposits."""
-import os, logging
+import os, logging, re, html
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove, CopyTextButton
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 import bot_v3 as v3
@@ -29,8 +29,8 @@ def owner_kb():
       [InlineKeyboardButton("💸 Withdraw",callback_data="m:withdraw"),InlineKeyboardButton("👛 Wallet",callback_data="m:wallet")],
       [InlineKeyboardButton("📦 My Products",callback_data="m:products"),InlineKeyboardButton("🧾 My Orders",callback_data="m:orders")],
       [InlineKeyboardButton("📊 Profit & History",callback_data="m:history"),InlineKeyboardButton("👤 My Account",callback_data="m:profile")],
-      [InlineKeyboardButton("💬 Support",callback_data="m:support")],
-      [InlineKeyboardButton("💳 DEPOSIT FUNDS",callback_data="m:deposit")]
+      [InlineKeyboardButton("🧾 Deposits",callback_data="m:deposits")],
+      [InlineKeyboardButton("💬 Support",callback_data="m:support")]
     ])
 
 
@@ -211,7 +211,7 @@ async def network_callback(update,ctx):
     network="USDT TRC20" if net=="trc" else "USDT BEP20"
     address=v4.PAY_TRON if net=="trc" else v4.PAY_BSC
     c=v4.db()
-    r=c.execute("SELECT amount FROM payment_requests WHERE id=? AND owner_id=? AND status='pending'",(rid,q.from_user.id)).fetchone()
+    r=c.execute("SELECT amount,payment_type FROM payment_requests WHERE id=? AND owner_id=? AND status='pending'",(rid,q.from_user.id)).fetchone()
     if not r:
         c.close()
         await q.message.reply_text("Payment request not found.",reply_markup=back_dashboard_kb())
@@ -220,12 +220,14 @@ async def network_callback(update,ctx):
     rate=v4.usdt_inr_rate(c)
     c.commit()
     c.close()
-    ctx.user_data.update({"state":"payment_proof","payment_request_id":rid,
+    is_wallet_deposit=(r["payment_type"]=="wallet_deposit")
+    ctx.user_data.update({"state":"await_deposit_done" if is_wallet_deposit else "payment_proof","payment_request_id":rid,
                           "screen_message_id":q.message.message_id,"screen_chat_id":q.message.chat_id})
-    kb=InlineKeyboardMarkup([
-        [InlineKeyboardButton("📋 Copy Deposit Address",copy_text=CopyTextButton(text=address))],
-        [InlineKeyboardButton("⬅️ Back to Dashboard",callback_data="m:dashboard")]
-    ])
+    rows=[[InlineKeyboardButton("📋 Copy Deposit Address",copy_text=CopyTextButton(text=address))]]
+    if is_wallet_deposit:
+        rows.append([InlineKeyboardButton("✅ I HAVE DONE DEPOSIT",callback_data="m:depositdone")])
+    rows.append([InlineKeyboardButton("⬅️ Back to Dashboard",callback_data="m:dashboard")])
+    kb=InlineKeyboardMarkup(rows)
     await q.message.reply_text(
         f"💳 <b>{network} DEPOSIT ADDRESS</b>\n━━━━━━━━━━━━━━━━━━\n\n"
         f"<b><i>Address:</i></b>\n\n<code>{address}</code>\n\n"
@@ -261,7 +263,38 @@ async def menu_callback(update,ctx):
                                   reply_markup=back_dashboard_kb())
         return
 
-    if action=="deposit":
+    if action=="deposits":
+        c=v4.db()
+        try:
+            rows=c.execute("""SELECT id,amount,currency,status,created_at,admin_note FROM payment_requests
+                WHERE owner_id=? AND payment_type='wallet_deposit' ORDER BY id DESC LIMIT 30""",(q.from_user.id,)).fetchall()
+        finally: c.close()
+        body="<b>🧾 MY DEPOSITS</b>\\n━━━━━━━━━━━━━━━━━━\\n"
+        if not rows: body+="No deposit records found."
+        else:
+            from datetime import datetime
+            for r in rows:
+                status=str(r["status"] or "pending").lower()
+                label="🟢 ✅ Approved" if status=="approved" else ("🔴 ❌ Declined" if status=="rejected" else ("⚪ Cancelled" if status=="cancelled" else "🟡 Pending"))
+                date_text=str(r["created_at"] or "Date unavailable")
+                try: date_text=datetime.fromisoformat(date_text.replace("Z","+00:00")).strftime("%A, %d %B %Y")
+                except Exception: pass
+                body+=f"\\n<b>{float(r['amount']):g} {html.escape(str(r['currency'] or 'USDT'))}</b> — {label} ({html.escape(date_text)})"
+                if status=="rejected": body+=f"\\n  Reason: {html.escape(str(r['admin_note'] or 'No reason provided'))}"
+                body+="\\n"
+        await q.message.reply_text(body,reply_markup=back_dashboard_kb(),parse_mode="HTML")
+    elif action=="depositdone":
+        rid=ctx.user_data.get("payment_request_id")
+        if not rid or ctx.user_data.get("state")!="await_deposit_done":
+            await q.message.reply_text("Please complete the deposit amount and network selection first.",reply_markup=back_dashboard_kb()); return
+        c=v4.db()
+        try: row=c.execute("SELECT id FROM payment_requests WHERE id=? AND owner_id=? AND payment_type='wallet_deposit' AND status='pending'",(rid,q.from_user.id)).fetchone()
+        finally: c.close()
+        if not row:
+            await q.message.reply_text("This deposit request is no longer pending.",reply_markup=back_dashboard_kb()); return
+        ctx.user_data["state"]="deposit_tx_hash"
+        await q.message.reply_text("📸 <b>Send Payment Screenshot with Transaction Hash</b>\\n━━━━━━━━━━━━━━━━━━\\nFirst send your transaction hash (TXID), then upload the payment screenshot/photo.",reply_markup=back_dashboard_kb(),parse_mode="HTML")
+    elif action=="deposit":
         ctx.user_data["state"]="deposit_amount"
         await q.message.reply_text(
             "💳 DEPOSIT FUNDS\n━━━━━━━━━━━━━━━━━━\n"
@@ -319,6 +352,22 @@ async def menu_callback(update,ctx):
 
 async def text_handler(update,ctx):
     state=ctx.user_data.get("state")
+    if state=="deposit_tx_hash":
+        tx_hash=(update.message.text or "").strip()
+        if len(tx_hash)<12 or len(tx_hash)>160 or not re.fullmatch(r"[A-Za-z0-9xX:_-]+",tx_hash):
+            await update.message.reply_text("❌ Invalid transaction hash. Send the complete TXID/hash."); return
+        rid=ctx.user_data.get("payment_request_id")
+        c=v4.db()
+        try:
+            cur=c.execute("""UPDATE payment_requests SET transaction_hash=? WHERE id=? AND owner_id=? AND payment_type='wallet_deposit' AND status='pending'""",(tx_hash,rid,update.effective_user.id))
+            c.commit()
+        finally: c.close()
+        if cur.rowcount!=1:
+            await update.message.reply_text("Deposit request not found or already reviewed.",reply_markup=back_dashboard_kb()); ctx.user_data.pop("state",None); return
+        ctx.user_data["deposit_tx_hash"]=tx_hash
+        ctx.user_data["state"]="payment_proof"
+        await update.message.reply_text("📸 <b>Now upload your payment screenshot/photo.</b>\\nYour transaction hash has been saved.",parse_mode="HTML",reply_markup=back_dashboard_kb())
+        return
     if state=="deposit_amount":
         try:
             amount=round(float(update.message.text),6)
@@ -674,6 +723,13 @@ async def dashboard(update,ctx):
 def main():
     if not TOKEN or not ADMIN_ID: raise RuntimeError("BOT_TOKEN and ADMIN_ID are required.")
     v3.setup(); v3.ensure_catalog_schema()
+    c=v4.db()
+    try:
+        columns={row["name"] for row in c.execute("PRAGMA table_info(payment_requests)").fetchall()}
+        if "transaction_hash" not in columns:
+            c.execute("ALTER TABLE payment_requests ADD COLUMN transaction_hash TEXT")
+            c.commit()
+    finally: c.close()
     app=ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start",start)); app.add_handler(CommandHandler("dashboard",dashboard))
     for cmd,fn in [("help",help_command),("support",support_command),("admin",admin_panel),("verifywallet",v3.verify_wallet),
@@ -686,7 +742,7 @@ def main():
     app.add_handler(CallbackQueryHandler(level_pay_callback,pattern=r"^lvpay:[1-5]$"))
     app.add_handler(CallbackQueryHandler(level_back_callback,pattern=r"^lvback$"))
     app.add_handler(CallbackQueryHandler(network_callback,pattern=r"^net:[0-9]+:(trc|bep)$"))
-    app.add_handler(CallbackQueryHandler(menu_callback,pattern=r"^m:(market|deposit|withdraw|wallet|products|orders|history|profile|dashboard|support)$"))
+    app.add_handler(CallbackQueryHandler(menu_callback,pattern=r"^m:(market|deposit|deposits|depositdone|withdraw|wallet|products|orders|history|profile|dashboard|support)$"))
     app.add_handler(CallbackQueryHandler(admin_panel_callback,pattern=r"^adm:(home|owners|shops|payments|levelpayments|withdrawals|products|orders|levels|settings|back)$"))
     app.add_handler(CallbackQueryHandler(delivered_callback,pattern=r"^order:delivered:[0-9]+$"))
     app.add_handler(CallbackQueryHandler(v4.payment_review,pattern=r"^pay:(approve|reject):[0-9]+$"))

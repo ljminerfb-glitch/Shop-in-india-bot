@@ -29,7 +29,6 @@ def owner_kb():
       [InlineKeyboardButton("💸 Withdraw",callback_data="m:withdraw"),InlineKeyboardButton("👛 Wallet",callback_data="m:wallet")],
       [InlineKeyboardButton("📦 My Products",callback_data="m:products"),InlineKeyboardButton("🧾 My Orders",callback_data="m:orders")],
       [InlineKeyboardButton("📊 Profit & History",callback_data="m:history"),InlineKeyboardButton("👤 My Account",callback_data="m:profile")],
-      [InlineKeyboardButton("🧾 Deposits",callback_data="m:deposits")],
       [InlineKeyboardButton("💬 Support",callback_data="m:support")]
     ])
 
@@ -263,7 +262,16 @@ async def menu_callback(update,ctx):
                                   reply_markup=back_dashboard_kb())
         return
 
-    if action=="deposits":
+    if action=="deposit":
+        kb=InlineKeyboardMarkup([
+            [InlineKeyboardButton("➕ Make Deposit",callback_data="m:depositstart")],
+            [InlineKeyboardButton("🧾 Deposit History",callback_data="m:deposits")],
+            [InlineKeyboardButton("⬅️ Back to Dashboard",callback_data="m:dashboard")]
+        ])
+        await q.message.reply_text(
+            "💳 <b>DEPOSIT CENTER</b>\\n━━━━━━━━━━━━━━━━━━\\n\\nChoose an option below:",
+            reply_markup=kb,parse_mode="HTML")
+    elif action=="deposits":
         c=v4.db()
         try:
             rows=c.execute("""SELECT id,amount,currency,status,created_at,admin_note FROM payment_requests
@@ -294,7 +302,7 @@ async def menu_callback(update,ctx):
             await q.message.reply_text("This deposit request is no longer pending.",reply_markup=back_dashboard_kb()); return
         ctx.user_data["state"]="deposit_tx_hash"
         await q.message.reply_text("📸 <b>Send Payment Screenshot with Transaction Hash</b>\n━━━━━━━━━━━━━━━━━━\nFirst send your transaction hash (TXID), then upload the payment screenshot/photo.",reply_markup=back_dashboard_kb(),parse_mode="HTML")
-    elif action=="deposit":
+    elif action=="depositstart":
         ctx.user_data["state"]="deposit_amount"
         await q.message.reply_text(
             "💳 DEPOSIT FUNDS\n━━━━━━━━━━━━━━━━━━\n"
@@ -742,7 +750,7 @@ def main():
     app.add_handler(CallbackQueryHandler(level_pay_callback,pattern=r"^lvpay:[1-5]$"))
     app.add_handler(CallbackQueryHandler(level_back_callback,pattern=r"^lvback$"))
     app.add_handler(CallbackQueryHandler(network_callback,pattern=r"^net:[0-9]+:(trc|bep)$"))
-    app.add_handler(CallbackQueryHandler(menu_callback,pattern=r"^m:(market|deposit|deposits|depositdone|withdraw|wallet|products|orders|history|profile|dashboard|support)$"))
+    app.add_handler(CallbackQueryHandler(menu_callback,pattern=r"^m:(market|deposit|depositstart|deposits|depositdone|withdraw|wallet|products|orders|history|profile|dashboard|support)$"))
     app.add_handler(CallbackQueryHandler(admin_panel_callback,pattern=r"^adm:(home|owners|shops|payments|levelpayments|withdrawals|products|orders|levels|settings|back)$"))
     app.add_handler(CallbackQueryHandler(delivered_callback,pattern=r"^order:delivered:[0-9]+$"))
     app.add_handler(CallbackQueryHandler(v4.payment_review,pattern=r"^pay:(approve|reject):[0-9]+$"))

@@ -269,7 +269,7 @@ async def menu_callback(update,ctx):
             [InlineKeyboardButton("⬅️ Back to Dashboard",callback_data="m:dashboard")]
         ])
         await q.message.reply_text(
-            "💳 <b>DEPOSIT CENTER</b>\\n━━━━━━━━━━━━━━━━━━\\n\\nChoose an option below:",
+            "💳 <b>DEPOSIT CENTER</b>\n━━━━━━━━━━━━━━━━━━\n\nChoose an option below:",
             reply_markup=kb,parse_mode="HTML")
     elif action=="deposits":
         c=v4.db()

@@ -204,10 +204,11 @@ async def level_pay_callback(update,ctx):
         c.close()
 
     ctx.user_data.update({"state":"await_deposit_done","payment_request_id":rid})
-    kb=InlineKeyboardMarkup([[
-        InlineKeyboardButton("🔵 USDT TRC20",callback_data=f"net:{rid}:trc"),
-        InlineKeyboardButton("🔵 USDT BEP20",callback_data=f"net:{rid}:bep")
-    ]])
+    kb=InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔵 USDT TRC20",callback_data=f"net:{rid}:trc"),
+         InlineKeyboardButton("🔵 USDT BEP20",callback_data=f"net:{rid}:bep")],
+        [InlineKeyboardButton("⬅️ Back to Dashboard",callback_data="m:dashboard")]
+    ])
     await q.message.reply_text(
         f"<b>💳 LEVEL {lv} PAYMENT</b>\n━━━━━━━━━━━━━━━━━━\n"
         f"Request: <code>#{rid}</code>\n"
@@ -261,20 +262,22 @@ async def network_callback(update,ctx):
     finally:
         c.close()
     is_wallet_deposit=(r["payment_type"]=="wallet_deposit")
-    ctx.user_data.update({"state":"await_deposit_done" if is_wallet_deposit else "payment_proof","payment_request_id":rid,
+    ctx.user_data.update({"state":"await_deposit_done","payment_request_id":rid,
                           "screen_message_id":q.message.message_id,"screen_chat_id":q.message.chat_id})
-    rows=[[InlineKeyboardButton("📋 Copy Deposit Address",copy_text=CopyTextButton(text=address))]]
-    if is_wallet_deposit:
-        rows.append([InlineKeyboardButton("➕ Add TXID (optional)",callback_data=f"txid:{rid}")])
-        rows.append([InlineKeyboardButton("✅ I HAVE DEPOSITED",callback_data="m:depositdone")])
-    rows.append([InlineKeyboardButton("⬅️ Back to Dashboard",callback_data="m:dashboard")])
+    rows=[[InlineKeyboardButton("📋 Copy Deposit Address",copy_text=CopyTextButton(text=address))],
+          [InlineKeyboardButton("➕ Add TXID (optional)",callback_data=f"txid:{rid}")],
+          [InlineKeyboardButton("✅ I HAVE DEPOSITED",callback_data="m:depositdone")],
+          [InlineKeyboardButton("⬅️ Back to Dashboard",callback_data="m:dashboard")]]
     kb=InlineKeyboardMarkup(rows)
+    address_title="DEPOSIT ADDRESS" if is_wallet_deposit else "LEVEL UPGRADE PAYMENT ADDRESS"
     await q.message.reply_text(
-        f"💳 <b>{network} DEPOSIT ADDRESS</b>\n━━━━━━━━━━━━━━━━━━\n\n"
+        f"💳 <b>{network} {address_title}</b>\n━━━━━━━━━━━━━━━━━━\n\n"
         f"<b><i>Address:</i></b>\n\n<code>{address}</code>\n\n"
         f"<b>Amount:</b> {float(r['amount']):g} USDT\n"
         f"<b>Rate:</b> 1 USDT = INR {rate:,.2f}\n\n"
-        + ( "<i>Send USDT only on the selected network. After payment, tap I HAVE DEPOSITED below and upload your transaction screenshot. Admin will verify it manually.</i>" if is_wallet_deposit else "<i>Send USDT only on the selected network. Upload your payment screenshot; Admin will verify it manually.</i>" ),
+        "<i>Send USDT only on the selected network. After payment, tap I HAVE DEPOSITED below. "
+        "You may add the TXID first (optional), then upload your transaction screenshot. "
+        "Admin will verify the payment manually before crediting your wallet or activating your level.</i>",
         reply_markup=kb,parse_mode="HTML")
 
 
@@ -284,18 +287,18 @@ async def txid_callback(update,ctx):
     try:
         rid=int(q.data.split(":",1)[1])
     except (ValueError,IndexError):
-        await q.message.reply_text("Invalid deposit request.",reply_markup=back_dashboard_kb())
+        await q.message.reply_text("Invalid payment request.",reply_markup=back_dashboard_kb())
         return
     c=v4.db()
     try:
         row=c.execute("""SELECT id FROM payment_requests
-            WHERE id=? AND owner_id=? AND payment_type='wallet_deposit'
+            WHERE id=? AND owner_id=? AND payment_type IN ('wallet_deposit','level_activation')
               AND status='pending' AND network IN ('USDT TRC20','USDT BEP20')""",
             (rid,q.from_user.id)).fetchone()
     finally:
         c.close()
     if not row:
-        await q.message.reply_text("Pending wallet deposit with selected network was not found.",
+        await q.message.reply_text("Pending payment request with selected network was not found.",
                                    reply_markup=back_dashboard_kb())
         return
     ctx.user_data.update({"state":"deposit_tx_hash","payment_request_id":rid})
@@ -390,23 +393,25 @@ async def menu_callback(update,ctx):
     elif action=="depositdone":
         rid=ctx.user_data.get("payment_request_id")
         if not rid or ctx.user_data.get("state")!="await_deposit_done":
-            await q.message.reply_text("Please complete the deposit amount and network selection first.",reply_markup=back_dashboard_kb()); return
+            await q.message.reply_text("Please complete the payment request and network selection first.",reply_markup=back_dashboard_kb()); return
         c=v4.db()
         try:
             row=c.execute(
                 "SELECT id,payment_type FROM payment_requests WHERE id=? AND owner_id=? "
-                "AND payment_type='wallet_deposit' AND status='pending'",
+                "AND payment_type IN ('wallet_deposit','level_activation') "
+                "AND status='pending' AND network IN ('USDT TRC20','USDT BEP20')",
                 (rid,q.from_user.id)).fetchone()
         finally:
             c.close()
         if not row:
-            await q.message.reply_text("This payment request is no longer pending.",reply_markup=back_dashboard_kb()); return
+            await q.message.reply_text("This payment request is no longer pending or its network is not selected.",
+                                       reply_markup=back_dashboard_kb()); return
         ctx.user_data["state"]="payment_proof"
         await q.message.reply_text(
             "<b>📸 UPLOAD YOUR PAYMENT SCREENSHOT</b>\n━━━━━━━━━━━━━━━━━━\n"
             "Send a clear screenshot of your completed USDT transfer. "
             "Your proof will be sent to Admin for manual verification. "
-            "Your payment will be credited or activated only after Admin approves it.",
+            "Wallet deposits are credited and level upgrades are activated only after Admin approves the payment.",
             reply_markup=back_dashboard_kb(),parse_mode="HTML")
     elif action=="depositstart" or action in ("depositfund","deposit_fund","deposit-fund"):
         ctx.user_data["state"]="deposit_amount"
@@ -867,14 +872,22 @@ async def text_handler(update,ctx):
         rid=ctx.user_data.get("payment_request_id")
         c=v4.db()
         try:
-            cur=c.execute("""UPDATE payment_requests SET transaction_hash=? WHERE id=? AND owner_id=? AND payment_type='wallet_deposit' AND status='pending'""",(tx_hash,rid,update.effective_user.id))
+            cur=c.execute("""UPDATE payment_requests SET transaction_hash=? WHERE id=? AND owner_id=?
+                AND payment_type IN ('wallet_deposit','level_activation') AND status='pending'""",
+                (tx_hash,rid,update.effective_user.id))
             c.commit()
         finally: c.close()
         if cur.rowcount!=1:
-            await update.message.reply_text("Deposit request not found or already reviewed.",reply_markup=back_dashboard_kb()); ctx.user_data.pop("state",None); return
+            await update.message.reply_text("Payment request not found or already reviewed.",
+                                            reply_markup=back_dashboard_kb())
+            ctx.user_data.pop("state",None)
+            return
         ctx.user_data["deposit_tx_hash"]=tx_hash
         ctx.user_data["state"]="payment_proof"
-        await update.message.reply_text("📸 <b>Now send your payment screenshot/photo.</b>\nTransaction hash saved. Please send a clear screenshot showing the transfer details.",parse_mode="HTML",reply_markup=back_dashboard_kb())
+        await update.message.reply_text(
+            "📸 <b>Now send your payment screenshot/photo.</b>\n"
+            "Transaction hash saved. Please send a clear screenshot showing the transfer details.",
+            parse_mode="HTML",reply_markup=back_dashboard_kb())
         return
     if state=="deposit_amount":
         try:

@@ -772,6 +772,7 @@ def test_admin_resale_flow(listing_id, inventory_id):
 
 def test_failed_central_purchases(pid):
     c = v4.db()
+    stock_before=int(c.execute("SELECT stock FROM central_catalog WHERE id=?",(pid,)).fetchone()[0])
     c.execute("""INSERT INTO ledger(shop_id,owner_id,entry_type,amount,currency,note,created_at)
                  VALUES(1,101,'resale_purchase_debit',1000,'USDT','isolated test spend',?)""", (v4.now(),))
     c.commit()
@@ -780,14 +781,14 @@ def test_failed_central_purchases(pid):
     require(any("Insufficient USDT wallet balance" in x["text"] for x in replies),
             "Insufficient wallet purchase was not rejected")
     c = v4.db()
-    require(c.execute("SELECT stock FROM central_catalog WHERE id=?", (pid,)).fetchone()[0] == 3,
+    require(c.execute("SELECT stock FROM central_catalog WHERE id=?", (pid,)).fetchone()[0] == stock_before,
             "Shared stock changed after rejected wallet purchase")
     c.close()
-    replies = run_central_buy(101, pid, 4)
+    replies = run_central_buy(101, pid, stock_before+1)
     require(any("Insufficient central stock" in x["text"] for x in replies),
             "Insufficient central stock purchase was not rejected")
     c = v4.db()
-    require(c.execute("SELECT stock FROM central_catalog WHERE id=?", (pid,)).fetchone()[0] == 3,
+    require(c.execute("SELECT stock FROM central_catalog WHERE id=?", (pid,)).fetchone()[0] == stock_before,
             "Shared stock changed after rejected stock purchase")
     require(c.execute("PRAGMA integrity_check").fetchone()[0] == "ok", "SQLite integrity check failed")
     c.close()

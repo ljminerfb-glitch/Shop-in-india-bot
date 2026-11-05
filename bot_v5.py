@@ -1179,6 +1179,23 @@ async def motivation_reminder_worker(app):
         await asyncio.sleep(60)
 
 async def start_motivation_reminder_worker(app):
+    # Backfill merchants whose first withdrawal was already paid before this
+    # feature was deployed. Preserve Admin-stopped shops permanently.
+    c=v4.db()
+    try:
+        due_at=_motivation_stamp(_motivation_now()+timedelta(hours=1))
+        c.execute("""UPDATE shops
+                     SET motivation_reminder_status='on',
+                         motivation_reminder_next_at=?,
+                         motivation_reminder_last_index=-1
+                     WHERE motivation_reminder_status='off'
+                       AND EXISTS (
+                           SELECT 1 FROM withdrawals w
+                           WHERE w.owner_id=shops.owner_id AND w.status='paid'
+                       )""",(due_at,))
+        c.commit()
+    finally:
+        c.close()
     app.create_task(motivation_reminder_worker(app),name="shop-motivation-reminders")
 
 async def withdrawal_review_callback(update,ctx):

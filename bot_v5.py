@@ -102,7 +102,7 @@ def _reverse_geocode_sync(latitude,longitude):
 async def reverse_geocode(latitude,longitude):
     """Resolve coarse admin geography; exact GPS coordinates are never persisted."""
     global _geocode_last_request
-    lat_key=round(float(latitude),4); lon_key=round(float(longitude),4)
+    lat_key=round(float(latitude),2); lon_key=round(float(longitude),2)
     c=v4.db()
     try:
         cached=c.execute("SELECT country,state,city FROM location_geocode_cache WHERE lat_key=? AND lon_key=?",
@@ -955,6 +955,7 @@ async def menu_callback(update,ctx):
             "<b>👤 MY ACCOUNT</b>\n━━━━━━━━━━━━━━━━━━\n"
             f"Shop: <b>{html.escape(str(s['shop_name']))}</b>\n"
             f"Shop ID: <code>{s['id']}</code> • Level: <b>L{s['level']}</b>\n"
+            f"📍 Location: <b>{html.escape(str(s['location_city'] or 'Not available'))}, {html.escape(str(s['location_state'] or 'Not available'))}, {html.escape(str(s['location_country'] or 'Not available'))}</b>\n"
             "Withdrawal network: <b>USDT TRC20 only</b>\n"
             "Enter your TRC20 address with each withdrawal request.\n\n"
             "<b>DEPOSIT NETWORKS</b>\n"
@@ -1476,6 +1477,7 @@ async def admin_panel_callback(update,ctx):
             await central.admin_resale_market(update,ctx)
         elif action=="owners":
             rows=c.execute("""SELECT s.id,s.shop_name,s.owner_id,s.status,s.level,
+                s.location_country,s.location_state,s.location_city,
                 (SELECT COUNT(*) FROM products p WHERE p.shop_id=s.id) products,
                 (SELECT COUNT(*) FROM v4_orders o WHERE o.buyer_shop_id=s.id) buys,
                 (SELECT COUNT(*) FROM v4_orders o WHERE o.seller_shop_id=s.id) sells
@@ -1484,6 +1486,7 @@ async def admin_panel_callback(update,ctx):
             owner_body+="\n\n".join(
               f"<b>🏪 {html.escape(str(r['shop_name']))}</b> • Shop #{r['id']}\n"
               f"Owner: <code>{r['owner_id']}</code>\n"
+              f"Location: {html.escape(str(r['location_city'] or 'Not available'))}, {html.escape(str(r['location_state'] or 'Not available'))}, {html.escape(str(r['location_country'] or 'Not available'))}\n"
               f"Status: {'✅' if r['status']=='approved' else '❌' if r['status']=='rejected' else '🟡'} <b>{html.escape(str(r['status']).upper())}</b> • Level {r['level']}\n"
               f"Products: {r['products']} • Buys: {r['buys']} • Sells: {r['sells']}\n"
               f"<code>/owner {r['owner_id']}</code>"
@@ -1491,11 +1494,12 @@ async def admin_panel_callback(update,ctx):
             await q.message.reply_text(owner_body[:4000],
               reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]),parse_mode="HTML")
         elif action=="shops":
-            rows=c.execute("SELECT id,shop_name,owner_id,status,level FROM shops ORDER BY id DESC LIMIT 40").fetchall()
+            rows=c.execute("SELECT id,shop_name,owner_id,status,level,location_country,location_state,location_city FROM shops ORDER BY id DESC LIMIT 40").fetchall()
             shops_body="<b>🏪 ALL SHOPS</b>\n━━━━━━━━━━━━━━━━━━\n"
             shops_body+="\n".join(
               f"#{r['id']} <b>{html.escape(str(r['shop_name']))}</b> • Owner <code>{r['owner_id']}</code>\n"
-              f"{'✅' if r['status']=='approved' else '❌' if r['status']=='rejected' else '🟡'} {html.escape(str(r['status']).upper())} • Level {r['level']}"
+              f"{'✅' if r['status']=='approved' else '❌' if r['status']=='rejected' else '🟡'} {html.escape(str(r['status']).upper())} • Level {r['level']}\n"
+              f"📍 {html.escape(str(r['location_city'] or 'Not available'))}, {html.escape(str(r['location_state'] or 'Not available'))}, {html.escape(str(r['location_country'] or 'Not available'))}"
               for r in rows) if rows else "No shops registered."
             await q.message.reply_text(shops_body[:4000],
               reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]),parse_mode="HTML")

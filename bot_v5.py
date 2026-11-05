@@ -272,7 +272,19 @@ async def start(update,ctx):
 async def approved_callback(update,ctx):
     q=update.callback_query
     if q.from_user.id!=ADMIN_ID: await q.answer("Admin only",show_alert=True); return
-    action,sid=q.data.split(":"); c=v4.db(); row=c.execute("SELECT owner_id,level FROM shops WHERE id=?",(int(sid),)).fetchone(); c.close()
+    action,sid=q.data.split(":")
+    if action=="reject":
+        c=v4.db()
+        row=c.execute("SELECT owner_id,shop_name,status FROM shops WHERE id=?",(int(sid),)).fetchone()
+        c.close()
+        if not row or row["status"]!="pending":
+            await q.message.reply_text("Shop application missing or already reviewed."); return
+        ctx.user_data["pending_admin_rejection"]={"kind":"shop_application","id":int(sid)}
+        await q.message.reply_text(
+            f"✍️ Enter the rejection reason for shop application #{sid}. "
+            "The applicant will receive this reason. Type CANCEL to stop.")
+        return
+    c=v4.db(); row=c.execute("SELECT owner_id,level FROM shops WHERE id=?",(int(sid),)).fetchone(); c.close()
     await v3.approval(update,ctx)
     if action=="approve" and row:
         if int(row["level"])<1: await levels(ctx.bot,row["owner_id"])
@@ -956,6 +968,55 @@ async def withdrawal_review_callback(update,ctx):
 
 
 async def text_handler(update,ctx):
+    pending_rejection=ctx.user_data.get("pending_admin_rejection")
+    if pending_rejection:
+        if update.effective_user.id!=ADMIN_ID:
+            ctx.user_data.pop("pending_admin_rejection",None)
+            return
+        reason=(update.message.text or "").strip()
+        if reason.lower()=="cancel":
+            ctx.user_data.pop("pending_admin_rejection",None)
+            await update.message.reply_text("Rejection cancelled. Request remains pending.")
+            return
+        if not reason or len(reason)>1000:
+            await update.message.reply_text("Please enter a reason (1–1000 characters), or type CANCEL.")
+            return
+        kind=pending_rejection.get("kind")
+        if kind=="payment":
+            await v4.reject_payment_with_reason(update,ctx,reason)
+        elif kind=="withdrawal":
+            await v4.reject_withdrawal_with_reason(update,ctx,reason)
+        elif kind=="product_suggestion":
+            await v3.reject_product_suggestion_with_reason(update,ctx,reason)
+        elif kind=="shop_application":
+            sid=int(pending_rejection["id"])
+            c=v4.db()
+            try:
+                row=c.execute("SELECT owner_id,shop_name,status FROM shops WHERE id=?",(sid,)).fetchone()
+                if not row or row["status"]!="pending":
+                    ctx.user_data.pop("pending_admin_rejection",None)
+                    await update.message.reply_text("Shop application missing or already reviewed.")
+                    return
+                c.execute("UPDATE shops SET status='rejected' WHERE id=? AND status='pending'",(sid,))
+                c.execute("INSERT INTO admin_audit(admin_id,owner_id,action,details,created_at) VALUES(?,?,?,?,?)",
+                          (ADMIN_ID,row["owner_id"],"rejected",f"{row['shop_name']}: {reason}",v4.now()))
+                c.commit()
+            except Exception:
+                c.rollback()
+                await update.message.reply_text("Could not reject shop application. Try again.")
+                return
+            finally:
+                c.close()
+            ctx.user_data.pop("pending_admin_rejection",None)
+            try:
+                await ctx.bot.send_message(row["owner_id"],
+                    f"❌ <b>YOUR SHOP APPLICATION WAS REJECTED</b>\n"
+                    f"Shop: <b>{html.escape(str(row['shop_name']))}</b>\n"
+                    f"Reason: {html.escape(reason)}",parse_mode="HTML")
+            except Exception:
+                log.exception("Shop rejection notification failed")
+            await update.message.reply_text(f"Shop application #{sid} rejected. Reason sent to applicant.")
+        return
     if await central.admin_resale_text(update,ctx): return
     edit=ctx.user_data.get("central_admin_edit")
     if edit:

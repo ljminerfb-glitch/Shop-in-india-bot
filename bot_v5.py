@@ -62,7 +62,10 @@ def owner_kb():
 
 async def edit_screen(ctx, update, text, reply_markup=None):
     """Append a new screen; never overwrite earlier chat messages."""
-    sent = await ctx.bot.send_message(chat_id=update.effective_chat.id, text=text, reply_markup=reply_markup)
+    sent = await ctx.bot.send_message(
+        chat_id=update.effective_chat.id, text=text,
+        reply_markup=reply_markup, parse_mode="HTML"
+    )
     ctx.user_data["screen_message_id"] = sent.message_id
     ctx.user_data["screen_chat_id"] = sent.chat_id
     return sent

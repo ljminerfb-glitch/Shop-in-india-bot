@@ -35,6 +35,27 @@ def inr_to_usdt(amount_inr, rate):
     return round(float(amount_inr) / float(rate), 6)
 def shop_for(uid):
     c=db(); r=c.execute("SELECT * FROM shops WHERE owner_id=? ORDER BY id DESC LIMIT 1",(uid,)).fetchone(); c.close(); return r
+
+def shop_order_gate(c, shop_id):
+    """Check Admin controls and consume a one-time next-order warning transactionally."""
+    row=c.execute("SELECT control_status,next_order_warning,warning_reason FROM shops WHERE id=?",
+                  (int(shop_id),)).fetchone()
+    if not row:
+        return False, "Shop not found."
+    status=str(row["control_status"] or "active").lower()
+    if status != "active":
+        labels={"frozen":"frozen","disabled":"disabled","deleted":"deleted"}
+        return False, f"This shop is {labels.get(status, status)} by Admin. New orders are unavailable."
+    warning=None
+    if int(row["next_order_warning"] or 0):
+        warning=str(row["warning_reason"] or "Please follow marketplace rules.")
+        c.execute("UPDATE shops SET next_order_warning=0,warning_reason=NULL WHERE id=?",
+                  (int(shop_id),))
+    return True, warning
+
+def shop_control_state(c, shop_id):
+    row=c.execute("SELECT control_status FROM shops WHERE id=?",(int(shop_id),)).fetchone()
+    return str(row["control_status"] or "active").lower() if row else "missing"
 def audit_product(c,p,shop,owner,actor,action,old,new):
     c.execute("""INSERT INTO product_audit(product_id,shop_id,owner_id,actor_id,action,old_value,new_value,created_at)
                   VALUES(?,?,?,?,?,?,?,?)""",(p,shop,owner,actor,action,str(old),str(new),now()))
@@ -194,10 +215,15 @@ async def buy(update,ctx):
     c=db()
     try:
         c.execute("BEGIN IMMEDIATE")
-        p=c.execute("""SELECT p.*,s.owner_id,s.status seller_status,s.level seller_level
+        allowed, buyer_warning=shop_order_gate(c,buyer["id"])
+        if not allowed:
+            c.rollback(); await update.message.reply_text(buyer_warning); return
+        p=c.execute("""SELECT p.*,s.owner_id,s.status seller_status,s.level seller_level,s.control_status seller_control
                        FROM products p JOIN shops s ON s.id=p.shop_id WHERE p.id=? AND p.active=1""",(pid,)).fetchone()
         if not p or p["stock"]<qty or p["shop_id"]==buyer["id"]:
             c.rollback(); await update.message.reply_text("Product unavailable, insufficient stock, or buying from your own shop is not allowed."); return
+        if str(p["seller_control"] or "active").lower()!="active":
+            c.rollback(); await update.message.reply_text("This seller shop is not accepting new orders."); return
         target=p["level_required"] if "level_required" in p.keys() else 1
         if int(buyer["level"])!=int(target):
             c.rollback(); await update.message.reply_text(f"This product requires buyer shop L{target}."); return
@@ -216,7 +242,8 @@ async def buy(update,ctx):
         c.rollback(); log.exception("Buy failed"); await update.message.reply_text("Order could not be created; no payment has been taken.")
         return
     finally: c.close()
-    await update.message.reply_text(f"Order #{oid} created. Amount ₹{total:.2f}. Payment and fulfilment require Admin review; stock is reserved.")
+    await update.message.reply_text(f"Order #{oid} created. Amount ₹{total:.2f}. Payment and fulfilment require Admin review; stock is reserved." +
+        (f"\\n⚠️ ADMIN WARNING: {buyer_warning}" if buyer_warning else ""))
     try: await ctx.bot.send_message(ADMIN_ID,f"🛒 ORDER #{oid}\nProduct #{pid} {p['title']}\nBuyer shop #{buyer['id']}\nSeller shop #{p['shop_id']}\nQty {qty} | Total ₹{total:.2f}\nFee ₹{fee:.2f} | Seller allocation ₹{seller:.2f}\nUse /orderdone {oid} after real delivery and payment verification, or /orderreject {oid} REASON.")
     except Exception: log.exception("Admin order alert failed")
 

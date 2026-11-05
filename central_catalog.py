@@ -282,6 +282,9 @@ async def buy(update,ctx):
     c=v4.db()
     try:
         c.execute("BEGIN IMMEDIATE")
+        allowed, buyer_warning=v4.shop_order_gate(c,shop["id"])
+        if not allowed:
+            c.rollback(); await update.effective_message.reply_text(buyer_warning); return
         p=c.execute("SELECT * FROM central_catalog WHERE id=? AND active=1 AND level_required>=1 AND level_required<=?",(pid,int(shop["level"]))).fetchone()
         if not p or float(p["price_usdt"])<=0:
             c.rollback(); await update.effective_message.reply_text("Product unavailable. Admin has not set its USDT price yet."); return
@@ -340,7 +343,7 @@ async def buy(update,ctx):
         await update.effective_message.reply_text("Purchase failed safely. No wallet debit or stock deduction was committed.")
         return
     finally: c.close()
-    await update.effective_message.reply_text(f"✅ Purchase successful\nOrder #{oid}\n{p['title']} × {qty}\nTotal paid: {total:g} USDT\nRemaining shared stock: {remaining_stock}\nRemaining USDT wallet: {balance_after_text(total,available)}")
+    await update.effective_message.reply_text(f"✅ Purchase successful\nOrder #{oid}\n{p['title']} × {qty}\nTotal paid: {total:g} USDT\nRemaining shared stock: {remaining_stock}\nRemaining USDT wallet: {balance_after_text(total,available)}" + (f"\n⚠️ ADMIN WARNING: {buyer_warning}" if buyer_warning else ""))
     try:
         await ctx.bot.send_message(v4.ADMIN_ID,f"🛒 CENTRAL ORDER #{oid}\n{p['title']} × {qty}\nOwner: {update.effective_user.id} | Shop #{shop['id']}\nPaid: {total:g} USDT")
     except Exception: log.exception("Admin central order notification failed")
@@ -863,8 +866,11 @@ async def resale_callback(update,ctx):
             listing_level=int(l["level_required"])
             if listing_level<1 or listing_level>buyer_level:
                 c.rollback(); await safe_callback_answer(q, "This listing requires a higher shop level",show_alert=True); return
-            seller_shop=c.execute("SELECT status,level FROM shops WHERE id=?",(l["shop_id"],)).fetchone()
-            if not seller_shop or seller_shop["status"]!="approved" or int(seller_shop["level"])<listing_level:
+            allowed,buyer_warning=v4.shop_order_gate(c,shop["id"])
+            if not allowed:
+                c.rollback(); await safe_callback_answer(q,buyer_warning,show_alert=True); return
+            seller_shop=c.execute("SELECT status,level,control_status FROM shops WHERE id=?",(l["shop_id"],)).fetchone()
+            if not seller_shop or seller_shop["status"]!="approved" or str(seller_shop["control_status"] or "active").lower()!="active" or int(seller_shop["level"])<listing_level:
                 c.rollback(); await safe_callback_answer(q, "Only approved merchants with this level or higher can sell here",show_alert=True); return
             total=round(float(l["ask_price_usdt"])*qty,6); bal=balance(c,q.from_user.id)
             if bal+1e-9<total: c.rollback(); await safe_callback_answer(q, "Insufficient USDT balance",show_alert=True); return
@@ -888,7 +894,7 @@ async def resale_callback(update,ctx):
         await safe_callback_answer(q, "Purchased")
         await q.message.reply_text(
             f"<b>✅ PURCHASE CONFIRMED</b>\n━━━━━━━━━━━━━━━━━━\n"
-            f"Level: <b>{buyer_level}</b>\nQuantity: <b>{qty}</b> item(s)\nTotal paid: <b>{total:g} USDT</b>\nOrder: <code>#{oid}</code>",
+            f"Level: <b>{buyer_level}</b>\nQuantity: <b>{qty}</b> item(s)\nTotal paid: <b>{total:g} USDT</b>\nOrder: <code>#{oid}</code>" + (f"\n⚠️ ADMIN WARNING: {html.escape(buyer_warning)}" if buyer_warning else ""),
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Marketplace",callback_data="rs:market")],[InlineKeyboardButton("🏠 Dashboard",callback_data="m:dashboard")]]),
             parse_mode="HTML")
         try: await ctx.bot.send_message(l["owner_id"],f"🎉 Your resale listing #{lid} sold {qty} item(s). Sale proceeds: {total:g} USDT; recorded profit: {max(0,profit):g} USDT.")

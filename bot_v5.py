@@ -632,6 +632,25 @@ async def menu_callback(update,ctx):
     ctx.user_data["screen_chat_id"]=q.message.chat_id
     s=v4.shop_for(q.from_user.id)
 
+    if action=="motivation":
+        if not s:
+            await q.message.reply_text("Shop account was not found.")
+            return
+        c=v4.db()
+        try:
+            reminder=c.execute("SELECT motivation_reminder_status FROM shops WHERE id=?",(int(s["id"]),)).fetchone()
+        finally:
+            c.close()
+        state=str(reminder["motivation_reminder_status"] or "off") if reminder else "off"
+        label="🟢 ON — hourly messages active" if state=="on" else "⏸ STOPPED BY ADMIN" if state=="stopped" else "Not activated — starts after your first paid withdrawal"
+        await q.message.reply_text(
+            "<b>⏰ SHOP GROWTH REMINDER</b>\n━━━━━━━━━━━━━━━━━━\n"
+            f"Status: <b>{label}</b>\n"
+            "Messages include encouragement for Level 2, genuine sales, commissions and shop profit. "
+            "Only Admin can stop this reminder.",
+            reply_markup=back_dashboard_kb(),parse_mode="HTML")
+        return
+
     if action=="upgrade":
         if not s or s["status"]!="approved" or int(s["level"])<1:
             await q.message.reply_text(
@@ -1684,6 +1703,7 @@ async def show_admin_shop(update,ctx,shop_id,edit=False):
         await update.effective_message.reply_text("Shop ID not found.")
         return
     control=str(row["control_status"] or "active").lower()
+    reminder_status=str(row["motivation_reminder_status"] or "off")
     body=(f"<b>🏪 SHOP MANAGEMENT — {shop_number(row['id'])}</b>\n━━━━━━━━━━━━━━━━━━\n"
           f"Name: <b>{html.escape(str(row['shop_name']))}</b>\n"
           f"Owner: <code>{row['owner_id']}</code>\n"
@@ -1691,6 +1711,7 @@ async def show_admin_shop(update,ctx,shop_id,edit=False):
           f"Control: <b>{html.escape(control.upper())}</b>\n"
           f"Location: {html.escape(str(row['location_city'] or 'N/A'))}, {html.escape(str(row['location_state'] or 'N/A'))}, {html.escape(str(row['location_country'] or 'N/A'))}\n"
           f"Warning queued: <b>{'YES' if row['next_order_warning'] else 'NO'}</b>\n"
+          f"Motivation reminder: <b>{html.escape(reminder_status.upper())}</b>\n"
           f"Control note: {html.escape(str(row['control_note'] or 'None'))}\n"
           f"Warning reason: {html.escape(str(row['warning_reason'] or 'None'))}")
     kb=InlineKeyboardMarkup([
@@ -1699,6 +1720,7 @@ async def show_admin_shop(update,ctx,shop_id,edit=False):
         [InlineKeyboardButton("✅ Enable",callback_data=f"admshop:enable:{row['id']}"),
          InlineKeyboardButton("🗑 Delete",callback_data=f"admshop:delete:{row['id']}")],
         [InlineKeyboardButton("⚠️ Warn Next Order",callback_data=f"admshop:warn:{row['id']}")],
+        ([InlineKeyboardButton("🛑 STOP Motivation Reminder",callback_data=f"admshop:motivationstop:{row['id']}")] if reminder_status=="on" else []),
         [InlineKeyboardButton("🔎 Search Shop ID",callback_data="admshop:search"),
          InlineKeyboardButton("⬅️ All Shops",callback_data="adm:shops")],
         [InlineKeyboardButton("🏠 Admin Panel",callback_data="adm:home")]
@@ -1719,6 +1741,35 @@ async def admin_shop_callback(update,ctx):
     sid=int(parts[2])
     if action=="view":
         await show_admin_shop(update,ctx,sid); return
+    if action=="motivationstop":
+        c=v4.db()
+        try:
+            row=c.execute("SELECT owner_id,shop_name,motivation_reminder_status FROM shops WHERE id=?",(sid,)).fetchone()
+            if not row:
+                await q.message.reply_text("Shop ID not found."); return
+            if str(row["motivation_reminder_status"] or "off")!="on":
+                await q.message.reply_text("This shop's motivation reminder is not active.")
+                await show_admin_shop(update,ctx,sid); return
+            c.execute("""UPDATE shops SET motivation_reminder_status='stopped',
+                         motivation_reminder_next_at=NULL WHERE id=? AND motivation_reminder_status='on'""",(sid,))
+            c.execute("INSERT INTO admin_audit(admin_id,owner_id,action,details,created_at) VALUES(?,?,?,?,?)",
+                      (ADMIN_ID,row["owner_id"],"motivation_reminder_stopped",
+                       f"{shop_number(sid)} ({row['shop_name']}): Admin stopped hourly motivation reminders",v4.now()))
+            c.commit()
+        except Exception:
+            c.rollback(); log.exception("Could not stop motivation reminders")
+            await q.message.reply_text("Reminder could not be stopped. Please retry."); return
+        finally:
+            c.close()
+        try:
+            await ctx.bot.send_message(row["owner_id"],
+                "<b>⏸ SHOP GROWTH REMINDERS STOPPED</b>\nAdmin has stopped your hourly motivational messages.",
+                parse_mode="HTML")
+        except Exception:
+            log.exception("Could not notify shop owner about stopped reminders")
+        await q.message.reply_text(f"Hourly motivation reminders stopped for {shop_number(sid)}.")
+        await show_admin_shop(update,ctx,sid)
+        return
     if action=="warn":
         ctx.user_data["admin_shop_warning_id"]=sid
         await q.message.reply_text(f"⚠️ Enter the mandatory warning reason for {shop_number(sid)}. This will be shown to the buyer on that shop's next successful order. Type CANCEL to stop.")

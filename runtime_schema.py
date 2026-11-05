@@ -5,6 +5,8 @@ safe to run on every worker start and avoids requiring a manual migration step.
 """
 import os
 import sqlite3
+import secrets
+import re
 
 
 def _columns(conn, table):
@@ -48,18 +50,32 @@ def ensure_schema(db_path=None):
                 ("next_order_warning", "INTEGER NOT NULL DEFAULT 0"),
                 ("warning_reason", "TEXT"),
             ])
-            # Assign permanent, human-readable unique codes to every existing shop.
-            # Keep the internal integer primary key unchanged because historical
-            # orders, ledger entries and product references depend on it.
-            conn.execute("""UPDATE shops SET shop_code='SHOP-' || printf('%06d',id)
-                            WHERE shop_code IS NULL OR TRIM(shop_code)=''""")
+            # Public Shop IDs are random six-digit numbers, separate from the
+            # internal primary key. Never rewrite an already valid public ID.
+            used = {str(row[0]) for row in conn.execute(
+                "SELECT shop_code FROM shops WHERE shop_code GLOB '[0-9][0-9][0-9][0-9][0-9][0-9]'"
+            )}
+            legacy_rows = conn.execute(
+                "SELECT id,shop_code FROM shops ORDER BY id"
+            ).fetchall()
+            for shop_id, current_code in legacy_rows:
+                if current_code and re.fullmatch(r"[0-9]{6}", str(current_code)):
+                    continue
+                while True:
+                    candidate = str(secrets.randbelow(900000) + 100000)
+                    if candidate not in used:
+                        break
+                conn.execute("UPDATE shops SET shop_code=? WHERE id=?", (candidate, shop_id))
+                used.add(candidate)
             conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_shops_shop_code_unique ON shops(shop_code)")
-            # Future registrations receive the same permanent code automatically.
-            conn.execute("""CREATE TRIGGER IF NOT EXISTS trg_shops_assign_shop_code
+            # Future registrations get a random six-digit public ID automatically.
+            conn.execute("DROP TRIGGER IF EXISTS trg_shops_assign_shop_code")
+            conn.execute("""CREATE TRIGGER trg_shops_assign_shop_code
                 AFTER INSERT ON shops
                 WHEN NEW.shop_code IS NULL OR TRIM(NEW.shop_code)=''
                 BEGIN
-                    UPDATE shops SET shop_code='SHOP-' || printf('%06d',NEW.id)
+                    UPDATE shops
+                    SET shop_code=printf('%06d', abs(random()) % 900000 + 100000)
                     WHERE id=NEW.id;
                 END""")
         if "products" in {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}:

@@ -692,7 +692,8 @@ def test_level2_catalogue_and_purchase_flow():
     repeat_catalog_update,_,_=callback_update(303,"cclevel:2")
     asyncio.run(cc.owner_level_callback(repeat_catalog_update,repeat_catalog_ctx))
     bought_card=next(x for x in repeat_catalog_ctx.bot.sent if first_pid in product_card_ids([x]))
-    require("Already purchased" in sent_text(bought_card),
+    bought_caption=bought_card["kwargs"].get("caption") or sent_text(bought_card)
+    require("Already purchased" in bought_caption,
             "Level 2 catalogue does not mark the previously purchased product")
     require(not any(cb.startswith(f"ccbuy:{first_pid}:") for cb in sent_callback_data(bought_card)),
             "Level 2 catalogue still offers buy buttons for an already purchased product")

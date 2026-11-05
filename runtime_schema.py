@@ -49,6 +49,9 @@ def ensure_schema(db_path=None):
                 ("control_note", "TEXT"),
                 ("next_order_warning", "INTEGER NOT NULL DEFAULT 0"),
                 ("warning_reason", "TEXT"),
+                ("motivation_reminder_status", "TEXT NOT NULL DEFAULT 'off'"),
+                ("motivation_reminder_next_at", "TEXT"),
+                ("motivation_reminder_last_index", "INTEGER NOT NULL DEFAULT -1"),
             ])
             # Public Shop IDs are random six-digit numbers, separate from the
             # internal primary key. Never rewrite an already valid public ID.
@@ -68,6 +71,7 @@ def ensure_schema(db_path=None):
                 conn.execute("UPDATE shops SET shop_code=? WHERE id=?", (candidate, shop_id))
                 used.add(candidate)
             conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_shops_shop_code_unique ON shops(shop_code)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_shops_motivation_due ON shops(motivation_reminder_status,motivation_reminder_next_at)")
             # Future registrations get a random six-digit public ID automatically.
             conn.execute("DROP TRIGGER IF EXISTS trg_shops_assign_shop_code")
             conn.execute("""CREATE TRIGGER trg_shops_assign_shop_code

@@ -32,6 +32,9 @@ def setup(c=None):
           title TEXT NOT NULL, description TEXT, price_usdt REAL NOT NULL DEFAULT 0,
           stock INTEGER NOT NULL DEFAULT 0, image_path TEXT, active INTEGER NOT NULL DEFAULT 1,
           level_required INTEGER NOT NULL DEFAULT 1, created_at TEXT, updated_at TEXT)""")
+        catalog_columns={row[1] for row in conn.execute("PRAGMA table_info(central_catalog)")}
+        if "image_file_id" not in catalog_columns:
+            conn.execute("ALTER TABLE central_catalog ADD COLUMN image_file_id TEXT")
         conn.execute("""CREATE TABLE IF NOT EXISTS ledger (
           id INTEGER PRIMARY KEY AUTOINCREMENT, transaction_id INTEGER, shop_id INTEGER NOT NULL,
           owner_id INTEGER NOT NULL, entry_type TEXT NOT NULL, amount REAL NOT NULL,
@@ -161,11 +164,14 @@ async def _send_admin_level_page(update,ctx,level=1,page=0):
                  f"{'🟢 ACTIVE' if p['active'] else '🔴 OFF'}")
         kb=InlineKeyboardMarkup([
             [InlineKeyboardButton("💲 Price",callback_data=f"cc:price:{p['id']}"),InlineKeyboardButton("📦 Stock",callback_data=f"cc:stock:{p['id']}")],
+            [InlineKeyboardButton("🖼 Change Picture",callback_data=f"cc:photo:{p['id']}")],
             [InlineKeyboardButton("🔴 Turn Off" if p['active'] else "🟢 Turn On",callback_data=f"cc:toggle:{p['id']}")],
             [InlineKeyboardButton("⬅️ Levels",callback_data="adm:central"),InlineKeyboardButton("🏠 Dashboard",callback_data="adm:home")]])
         image_path=Path(__file__).resolve().parent/(p["image_path"] or "")
         try:
-            if image_path.is_file():
+            if p["image_file_id"]:
+                await ctx.bot.send_photo(q.message.chat_id,photo=p["image_file_id"],caption=caption[:1024],reply_markup=kb,parse_mode="HTML")
+            elif image_path.is_file():
                 with image_path.open("rb") as photo:
                     await ctx.bot.send_photo(q.message.chat_id,photo=photo,caption=caption[:1024],reply_markup=kb,parse_mode="HTML")
             else:
@@ -390,6 +396,36 @@ async def orders(update,ctx):
             f"Central order #{r['id']} — {r['status'].upper()}",
             reply_markup=InlineKeyboardMarkup(buttons))
 
+async def admin_photo(update,ctx):
+    """Persist an Admin-uploaded Telegram photo as the central catalogue image."""
+    if update.effective_user.id != v4.ADMIN_ID:
+        ctx.user_data.pop("central_admin_photo",None); return
+    pending=ctx.user_data.get("central_admin_photo")
+    if not pending: return
+    photos=getattr(update.message,"photo",None) or []
+    if not photos:
+        await update.message.reply_text("Please send a photo, or type CANCEL to keep the existing image."); return
+    file_id=getattr(photos[-1],"file_id",None)
+    if not file_id:
+        await update.message.reply_text("Telegram did not provide a usable photo. Please send it again."); return
+    pid=int(pending["product_id"]); conn=v4.db()
+    try:
+        row=conn.execute("SELECT title FROM central_catalog WHERE id=?",(pid,)).fetchone()
+        if not row:
+            ctx.user_data.pop("central_admin_photo",None)
+            await update.message.reply_text("Product not found. No picture was changed."); return
+        conn.execute("UPDATE central_catalog SET image_file_id=?,updated_at=? WHERE id=?",(file_id,v4.now(),pid))
+        conn.execute("INSERT INTO admin_audit(admin_id,owner_id,action,details,created_at) VALUES(?,?,?,?,?)",
+                     (v4.ADMIN_ID,None,"central_product_photo_changed",f"Product #{pid} {row['title']}: Telegram photo updated",v4.now()))
+        conn.commit()
+    except Exception:
+        conn.rollback(); log.exception("Saving central catalogue photo failed")
+        await update.message.reply_text("Photo could not be saved. The previous picture remains unchanged."); return
+    finally: conn.close()
+    ctx.user_data.pop("central_admin_photo",None)
+    await update.message.reply_text(f"✅ Picture updated for product #{pid} — {html.escape(str(row['title']))}. The new image will appear in Admin and merchant catalogues.",parse_mode="HTML")
+
+
 async def admin_callback(update,ctx):
     from telegram import InlineKeyboardMarkup, InlineKeyboardButton
     q=update.callback_query
@@ -418,6 +454,15 @@ async def admin_callback(update,ctx):
           f"<b>🛍 {html.escape(str(row['title']))}</b>\n━━━━━━━━━━━━━━━━━━\n"
           f"Price: <b>{float(row['price_usdt']):g} USDT</b>\nShared stock: <b>{row['stock']}</b>\nStatus: <b>{active_label}</b>",
           reply_markup=kb,parse_mode="HTML"); return
+    if action=="photo":
+        pid=int(parts[2]); conn=v4.db()
+        try: row=conn.execute("SELECT title FROM central_catalog WHERE id=?",(pid,)).fetchone()
+        finally: conn.close()
+        if not row:
+            await q.message.reply_text("Product not found."); return
+        ctx.user_data["central_admin_photo"]={"product_id":pid}
+        await q.message.reply_text(f"🖼 Send the new Telegram photo for product #{pid} — {row['title']}. The new photo will replace the catalogue image. Type CANCEL to keep the current picture.")
+        return
     if action in ("price","stock"):
         pid=int(parts[2]); ctx.user_data["central_admin_edit"]={"field":action,"product_id":pid}
         prompt="new price in USDT" if action=="price" else "new shared stock quantity"
@@ -624,7 +669,9 @@ async def show_owner_level_products(update,ctx,shop,page=0,track_visit=True,leve
         kb=InlineKeyboardMarkup(buttons)
         image_path=Path(__file__).resolve().parent/(p["image_path"] or "")
         try:
-            if image_path.is_file():
+            if p["image_file_id"]:
+                await ctx.bot.send_photo(update.effective_chat.id,photo=p["image_file_id"],caption=caption[:1024],reply_markup=kb,parse_mode="HTML")
+            elif image_path.is_file():
                 with image_path.open("rb") as photo:
                     await ctx.bot.send_photo(update.effective_chat.id,photo=photo,caption=caption[:1024],reply_markup=kb,parse_mode="HTML")
             else:

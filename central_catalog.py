@@ -272,6 +272,11 @@ async def buy(update,ctx):
     try:
         pid=int(ctx.args[0]); qty=int(ctx.args[1])
         if pid<1 or qty<1 or qty>1000: raise ValueError()
+        if int(shop["level"])==1 and qty>1:
+            await update.effective_message.reply_text(
+                "🔒 Level 1 purchase limit: you can buy only 1 item per order. "
+                "Upgrade to Level 2 to purchase multiple items.")
+            return
     except ValueError:
         await update.effective_message.reply_text("Invalid product ID or quantity."); return
     c=v4.db()
@@ -579,7 +584,9 @@ async def show_owner_level_products(update,ctx,shop,page=0,track_visit=True,leve
                  f"Price: <b>{price:g} USDT</b>\n"
                  f"Available stock: <b>{stock}</b>\n"+
                  ("Select a quantity below to buy." if price>0 and stock>0 else "🔴 Unavailable — Admin must set price and stock."))
-        quantities=list(range(1,min(10,stock)+1)) if stock>0 else []
+        # Level 1 merchants may purchase only one unit per order.
+        max_quantity=1 if int(shop["level"])==1 else 10
+        quantities=list(range(1,min(max_quantity,stock)+1)) if stock>0 else []
         buttons=[
             [InlineKeyboardButton(str(n),callback_data=f"ccbuy:{p['id']}:{n}")
              for n in quantities[pos:pos+2]]

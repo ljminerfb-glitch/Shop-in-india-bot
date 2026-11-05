@@ -1892,6 +1892,7 @@ def main():
     test_admin_resale_flow(listing_id, inventory_id)
     test_merchant_deposit_screenshot_and_admin_approval()
     test_usdt_trc20_withdrawal_flow()
+    test_existing_paid_withdrawal_enables_motivation_reminder()
     test_failed_central_purchases(pid)
     test_admin_refund_safety()
     test_usdt_balance_reconciliation()

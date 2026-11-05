@@ -1463,6 +1463,74 @@ def test_referral_registration_and_bonuses():
     print("PASS: Merchant referral registration, invite list, 20% verified payment bonuses and 2% upline rewards")
 
 
+def test_admin_rejection_reasons():
+    # Payment rejection must pause for a reason and notify the merchant with it.
+    c=v4.db()
+    shop=c.execute("SELECT id FROM shops WHERE owner_id=101 ORDER BY id DESC LIMIT 1").fetchone()
+    cur=c.execute("""INSERT INTO payment_requests
+        (owner_id,shop_id,payment_type,level,amount,currency,network,status,created_at)
+        VALUES(101,?,'wallet_deposit',0,4,'USDT','USDT TRC20','pending',?)""",
+        (shop["id"],v4.now()))
+    payment_id=int(cur.lastrowid); c.commit(); c.close()
+    admin_ctx=context()
+    pu,pm,pq=callback_update(999999,f"pay:reject:{payment_id}")
+    asyncio.run(v4.payment_review(pu,admin_ctx))
+    require(admin_ctx.user_data.get("pending_admin_rejection")=={"kind":"payment","id":payment_id},
+            "Payment rejection did not request an Admin reason")
+    reason="Transaction screenshot is unclear."
+    ru,rm=message_update(999999,reason)
+    asyncio.run(v5.text_handler(ru,admin_ctx))
+    c=v4.db(); payment=c.execute("SELECT status,admin_note FROM payment_requests WHERE id=?",(payment_id,)).fetchone(); c.close()
+    require(payment["status"]=="rejected" and payment["admin_note"]==reason,
+            "Payment rejection reason was not saved")
+    require(any(x["args"] and x["args"][0]==101 and reason in x["kwargs"].get("text","")
+                for x in admin_ctx.bot.sent),
+            "Merchant did not receive the payment rejection reason")
+
+    # Withdrawal rejection must preserve the reserved amount and send its reason.
+    c=v4.db()
+    cur=c.execute("""INSERT INTO withdrawals
+        (owner_id,shop_id,amount,currency,network,wallet_address,status,created_at)
+        VALUES(101,? ,1.25,'USDT','USDT TRC20','T111111111111111111111111111111111','pending',?)""",
+        (shop["id"],v4.now()))
+    withdrawal_id=int(cur.lastrowid); c.commit(); c.close()
+    wu,wm,wq=callback_update(999999,f"wd:reject:{withdrawal_id}")
+    asyncio.run(v4.withdrawal_review(wu,admin_ctx))
+    require(admin_ctx.user_data.get("pending_admin_rejection")=={"kind":"withdrawal","id":withdrawal_id},
+            "Withdrawal rejection did not request an Admin reason")
+    wreason="Payout address does not match the verified wallet."
+    wru,wrm=message_update(999999,wreason)
+    asyncio.run(v5.text_handler(wru,admin_ctx))
+    c=v4.db(); withdrawal=c.execute("SELECT status,admin_note FROM withdrawals WHERE id=?",(withdrawal_id,)).fetchone(); c.close()
+    require(withdrawal["status"]=="rejected" and withdrawal["admin_note"]==wreason,
+            "Withdrawal rejection reason was not saved")
+    require(any(x["args"] and x["args"][0]==101 and wreason in x["kwargs"].get("text","")
+                for x in admin_ctx.bot.sent),
+            "Merchant did not receive the withdrawal rejection reason")
+
+    # Product suggestion rejection must also collect a reason and notify the owner.
+    v3.ensure_catalog_schema()
+    c=v4.db()
+    cur=c.execute("""INSERT INTO product_suggestions
+        (owner_id,shop_id,title,description,suggested_price,status,created_at)
+        VALUES(101,?,'Test Listing','Test description',100,'pending',?)""",
+        (shop["id"],v4.now()))
+    suggestion_id=int(cur.lastrowid); c.commit(); c.close()
+    pu2,pm2,pq2=callback_update(999999,f"product:reject:{suggestion_id}")
+    asyncio.run(v3.product_review(pu2,admin_ctx))
+    require(admin_ctx.user_data.get("pending_admin_rejection")=={"kind":"product_suggestion","id":suggestion_id},
+            "Product listing rejection did not request an Admin reason")
+    preason="Product photos or details need correction."
+    pru,prm=message_update(999999,preason)
+    asyncio.run(v5.text_handler(pru,admin_ctx))
+    c=v4.db(); product=c.execute("SELECT status FROM product_suggestions WHERE id=?",(suggestion_id,)).fetchone(); c.close()
+    require(product["status"]=="rejected","Product suggestion was not rejected after reason entry")
+    require(any(x["args"] and x["args"][0]==101 and preason in x["kwargs"].get("text","")
+                for x in admin_ctx.bot.sent),
+            "Merchant did not receive the product listing rejection reason")
+    print("PASS: Admin rejection reasons saved and delivered for deposits, withdrawals and product listings")
+
+
 def main():
     test_runtime_schema_bootstrap()
     fixture()
@@ -1482,6 +1550,7 @@ def main():
     test_admin_refund_safety()
     test_usdt_balance_reconciliation()
     test_referral_registration_and_bonuses()
+    test_admin_rejection_reasons()
     print("PASS: All isolated Telegram-handler end-to-end tests completed.")
 
 

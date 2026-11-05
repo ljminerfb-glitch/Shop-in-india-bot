@@ -1637,11 +1637,14 @@ def test_admin_shop_controls_and_search():
             "Mandatory next-order warning reason was not saved")
     c=v4.db()
     allowed,shown=v4.shop_order_gate(c,sid)
-    c.commit()
-    again=v4.shop_order_gate(c,sid)
     c.close()
-    require(allowed and shown==reason and again==(True,None),
-            "Warning was not shown and consumed exactly once")
+    require(not allowed and reason in shown and "NOT placed" in shown,
+            "Next-order warning did not stop the first attempt and show its reason")
+    c=v4.db()
+    allowed_again,shown_again=v4.shop_order_gate(c,sid)
+    c.close()
+    require(allowed_again and shown_again is None,
+            "Shop was not allowed to retry after the one-time warning was shown")
 
     # Search accepts both the formatted unique ID and the underlying numeric ID.
     search_ctx=context()

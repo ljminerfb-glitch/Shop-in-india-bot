@@ -833,7 +833,7 @@ async def resale_callback(update,ctx):
         if not rows: await q.message.reply_text(f"<b>🛍 LEVEL {level} + LOWER RESALE MARKET</b>\nNo merchant listings available right now.",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Dashboard",callback_data="m:dashboard")]]),parse_mode="HTML"); return
         for r in rows:
             buttons=[[InlineKeyboardButton("Buy 1",callback_data=f"rs:buy:{r['id']}:1")]]
-            if int(r["remaining_quantity"])>=5:
+            if level>=2 and int(r["remaining_quantity"])>=5:
                 buttons[0].append(InlineKeyboardButton("Buy 5",callback_data=f"rs:buy:{r['id']}:5"))
             buttons.append([InlineKeyboardButton("⬅️ Dashboard",callback_data="m:dashboard")])
             await q.message.reply_text(
@@ -849,6 +849,9 @@ async def resale_callback(update,ctx):
             await safe_callback_answer(q, "Approved Level 1 or Level 2 shop required",show_alert=True); return
         buyer_level=int(shop["level"])
         lid,qty=int(parts[2]),int(parts[3])
+        if buyer_level==1 and qty>1:
+            await safe_callback_answer(q,"Level 1 purchase limit: only 1 item per order.",show_alert=True)
+            return
         c=v4.db()
         try:
             c.execute("BEGIN IMMEDIATE")

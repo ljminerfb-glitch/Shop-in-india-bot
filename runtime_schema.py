@@ -154,7 +154,7 @@ def ensure_schema(db_path=None):
             created_at TEXT NOT NULL, updated_at TEXT NOT NULL, completed_at TEXT, admin_note TEXT)""")
 
         defaults = [
-            (1, 5, 12, 1.25, 2.50), (2, 50, 50, 2.00, 6.50),
+            (1, 10, 12, 1.25, 2.50), (2, 50, 50, 2.00, 6.50),
             (3, 150, 80, 9.80, 17.40), (4, 250, 200, 15.00, 25.00),
             (5, 400, 0, 20.00, 35.00),
         ]
@@ -166,6 +166,13 @@ def ensure_schema(db_path=None):
             SET activation_usdt=50,product_target=50,profit_min=2.00,profit_max=6.50
             WHERE level=2 AND activation_usdt=20 AND product_target=45
               AND profit_min=3.50 AND profit_max=6.50""")
+        # Set Level 1 activation price to 10 USDT once; preserve future Admin edits.
+        level1_price_migration = conn.execute(
+            "SELECT setting_value FROM platform_settings WHERE setting_key='migration_level1_price_10_usdt'"
+        ).fetchone()
+        if not level1_price_migration:
+            conn.execute("UPDATE level_settings SET activation_usdt=10 WHERE level=1")
+            conn.execute("INSERT INTO platform_settings(setting_key,setting_value) VALUES('migration_level1_price_10_usdt','done')")
         # Apply the requested Level 4 price once to existing installations; do not overwrite later Admin edits.
         level4_price_migration = conn.execute(
             "SELECT setting_value FROM platform_settings WHERE setting_key='migration_level4_price_250_usdt'"

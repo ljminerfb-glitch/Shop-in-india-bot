@@ -2,6 +2,7 @@
 import asyncio
 import os
 import sqlite3
+import re
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -1225,12 +1226,17 @@ def test_runtime_schema_bootstrap():
             shop_cols = {r[1] for r in conn.execute("PRAGMA table_info(shops)")}
             require({"referred_by_owner_id","location_country","location_state","location_city","shop_code"}.issubset(shop_cols),
                     "Fresh shops schema is missing referral, merchant-location or unique shop-code fields")
-            legacy_codes=conn.execute("SELECT shop_code FROM shops WHERE owner_id IN (701,702) ORDER BY owner_id").fetchall()
-            require([r[0] for r in legacy_codes]==["SHOP-000001","SHOP-000002"],
-                    f"Existing shops were not backfilled with permanent unique IDs: {legacy_codes!r}")
+            legacy_codes=[r[0] for r in conn.execute(
+                "SELECT shop_code FROM shops WHERE owner_id IN (701,702) ORDER BY owner_id"
+            ).fetchall()]
+            require(all(re.fullmatch(r"[0-9]{6}",str(code or "")) for code in legacy_codes),
+                    f"Existing shops were not assigned random six-digit public IDs: {legacy_codes!r}")
+            require(len(set(legacy_codes))==2,
+                    "Existing shops received duplicate public IDs")
             conn.execute("INSERT INTO shops(owner_id,shop_name,status,created_at) VALUES(703,'New Shop','approved','2026-01-03')")
             new_code=conn.execute("SELECT shop_code FROM shops WHERE owner_id=703").fetchone()[0]
-            require(new_code=="SHOP-000003","New shop did not receive an automatic permanent unique ID")
+            require(re.fullmatch(r"[0-9]{6}",str(new_code or "")) and new_code not in legacy_codes,
+                    f"New shop did not receive a unique random six-digit public ID: {new_code!r}")
             require(conn.execute("SELECT COUNT(DISTINCT shop_code) FROM shops").fetchone()[0]==3,
                     "Shop IDs are not unique")
             require(not {"latitude","longitude","location_latitude","location_longitude"}.intersection(shop_cols),
@@ -1668,10 +1674,13 @@ def test_admin_shop_controls_and_search():
     asyncio.run(v5.admin_shop_callback(search_update,search_ctx))
     require(search_ctx.user_data.get("admin_shop_search") is True,
             "Shop ID search did not enter search mode")
-    numeric_update,numeric_message=message_update(999999,f"SHOP-{sid:06d}")
+    c=v4.db()
+    public_id=c.execute("SELECT shop_code FROM shops WHERE id=?",(sid,)).fetchone()[0]
+    c.close()
+    numeric_update,numeric_message=message_update(999999,str(public_id))
     asyncio.run(v5.text_handler(numeric_update,search_ctx))
-    require(any(f"SHOP-{sid:06d}" in x["text"] for x in numeric_message.replies),
-            "Shop ID search did not return the exact matching shop")
+    require(any(str(public_id) in x["text"] for x in numeric_message.replies),
+            "Random public Shop ID search did not return the exact matching shop")
 
     # Disable and soft-delete also block orders without removing historical rows.
     for action,expected in (("disable","disabled"),("delete","deleted")):
@@ -1688,7 +1697,40 @@ def test_admin_shop_controls_and_search():
             "Soft delete removed the shop record and historical links")
     c.execute("UPDATE shops SET control_status='active',control_note=NULL WHERE id=?",(sid,))
     c.commit(); c.close()
-    print("PASS: Unique Shop ID search, freeze/disable/enable/soft-delete controls and one-time reasoned next-order warning")
+    # The merchant profile must show the random public ID and allow old shops
+    # with missing historical location data to add it without re-registering.
+    profile_update,profile_message,_=callback_update(101,"m:profile")
+    asyncio.run(v5.menu_callback(profile_update,context()))
+    profile_text=profile_message.replies[0]["text"]
+    require(f"Shop ID: <code>{public_id}</code>" in profile_text,
+            "My Account does not display the public random Shop ID")
+    profile_kb=profile_message.replies[0]["kwargs"]["reply_markup"].inline_keyboard
+    require(any(button.callback_data=="m:location" for row in profile_kb for button in row),
+            "My Account is missing the Update Location action")
+    location_ctx=context()
+    location_update,location_message,_=callback_update(101,"m:location")
+    asyncio.run(v5.menu_callback(location_update,location_ctx))
+    require(location_ctx.user_data.get("state")=="shop_location_update",
+            "Update Location did not enter the location update state")
+    async def fake_existing_shop_geocode(latitude,longitude):
+        return {"country":"Pakistan","state":"Punjab","city":"Rawalpindi"}
+    previous_geocoder=v5.reverse_geocode
+    v5.reverse_geocode=fake_existing_shop_geocode
+    try:
+        loc_message=Message()
+        loc_message.location=SimpleNamespace(latitude=33.6844,longitude=73.0479)
+        loc_update=SimpleNamespace(message=loc_message,effective_user=SimpleNamespace(id=101))
+        asyncio.run(v5.location_handler(loc_update,location_ctx))
+    finally:
+        v5.reverse_geocode=previous_geocoder
+    c=v4.db()
+    updated_location=c.execute(
+        "SELECT location_city,location_state,location_country FROM shops WHERE id=?",(sid,)
+    ).fetchone()
+    c.close()
+    require(tuple(updated_location)==("Rawalpindi","Punjab","Pakistan"),
+            "Existing merchant location was not saved by Update Location")
+    print("PASS: Random public Shop IDs, Admin search, existing-shop location update, freeze/disable/enable/soft-delete controls and one-time warning")
 
 
 def main():

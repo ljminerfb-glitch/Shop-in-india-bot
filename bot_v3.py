@@ -90,6 +90,9 @@ def setup():
         cur.execute("ALTER TABLE shops ADD COLUMN password_hash TEXT")
     if "level" not in shop_columns:
         cur.execute("ALTER TABLE shops ADD COLUMN level INTEGER NOT NULL DEFAULT 0")
+    for name in ("location_country","location_state","location_city"):
+        if name not in shop_columns:
+            cur.execute(f"ALTER TABLE shops ADD COLUMN {name} TEXT")
 
     user_columns = [r["name"] for r in cur.execute(
         "PRAGMA table_info(users)"
@@ -232,9 +235,12 @@ async def save_shop_password(update, context):
 
         cur.execute("""
             INSERT INTO shops
-            (owner_id, shop_name, status, created_at, password_hash, referred_by_owner_id)
-            VALUES (?, ?, 'pending', ?, ?, ?)
-        """, (user.id, name, now(), hash_password(password), referrer_owner_id) )
+            (owner_id, shop_name, status, created_at, password_hash, referred_by_owner_id,
+             location_country, location_state, location_city)
+            VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?)
+        """, (user.id, name, now(), hash_password(password), referrer_owner_id,
+              context.user_data.get("location_country"),context.user_data.get("location_state"),
+              context.user_data.get("location_city")) )
 
         shop_id = cur.lastrowid
         con.commit()
@@ -266,6 +272,9 @@ async def save_shop_password(update, context):
             f"<b>🏪 NEW SHOP APPLICATION</b>\n━━━━━━━━━━━━━━━━━━\n"
             f"Shop: <b>{html.escape(str(name))}</b>\nOwner: {html.escape(str(user.first_name or ''))}\n"
             f"Username: @{html.escape(str(user.username or 'Not set'))}\n"
+            f"Country: <b>{html.escape(str(location_country or 'Not available'))}</b>\n"
+            f"State/Province: <b>{html.escape(str(location_state or 'Not available'))}</b>\n"
+            f"City: <b>{html.escape(str(location_city or 'Not available'))}</b>\n"
             f"Telegram ID: <code>{user.id}</code>\nShop ID: <code>{shop_id}</code>\n🟡 <b>STATUS: PENDING</b>",
             reply_markup=keyboard,parse_mode="HTML"
         )

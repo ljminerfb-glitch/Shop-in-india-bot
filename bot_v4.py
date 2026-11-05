@@ -358,6 +358,13 @@ async def payment_review(update,ctx):
         await q.message.reply_text("Invalid payment review action.")
         return
 
+    if action=="reject":
+        ctx.user_data["pending_admin_rejection"]={"kind":"payment","id":rid}
+        await q.message.reply_text(
+            f"✍️ Enter the rejection reason for payment request #{rid}.\n"
+            "The merchant will receive this reason. Type CANCEL to stop.")
+        return
+
     c=db()
     try:
         c.execute("BEGIN IMMEDIATE")
@@ -590,6 +597,12 @@ async def withdrawal_review(update,ctx):
         if action not in ("paid","reject"): raise ValueError()
     except (ValueError,IndexError):
         await q.message.reply_text("Invalid withdrawal review action."); return
+    if action=="reject":
+        ctx.user_data["pending_admin_rejection"]={"kind":"withdrawal","id":wid}
+        await q.message.reply_text(
+            f"✍️ Enter the rejection reason for withdrawal #{wid}.\n"
+            "The merchant will receive this reason. Type CANCEL to stop.")
+        return
     c=db()
     try:
         c.execute("BEGIN IMMEDIATE")
@@ -642,6 +655,72 @@ async def withdrawal_review(update,ctx):
         await ctx.bot.send_message(r["owner_id"],result_text,parse_mode="HTML")
     except Exception:
         log.exception("Withdrawal owner notification failed")
+
+
+async def reject_payment_with_reason(update,ctx,reason):
+    data=ctx.user_data.pop("pending_admin_rejection",None)
+    if not data or data.get("kind")!="payment": return False
+    rid=int(data["id"]); reason=str(reason).strip()
+    c=db()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        r=c.execute("SELECT * FROM payment_requests WHERE id=?",(rid,)).fetchone()
+        if not r or r["status"]!="pending":
+            c.rollback(); await update.message.reply_text("Payment request missing or already reviewed."); return True
+        reviewed=now()
+        changed=c.execute("UPDATE payment_requests SET status='rejected',reviewed_at=?,admin_note=? WHERE id=? AND status='pending'",
+                          (reviewed,reason,rid))
+        if changed.rowcount!=1:
+            c.rollback(); await update.message.reply_text("Payment request was already reviewed."); return True
+        c.execute("""INSERT INTO payment_history(owner_id,shop_id,payment_type,amount,currency,status,reference,admin_note,actor_id,created_at,reviewed_at)
+                     VALUES(?,?,?,?,?,'rejected',?,?,?,?,?)""",
+                  (r["owner_id"],r["shop_id"],r["payment_type"],r["amount"],r["currency"],
+                   f"payment_request:{rid}",reason,ADMIN_ID,r["created_at"],reviewed))
+        c.execute("INSERT INTO admin_audit(admin_id,owner_id,action,details,created_at) VALUES(?,?,?,?,?)",
+                  (ADMIN_ID,r["owner_id"],"payment_rejected",f"Payment request #{rid}: {reason}",reviewed))
+        c.commit()
+    except Exception:
+        c.rollback(); log.exception("Reasoned payment rejection failed")
+        await update.message.reply_text("Could not reject payment. No changes were committed."); return True
+    finally: c.close()
+    try:
+        await ctx.bot.send_message(r["owner_id"],
+            f"❌ <b>PAYMENT REQUEST REJECTED</b>\nRequest: <code>#{rid}</code>\n"
+            f"Reason: {html.escape(reason)}",parse_mode="HTML")
+    except Exception: log.exception("Payment rejection notification failed")
+    await update.message.reply_text(f"Payment request #{rid} rejected. Reason sent to merchant.")
+    return True
+
+
+async def reject_withdrawal_with_reason(update,ctx,reason):
+    data=ctx.user_data.pop("pending_admin_rejection",None)
+    if not data or data.get("kind")!="withdrawal": return False
+    wid=int(data["id"]); reason=str(reason).strip()
+    c=db()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        r=c.execute("SELECT * FROM withdrawals WHERE id=?",(wid,)).fetchone()
+        if not r or r["status"]!="pending":
+            c.rollback(); await update.message.reply_text("Withdrawal missing or already reviewed."); return True
+        reviewed=now()
+        changed=c.execute("UPDATE withdrawals SET status='rejected',reviewed_at=?,admin_note=? WHERE id=? AND status='pending'",
+                          (reviewed,reason,wid))
+        if changed.rowcount!=1:
+            c.rollback(); await update.message.reply_text("Withdrawal was already reviewed."); return True
+        c.execute("INSERT INTO admin_audit(admin_id,owner_id,action,details,created_at) VALUES(?,?,?,?,?)",
+                  (ADMIN_ID,r["owner_id"],"withdrawal_rejected",f"Withdrawal #{wid}: {reason}",reviewed))
+        c.commit()
+    except Exception:
+        c.rollback(); log.exception("Reasoned withdrawal rejection failed")
+        await update.message.reply_text("Could not reject withdrawal. No changes were committed."); return True
+    finally: c.close()
+    notice=(f"<b>❌ WITHDRAWAL REJECTED</b>\nRequest: <code>#{wid}</code>\n"
+            f"Amount: <b>{float(r['amount']):.6f} {html.escape(str(r['currency'] or 'USDT'))}</b>\n"
+            f"Reason: {html.escape(reason)}")
+    try: await ctx.bot.send_message(r["owner_id"],notice,parse_mode="HTML")
+    except Exception: log.exception("Withdrawal rejection notification failed")
+    await update.message.reply_text(f"Withdrawal #{wid} rejected. Reason sent to merchant.")
+    return True
 
 
 async def myproductaudit(update,ctx):

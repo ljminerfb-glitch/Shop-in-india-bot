@@ -1079,7 +1079,7 @@ async def text_handler(update,ctx):
         if raw.lower()=="cancel":
             ctx.user_data.pop("admin_shop_search",None)
             await update.message.reply_text("Shop search cancelled."); return
-        match=re.fullmatch(r"(?:SHOP-)?0*(\\d+)",raw,re.IGNORECASE)
+        match=re.fullmatch(r"(?:SHOP-)?0*(\d+)",raw,re.IGNORECASE)
         if not match:
             await update.message.reply_text("Invalid Shop ID. Enter SHOP-000123 or 123, or CANCEL."); return
         sid=int(match.group(1))

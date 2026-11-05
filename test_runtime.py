@@ -1209,12 +1209,15 @@ def test_runtime_schema_bootstrap():
             required = {"users", "shops", "products", "payment_requests", "withdrawals",
                         "payment_history", "level_settings", "platform_settings", "ledger",
                         "v4_orders", "central_catalog", "central_orders", "central_inventory",
-                        "resale_listings", "merchant_referrals", "referral_rewards"}
+                        "resale_listings", "merchant_referrals", "referral_rewards",
+                        "location_geocode_cache"}
             require(required.issubset(names),
                     f"Fresh install missing tables: {sorted(required - names)}")
             shop_cols = {r[1] for r in conn.execute("PRAGMA table_info(shops)")}
-            require("referred_by_owner_id" in shop_cols,
-                    "Fresh shops schema is missing referral attribution")
+            require({"referred_by_owner_id","location_country","location_state","location_city"}.issubset(shop_cols),
+                    "Fresh shops schema is missing referral or merchant-location fields")
+            require(not {"latitude","longitude","location_latitude","location_longitude"}.intersection(shop_cols),
+                    "Exact merchant GPS coordinates must not be stored in the shops table")
             cols = {r[1] for r in conn.execute("PRAGMA table_info(payment_requests)")}
             require({"transaction_hash", "tx_hash", "screenshot_file_id"}.issubset(cols),
                     "Fresh payment_requests schema is missing proof columns")
@@ -1383,6 +1386,12 @@ def test_referral_registration_and_bonuses():
     require("LOCATION" in code_message.replies[0]["text"].upper() and
             code_message.replies[0]["kwargs"]["reply_markup"].keyboard[0][0].request_location,
             "Registration did not request Telegram's location-sharing permission")
+    bypass_update,bypass_message=message_update(505,"StrongPassword123")
+    bypass_update.effective_user=signup_update.effective_user
+    asyncio.run(v5.text_handler(bypass_update,signup_ctx))
+    require(signup_ctx.user_data.get("state")=="shop_location" and
+            "required" in bypass_message.replies[0]["text"].lower(),
+            "Merchant could bypass mandatory location by sending a password as text")
 
     async def fake_reverse_geocode(latitude,longitude):
         require(latitude==33.6844 and longitude==73.0479,

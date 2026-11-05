@@ -868,7 +868,11 @@ async def resale_callback(update,ctx):
                 c.rollback(); await safe_callback_answer(q, "This listing requires a higher shop level",show_alert=True); return
             allowed,buyer_warning=v4.shop_order_gate(c,shop["id"])
             if not allowed:
-                c.rollback(); await safe_callback_answer(q,buyer_warning,show_alert=True); return
+                c.rollback()
+                await safe_callback_answer(q,"Admin warning shown" if "ADMIN WARNING" in str(buyer_warning) else buyer_warning,show_alert=True)
+                if "ADMIN WARNING" in str(buyer_warning):
+                    await q.message.reply_text(buyer_warning)
+                return
             seller_shop=c.execute("SELECT status,level,control_status FROM shops WHERE id=?",(l["shop_id"],)).fetchone()
             if not seller_shop or seller_shop["status"]!="approved" or str(seller_shop["control_status"] or "active").lower()!="active" or int(seller_shop["level"])<listing_level:
                 c.rollback(); await safe_callback_answer(q, "Only approved merchants with this level or higher can sell here",show_alert=True); return

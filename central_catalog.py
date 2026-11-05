@@ -288,6 +288,15 @@ async def buy(update,ctx):
         p=c.execute("SELECT * FROM central_catalog WHERE id=? AND active=1 AND level_required>=1 AND level_required<=?",(pid,int(shop["level"]))).fetchone()
         if not p or float(p["price_usdt"])<=0:
             c.rollback(); await update.effective_message.reply_text("Product unavailable. Admin has not set its USDT price yet."); return
+        if int(shop["level"])==2 and int(p["level_required"])==2:
+            prior=c.execute("SELECT COUNT(*) FROM central_orders WHERE buyer_shop_id=? AND catalog_id=?",
+                            (shop["id"],pid)).fetchone()[0]
+            if int(prior)>0:
+                c.rollback()
+                await update.effective_message.reply_text(
+                    "🔒 This Level 2 product has already been purchased by your shop. "
+                    "Each Level 2 catalogue product can be purchased only once.")
+                return
         if int(p["stock"])<qty:
             c.rollback(); await update.effective_message.reply_text(f"Insufficient central stock. Available: {p['stock']}"); return
         total=round(float(p["price_usdt"])*qty,6)
@@ -560,7 +569,16 @@ async def show_owner_level_products(update,ctx,shop,page=0,track_visit=True,leve
               ON CONFLICT(owner_id) DO UPDATE SET visits=visits+1,last_seen=excluded.last_seen""",
               (update.effective_user.id,v4.now()))
         total_visitors=c.execute("SELECT COUNT(*) FROM catalogue_visits").fetchone()[0]
-        rows=c.execute("SELECT * FROM central_catalog WHERE active=1 AND level_required=? ORDER BY id",(level,)).fetchall()
+        rows=c.execute("""
+            SELECT p.*,
+              CASE WHEN EXISTS(SELECT 1 FROM central_orders o
+                WHERE o.buyer_shop_id=? AND o.catalog_id=p.id) THEN 1 ELSE 0 END AS already_purchased,
+              (SELECT COUNT(*) FROM central_orders o
+               WHERE o.buyer_shop_id=? AND o.catalog_id=p.id) AS shop_order_count,
+              (SELECT COALESCE(SUM(o.quantity),0) FROM central_orders o
+               WHERE o.buyer_shop_id=? AND o.catalog_id=p.id) AS shop_units_bought
+            FROM central_catalog p WHERE p.active=1 AND p.level_required=? ORDER BY p.id
+        """,(shop["id"],shop["id"],shop["id"],level)).fetchall()
         settings=c.execute("SELECT profit_min,profit_max FROM level_settings WHERE level=?",(level,)).fetchone()
         c.commit()
     finally: c.close()
@@ -586,10 +604,15 @@ async def show_owner_level_products(update,ctx,shop,page=0,track_visit=True,leve
                  f"{html.escape(str(p['description'] or ''))}\n\n"
                  f"Price: <b>{price:g} USDT</b>\n"
                  f"Available stock: <b>{stock}</b>\n"+
-                 ("Select a quantity below to buy." if price>0 and stock>0 else "🔴 Unavailable — Admin must set price and stock."))
+                 (f"Your purchase: <b>{int(p['shop_order_count'])} order(s) • {int(p['shop_units_bought'])} item(s)</b>\n"
+                  if level==2 else "")+
+                 ("🔒 Already purchased — this Level 2 product can only be bought once."
+                  if level==2 and int(p["already_purchased"]) else
+                  ("Select a quantity below to buy." if price>0 and stock>0 else "🔴 Unavailable — Admin must set price and stock.")))
         # Level 1 merchants may purchase only one unit per order.
         max_quantity=1 if int(shop["level"])==1 else 10
-        quantities=list(range(1,min(max_quantity,stock)+1)) if stock>0 else []
+        already_purchased=level==2 and bool(int(p["already_purchased"]))
+        quantities=list(range(1,min(max_quantity,stock)+1)) if stock>0 and not already_purchased else []
         buttons=[
             [InlineKeyboardButton(str(n),callback_data=f"ccbuy:{p['id']}:{n}")
              for n in quantities[pos:pos+2]]
@@ -678,7 +701,11 @@ async def list_inventory(update,ctx):
     resale_setup(); c=v4.db()
     rows=c.execute("""SELECT i.id,i.catalog_id,i.remaining_quantity,i.unit_cost_usdt,p.title,p.level_required,
       cfg.profit_min AS level_profit_min,cfg.profit_max AS level_profit_max,
-      COALESCE((SELECT SUM(l.remaining_quantity) FROM resale_listings l WHERE l.inventory_id=i.id AND l.status='active'),0) listed
+      COALESCE((SELECT SUM(l.remaining_quantity) FROM resale_listings l WHERE l.inventory_id=i.id AND l.status='active'),0) listed,
+      (SELECT COUNT(*) FROM central_orders o WHERE o.buyer_shop_id=i.shop_id AND o.catalog_id=i.catalog_id) shop_purchase_orders,
+      (SELECT COALESCE(SUM(o.quantity),0) FROM central_orders o WHERE o.buyer_shop_id=i.shop_id AND o.catalog_id=i.catalog_id) shop_units_bought,
+      (SELECT COALESCE(SUM(ci.quantity-ci.remaining_quantity),0) FROM central_inventory ci
+       WHERE ci.shop_id=i.shop_id AND ci.catalog_id=i.catalog_id) shop_units_sold
       FROM central_inventory i JOIN central_catalog p ON p.id=i.catalog_id
       LEFT JOIN level_settings cfg ON cfg.level=p.level_required
       WHERE i.owner_id=? AND p.level_required<=? AND i.remaining_quantity>0 ORDER BY i.id DESC""",
@@ -709,7 +736,10 @@ async def list_inventory(update,ctx):
             f"<b>📦 {html.escape(str(r['title']))}</b>\n"
             "━━━━━━━━━━━━━━━━━━\n"
             f"Owned: <b>{int(r['remaining_quantity'])}</b>  •  Already listed: <b>{int(r['listed'])}</b>\n"
-            f"Free to list: <b>{free}</b>\n\n"
+            f"Free to list: <b>{free}</b>\n"
+            + (f"Purchase orders: <b>{int(r['shop_purchase_orders'])}</b> • Items bought: <b>{int(r['shop_units_bought'])}</b>\n"
+               f"Items sold: <b>{int(r['shop_units_sold'])}</b>\n" if item_level==2 else "")
+            + "\n"
             "<b>PRICE & PROFIT</b>\n"
             f"Your cost: {unit_cost:g} USDT / item\n"
             + (f"Resale margin: {low_profit/unit_cost*100:.2f}%–{high_profit/unit_cost*100:.2f}% (random per Level 2 listing)\n"

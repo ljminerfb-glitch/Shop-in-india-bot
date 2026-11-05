@@ -347,8 +347,9 @@ async def start(update,ctx):
     else:
         await update.message.reply_text(
             f"<b>🔷 SHOP IN INDIA</b>\n━━━━━━━━━━━━━━━━━━\n"
-            f"🏪 <b>{html.escape(str(s['shop_name']))}</b> • <b>LEVEL {s['level']}</b>\n\n"
-            "<b>MERCHANT COMMAND CENTER</b>\nWelcome back! Choose a section below.",
+            f"🏪 <b>{html.escape(str(s['shop_name']))}</b> • <b>LEVEL {s['level']}</b>\n"
+            + (f"📍 <b>{html.escape(str(s['location_country']))}</b>\n" if s.get("location_country") else "")
+            + "\n<b>MERCHANT COMMAND CENTER</b>\nWelcome back! Choose a section below.",
             reply_markup=owner_kb(),parse_mode="HTML")
 
 async def approved_callback(update,ctx):
@@ -611,7 +612,9 @@ async def menu_callback(update,ctx):
         ctx.user_data["screen_message_id"]=q.message.message_id
         ctx.user_data["screen_chat_id"]=q.message.chat_id
         await q.message.reply_text(
-            f"<b>🔷 SHOP IN INDIA</b>\n━━━━━━━━━━━━━━━━━━\n🏪 <b>{html.escape(str(s['shop_name']))}</b> • <b>LEVEL {s['level']}</b>\n\n<b>OWNER DASHBOARD</b>\nChoose a section below.",
+            f"<b>🔷 SHOP IN INDIA</b>\n━━━━━━━━━━━━━━━━━━\n🏪 <b>{html.escape(str(s['shop_name']))}</b> • <b>LEVEL {s['level']}</b>\n"
+            + (f"📍 <b>{html.escape(str(s['location_country']))}</b>\n" if s.get("location_country") else "")
+            + "\n<b>MERCHANT COMMAND CENTER</b>\nChoose a section below.",
             reply_markup=owner_kb(),parse_mode="HTML")
         return
 

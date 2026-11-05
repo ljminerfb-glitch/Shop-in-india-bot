@@ -1714,17 +1714,21 @@ async def show_admin_shop(update,ctx,shop_id,edit=False):
           f"Motivation reminder: <b>{html.escape(reminder_status.upper())}</b>\n"
           f"Control note: {html.escape(str(row['control_note'] or 'None'))}\n"
           f"Warning reason: {html.escape(str(row['warning_reason'] or 'None'))}")
-    kb=InlineKeyboardMarkup([
+    kb_rows=[
         [InlineKeyboardButton("❄️ Freeze",callback_data=f"admshop:freeze:{row['id']}"),
          InlineKeyboardButton("⛔ Disable",callback_data=f"admshop:disable:{row['id']}")],
         [InlineKeyboardButton("✅ Enable",callback_data=f"admshop:enable:{row['id']}"),
          InlineKeyboardButton("🗑 Delete",callback_data=f"admshop:delete:{row['id']}")],
         [InlineKeyboardButton("⚠️ Warn Next Order",callback_data=f"admshop:warn:{row['id']}")],
-        ([InlineKeyboardButton("🛑 STOP Motivation Reminder",callback_data=f"admshop:motivationstop:{row['id']}")] if reminder_status=="on" else []),
+    ]
+    if reminder_status=="on":
+        kb_rows.append([InlineKeyboardButton("🛑 STOP Motivation Reminder",callback_data=f"admshop:motivationstop:{row['id']}")])
+    kb_rows.extend([
         [InlineKeyboardButton("🔎 Search Shop ID",callback_data="admshop:search"),
          InlineKeyboardButton("⬅️ All Shops",callback_data="adm:shops")],
         [InlineKeyboardButton("🏠 Admin Panel",callback_data="adm:home")]
     ])
+    kb=InlineKeyboardMarkup(kb_rows)
     await update.effective_message.reply_text(body,reply_markup=kb,parse_mode="HTML")
 
 async def admin_shop_callback(update,ctx):

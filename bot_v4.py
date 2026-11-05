@@ -393,32 +393,61 @@ async def payment_review(update,ctx):
            r["created_at"],reviewed_at))
 
         cashback_amount=0.0
-        if action=="approve" and r["payment_type"]=="level_activation":
-            shop=c.execute("SELECT level FROM shops WHERE id=? AND owner_id=?",
-                           (r["shop_id"],r["owner_id"])).fetchone()
-            if not shop:
-                raise RuntimeError("Shop missing for payment request")
-            old=int(shop["level"])
-            new=int(r["level"])
-            if new>old:
-                c.execute("UPDATE shops SET level=? WHERE id=?",(new,r["shop_id"]))
-                c.execute("INSERT INTO level_history(shop_id,owner_id,old_level,new_level,reason,actor_id,created_at) VALUES(?,?,?,?,?,?,?)",
-                          (r["shop_id"],r["owner_id"],old,new,
-                           f"Approved activation payment #{rid}",ADMIN_ID,reviewed_at))
-                audit_shop(c,r["shop_id"],r["owner_id"],ADMIN_ID,"level_activated",old,new)
-            # Credit 50% of the approved activation fee to the owner's USDT wallet.
-            # The pending->approved transition above prevents duplicate credits.
-            cashback_amount=round(float(r["amount"])*0.50,6)
-            if cashback_amount>0:
-                c.execute("""INSERT INTO ledger(transaction_id,shop_id,owner_id,entry_type,amount,currency,note,created_at)
-                              VALUES(NULL,?,?, 'level_activation_wallet_credit',?,'USDT',?,?)""",
-                          (r["shop_id"],r["owner_id"],cashback_amount,
-                           f"50% wallet cashback for approved level activation #{rid}",reviewed_at))
+        referral_bonus_amount=0.0
+        referrer_owner_id=None
+        if action=="approve" and r["payment_type"] in ("wallet_deposit","level_activation"):
+            payment_amount=float(r["amount"])
+            if str(r["currency"] or "USDT").upper()=="USDT":
+                # Every manually verified deposit or level payment earns a 20% wallet bonus.
+                cashback_amount=round(payment_amount*0.20,6)
+                if cashback_amount>0:
+                    c.execute("""INSERT INTO ledger(transaction_id,shop_id,owner_id,entry_type,amount,currency,note,created_at)
+                                  VALUES(?,?,?,'deposit_bonus_credit',?,'USDT',?,?)""",
+                              (rid,r["shop_id"],r["owner_id"],cashback_amount,
+                               f"20% bonus for approved payment #{rid}",reviewed_at))
 
-        if action=="approve" and r["payment_type"]=="wallet_deposit":
-            c.execute("INSERT INTO ledger(transaction_id,shop_id,owner_id,entry_type,amount,currency,note,created_at) VALUES(NULL,?,?, 'deposit_credit',?,'USDT',?,?)",
-                      (r["shop_id"],r["owner_id"],float(r["amount"]),
-                       f"Admin-approved deposit #{rid}",reviewed_at))
+                # Pay the inviter 2% of the referred merchant's verified payment.
+                referral=c.execute(
+                    "SELECT referred_by_owner_id FROM shops WHERE id=? AND owner_id=?",
+                    (r["shop_id"],r["owner_id"])).fetchone()
+                if referral and referral["referred_by_owner_id"] is not None:
+                    candidate=int(referral["referred_by_owner_id"])
+                    inviter=c.execute(
+                        "SELECT id FROM shops WHERE owner_id=? AND status='approved' ORDER BY id DESC LIMIT 1",
+                        (candidate,)).fetchone()
+                    if inviter and candidate!=int(r["owner_id"]):
+                        referral_bonus_amount=round(payment_amount*0.02,6)
+                        if referral_bonus_amount>0:
+                            reward=c.execute("""INSERT OR IGNORE INTO referral_rewards
+                                (payment_request_id,referrer_owner_id,referred_owner_id,payment_amount,bonus_amount,currency,created_at)
+                                VALUES(?,?,?,?,?,'USDT',?)""",
+                                (rid,candidate,r["owner_id"],payment_amount,referral_bonus_amount,reviewed_at))
+                            if reward.rowcount==1:
+                                referrer_owner_id=candidate
+                                c.execute("""INSERT INTO ledger(transaction_id,shop_id,owner_id,entry_type,amount,currency,note,created_at)
+                                    VALUES(?,?,?,'referral_bonus_credit',?,'USDT',?,?)""",
+                                    (rid,inviter["id"],candidate,referral_bonus_amount,
+                                     f"2% referral bonus from merchant {r['owner_id']} payment #{rid}",reviewed_at))
+                            else:
+                                referral_bonus_amount=0.0
+
+            if r["payment_type"]=="level_activation":
+                shop=c.execute("SELECT level FROM shops WHERE id=? AND owner_id=?",
+                               (r["shop_id"],r["owner_id"])).fetchone()
+                if not shop:
+                    raise RuntimeError("Shop missing for payment request")
+                old=int(shop["level"])
+                new=int(r["level"])
+                if new>old:
+                    c.execute("UPDATE shops SET level=? WHERE id=?",(new,r["shop_id"]))
+                    c.execute("INSERT INTO level_history(shop_id,owner_id,old_level,new_level,reason,actor_id,created_at) VALUES(?,?,?,?,?,?,?)",
+                              (r["shop_id"],r["owner_id"],old,new,
+                               f"Approved activation payment #{rid}",ADMIN_ID,reviewed_at))
+                    audit_shop(c,r["shop_id"],r["owner_id"],ADMIN_ID,"level_activated",old,new)
+            elif str(r["currency"] or "USDT").upper()=="USDT":
+                c.execute("INSERT INTO ledger(transaction_id,shop_id,owner_id,entry_type,amount,currency,note,created_at) VALUES(NULL,?,?, 'deposit_credit',?,'USDT',?,?)",
+                          (r["shop_id"],r["owner_id"],payment_amount,
+                           f"Admin-approved deposit #{rid}",reviewed_at))
 
         c.execute("INSERT INTO admin_audit(admin_id,owner_id,action,details,created_at) VALUES(?,?,?,?,?)",
                   (ADMIN_ID,r["owner_id"],"payment_"+status,
@@ -466,10 +495,20 @@ async def payment_review(update,ctx):
         await ctx.bot.send_message(
             r["owner_id"],
             f"{'✅ APPROVED' if status == 'approved' else '❌ REJECTED'} — Payment request #{rid}."+
-            (f" Your shop level is now L{r['level']}. {cashback_amount:g} USDT (50% of activation fee) has been credited to your wallet."
-             if status=="approved" and r["payment_type"]=="level_activation" else ""))
+            ((f" Your shop level is now L{r['level']}." if r["payment_type"]=="level_activation" else "") +
+             (f" {cashback_amount:g} USDT (20% payment bonus) has been credited to your wallet." if cashback_amount>0 else "")))
     except Exception:
         log.exception("Payment review owner notification failed")
+
+    if status=="approved" and referrer_owner_id and referral_bonus_amount>0:
+        try:
+            await ctx.bot.send_message(
+                referrer_owner_id,
+                f"🎉 Referral bonus received: <b>{referral_bonus_amount:.6f} USDT</b> "
+                f"(2% of merchant {r['owner_id']}'s verified payment #{rid}).",
+                parse_mode="HTML")
+        except Exception:
+            log.exception("Referral bonus notification failed")
 
 async def setshoplevel(update,ctx):
     if not admin(update.effective_user.id): return

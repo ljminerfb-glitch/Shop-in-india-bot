@@ -249,6 +249,9 @@ async def save_shop_password(update, context):
         return
 
     con.close()
+    location_country=context.user_data.get("location_country")
+    location_state=context.user_data.get("location_state")
+    location_city=context.user_data.get("location_city")
     context.user_data.clear()
 
     keyboard = InlineKeyboardMarkup([[

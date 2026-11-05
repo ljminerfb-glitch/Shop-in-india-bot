@@ -315,6 +315,12 @@ async def show_referrals(update,ctx,shop):
     )
 
 
+def format_usdt(value):
+    """Display USDT without meaningless trailing decimal zeros, retaining up to 6 decimals."""
+    rendered = f"{float(value or 0):.6f}".rstrip("0").rstrip(".")
+    return rendered if rendered and rendered != "-0" else "0"
+
+
 def shop_brand(shop):
     """Country-aware merchant brand; fall back only when registration country is unavailable."""
     country = shop["location_country"] if shop is not None and "location_country" in shop.keys() else None
@@ -765,21 +771,21 @@ async def menu_callback(update,ctx):
             deposit_bonus=c.execute("SELECT COALESCE(SUM(amount),0) FROM ledger WHERE owner_id=? AND currency='USDT' AND entry_type='deposit_bonus_credit'",(q.from_user.id,)).fetchone()[0]
             referral_bonus=c.execute("SELECT COALESCE(SUM(amount),0) FROM ledger WHERE owner_id=? AND currency='USDT' AND entry_type='referral_bonus_credit'",(q.from_user.id,)).fetchone()[0]
         finally: c.close()
-        balance_line=(f"Available balance: <b>{available_wallet:.6f} USDT</b>" if bal>=-1e-9 else
-                      f"⚠️ <b>Wallet shortfall: {abs(bal):.6f} USDT</b>")
+        balance_line=(f"Available balance: <b>{format_usdt(available_wallet)} USDT</b>" if bal>=-1e-9 else
+                      f"⚠️ <b>Wallet shortfall: {format_usdt(abs(bal))} USDT</b>")
         await q.message.reply_text(
             "<b>👛 USDT WALLET</b>\n━━━━━━━━━━━━━━━━━━\n"
             f"{balance_line}\n"
-            f"Total deposits: {float(dep):.6f} USDT\n"
-            f"Deposit bonuses (20%): {float(deposit_bonus):.6f} USDT\n"
-            f"Referral bonuses (2%): {float(referral_bonus):.6f} USDT\n"
-            f"Catalogue investment: {float(invested):.6f} USDT\n"
-            f"Total resale proceeds: {float(summary['earned']):.6f} USDT\n"
-            f"Paid withdrawals: {float(summary['paid']):.6f} USDT\n"
-            f"Pending withdrawals: {float(summary['pending']):.6f} USDT\n"
-            f"Sale proceeds remaining: {float(summary['sale_remaining']):.6f} USDT\n"
-            f"Available to withdraw: <b>{float(summary['available']):.6f} USDT</b>\n"
-            f"💚 <b>Recorded profit: +{float(profit):.6f} USDT</b>\n\n"
+            f"Total deposits: {format_usdt(dep)} USDT\n"
+            f"Deposit bonuses (20%): {format_usdt(deposit_bonus)} USDT\n"
+            f"Referral bonuses (2%): {format_usdt(referral_bonus)} USDT\n"
+            f"Catalogue investment: {format_usdt(invested)} USDT\n"
+            f"Total resale proceeds: {format_usdt(summary['earned'])} USDT\n"
+            f"Paid withdrawals: {format_usdt(summary['paid'])} USDT\n"
+            f"Pending withdrawals: {format_usdt(summary['pending'])} USDT\n"
+            f"Sale proceeds remaining: {format_usdt(summary['sale_remaining'])} USDT\n"
+            f"Available to withdraw: <b>{format_usdt(summary['available'])} USDT</b>\n"
+            f"💚 <b>Recorded profit: +{format_usdt(profit)} USDT</b>\n\n"
             "<b>DEPOSIT NETWORKS</b>\n"
             f"TRC20: <code>{html.escape(str(v4.PAY_TRON))}</code>\n"
             f"BEP20: <code>{html.escape(str(v4.PAY_BSC))}</code>\n\n"

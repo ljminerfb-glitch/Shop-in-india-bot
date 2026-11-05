@@ -1,5 +1,5 @@
 """V5 Telegram-chat UI: inline level selection, owner panel and deposits."""
-import os, logging, asyncio, html, re
+import os, logging, asyncio, html, re, secrets
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove, CopyTextButton
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 import bot_v3 as v3
@@ -10,6 +10,7 @@ import runtime_schema
 
 TOKEN=os.getenv("BOT_TOKEN")
 ADMIN_ID=int(os.getenv("ADMIN_ID","0"))
+ROOT_REFERRAL_CODE=os.getenv("ROOT_REFERRAL_CODE","SHOPINDIA").strip().upper() or "SHOPINDIA"
 logging.basicConfig(level=logging.INFO)
 log=logging.getLogger("shop_v5")
 v3.main_keyboard=lambda: ReplyKeyboardRemove()
@@ -54,6 +55,7 @@ def owner_kb():
       [InlineKeyboardButton("💸 Withdraw",callback_data="m:withdraw"),InlineKeyboardButton("👛 Wallet",callback_data="m:wallet")],
       [InlineKeyboardButton("📦 My Products",callback_data="m:products"),InlineKeyboardButton("🧾 My Orders",callback_data="m:orders")],
       [InlineKeyboardButton("📊 Profit & History",callback_data="m:history"),InlineKeyboardButton("👤 My Account",callback_data="m:profile")],
+      [InlineKeyboardButton("👥 Invited Merchants",callback_data="m:referrals")],
       [InlineKeyboardButton("💬 Support",callback_data="m:support")]
     ])
 
@@ -70,6 +72,164 @@ def back_dashboard_kb():
     return InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back to Dashboard", callback_data="m:dashboard")]])
 
 
+def ensure_referral_code(c, owner_id):
+    """Return a stable invitation code for a registered merchant."""
+    existing=c.execute(
+        "SELECT referral_code FROM merchant_referrals WHERE owner_id=?",
+        (int(owner_id),)
+    ).fetchone()
+    if existing:
+        return str(existing["referral_code"])
+    shop=c.execute(
+        "SELECT id FROM shops WHERE owner_id=? ORDER BY id DESC LIMIT 1",
+        (int(owner_id),)
+    ).fetchone()
+    if not shop:
+        return None
+    for _ in range(20):
+        code="SI"+secrets.token_hex(4).upper()
+        try:
+            c.execute(
+                "INSERT INTO merchant_referrals(owner_id,shop_id,referral_code,created_at) VALUES(?,?,?,?)",
+                (int(owner_id),int(shop["id"]),code,v4.now())
+            )
+            return code
+        except Exception:
+            collision=c.execute(
+                "SELECT 1 FROM merchant_referrals WHERE referral_code=?",(code,)
+            ).fetchone()
+            if collision:
+                continue
+            raise
+    raise RuntimeError("Could not allocate a unique merchant invitation code")
+
+
+def ensure_all_referral_codes():
+    c=v4.db()
+    try:
+        owners=c.execute("SELECT DISTINCT owner_id FROM shops ORDER BY owner_id").fetchall()
+        for row in owners:
+            ensure_referral_code(c,int(row["owner_id"]))
+        c.commit()
+    finally:
+        c.close()
+
+
+def referral_code_owner(c, code, registering_owner_id):
+    """Resolve a valid inviter code. The platform code is the no-upline entry."""
+    normalized=str(code or "").strip().upper()
+    if not normalized or len(normalized)>64:
+        return False,None
+    if normalized==ROOT_REFERRAL_CODE:
+        return True,None
+    row=c.execute("""SELECT mr.owner_id
+        FROM merchant_referrals mr JOIN shops s ON s.id=mr.shop_id
+        WHERE UPPER(mr.referral_code)=? AND s.status='approved' AND mr.owner_id<>?
+        ORDER BY s.id DESC LIMIT 1""",
+        (normalized,int(registering_owner_id))
+    ).fetchone()
+    return (True,int(row["owner_id"])) if row else (False,None)
+
+
+async def register_start(update,ctx):
+    existing=v4.shop_for(update.effective_user.id)
+    if existing:
+        await update.message.reply_text(
+            f"You already have a shop application.\n"
+            f"Shop: {html.escape(str(existing['shop_name']))}\n"
+            f"Status: {html.escape(str(existing['status']))}"
+        )
+        return
+    invite_code=ctx.user_data.get("invite_code_prefill")
+    ctx.user_data.clear()
+    if invite_code:
+        ctx.user_data["invite_code_prefill"]=invite_code
+    ctx.user_data["state"]="shop_name"
+    await update.message.reply_text("What would you like to name your shop?")
+
+
+async def continue_registration_with_code(update,ctx,code):
+    c=v4.db()
+    try:
+        valid,referrer_owner_id=referral_code_owner(
+            c,code,update.effective_user.id
+        )
+    finally:
+        c.close()
+    if not valid:
+        ctx.user_data["state"]="referral_code"
+        await update.message.reply_text(
+            "That invitation code is invalid or inactive. Enter a valid merchant invitation code, "
+            f"or use the platform code {ROOT_REFERRAL_CODE}."
+        )
+        return False
+    ctx.user_data["referrer_owner_id"]=referrer_owner_id
+    ctx.user_data.pop("invite_code_prefill",None)
+    ctx.user_data["state"]="shop_password"
+    await update.message.reply_text(
+        "Create a password for your shop.\nMinimum 8 characters. Do not share it with anyone."
+    )
+    return True
+
+
+async def show_referrals(update,ctx,shop):
+    c=v4.db()
+    try:
+        code=ensure_referral_code(c,update.effective_user.id)
+        c.commit()
+        rows=c.execute("""SELECT s.owner_id,s.shop_name,s.status,s.level,
+            (SELECT COALESCE(SUM(p.amount),0) FROM payment_requests p
+             WHERE p.owner_id=s.owner_id AND p.status='approved' AND p.currency='USDT'
+               AND p.payment_type IN ('wallet_deposit','level_activation')) AS verified_payments
+            FROM shops s WHERE s.referred_by_owner_id=?
+            ORDER BY s.id DESC LIMIT 50""",
+            (update.effective_user.id,)
+        ).fetchall()
+        totals=c.execute("""SELECT COUNT(*),COALESCE(SUM(bonus_amount),0)
+            FROM referral_rewards WHERE referrer_owner_id=?""",
+            (update.effective_user.id,)
+        ).fetchone()
+    finally:
+        c.close()
+    username=""
+    try:
+        me=await ctx.bot.get_me()
+        username=getattr(me,"username",None) or ""
+    except Exception:
+        username=""
+    invite_link=f"https://t.me/{username}?start={code}" if username and code else ""
+    link_text=(f'<a href="{html.escape(invite_link,quote=True)}">Join with my code</a>'
+               if invite_link else "Share the invitation code above")
+    body=(
+        "<b>👥 MY INVITED MERCHANTS</b>\n━━━━━━━━━━━━━━━━━━\n"
+        f"Your invite code: <code>{html.escape(str(code or 'Unavailable'))}</code>\n"
+        f"Invite link: {link_text}\n\n"
+        f"Invited merchants: <b>{len(rows)}</b>\n"
+        f"Verified referral bonus earned: <b>{float(totals[1] or 0):.6f} USDT</b>\n"
+        "Referral reward: <b>2% of each invited merchant's verified USDT payment</b>\n\n"
+    )
+    if rows:
+        body+="\n\n".join(
+            f"<b>{html.escape(str(r['shop_name']))}</b> • {html.escape(str(r['status']).upper())} • Level {int(r['level'] or 0)}\n"
+            f"Merchant ID: <code>{r['owner_id']}</code>\n"
+            f"Verified payments: <b>{float(r['verified_payments'] or 0):.6f} USDT</b>"
+            for r in rows
+        )
+    else:
+        body+="No merchants have joined with your invitation code yet."
+    buttons=[]
+    if code:
+        buttons.append([InlineKeyboardButton(
+            "📋 COPY INVITE CODE",copy_text=CopyTextButton(text=code)
+        )])
+    buttons.append([InlineKeyboardButton(
+        "⬅️ Back to Dashboard",callback_data="m:dashboard"
+    )])
+    await update.callback_query.message.reply_text(
+        body[:3900],reply_markup=InlineKeyboardMarkup(buttons),parse_mode="HTML"
+    )
+
+
 async def levels(bot,uid):
     await bot.send_message(
         uid,
@@ -79,7 +239,10 @@ async def levels(bot,uid):
         reply_markup=level_kb(),parse_mode="HTML")
 
 async def start(update,ctx):
+    invite_payload=(ctx.args[0].strip() if getattr(ctx,"args",None) else None)
     ctx.user_data.clear()
+    if invite_payload:
+        ctx.user_data["invite_code_prefill"]=invite_payload
     s=v4.shop_for(update.effective_user.id)
     if not s:
         await update.message.reply_text(
@@ -491,6 +654,8 @@ async def menu_callback(update,ctx):
             invested=c.execute("SELECT COALESCE(SUM(amount),0) FROM ledger WHERE owner_id=? AND currency='USDT' AND entry_type='central_purchase_debit'",(q.from_user.id,)).fetchone()[0]
             profit=c.execute("SELECT COALESCE(SUM(amount),0) FROM ledger WHERE owner_id=? AND currency='USDT' AND entry_type IN ('resale_profit_credit','central_sale_profit')",(q.from_user.id,)).fetchone()[0]
             dep=c.execute("SELECT COALESCE(SUM(amount),0) FROM ledger WHERE owner_id=? AND currency='USDT' AND entry_type='deposit_credit'",(q.from_user.id,)).fetchone()[0]
+            deposit_bonus=c.execute("SELECT COALESCE(SUM(amount),0) FROM ledger WHERE owner_id=? AND currency='USDT' AND entry_type='deposit_bonus_credit'",(q.from_user.id,)).fetchone()[0]
+            referral_bonus=c.execute("SELECT COALESCE(SUM(amount),0) FROM ledger WHERE owner_id=? AND currency='USDT' AND entry_type='referral_bonus_credit'",(q.from_user.id,)).fetchone()[0]
         finally: c.close()
         balance_line=(f"Available balance: <b>{available_wallet:.6f} USDT</b>" if bal>=-1e-9 else
                       f"⚠️ <b>Wallet shortfall: {abs(bal):.6f} USDT</b>")
@@ -498,6 +663,8 @@ async def menu_callback(update,ctx):
             "<b>👛 USDT WALLET</b>\n━━━━━━━━━━━━━━━━━━\n"
             f"{balance_line}\n"
             f"Total deposits: {float(dep):.6f} USDT\n"
+            f"Deposit bonuses (20%): {float(deposit_bonus):.6f} USDT\n"
+            f"Referral bonuses (2%): {float(referral_bonus):.6f} USDT\n"
             f"Catalogue investment: {float(invested):.6f} USDT\n"
             f"Total resale proceeds: {float(summary['earned']):.6f} USDT\n"
             f"Paid withdrawals: {float(summary['paid']):.6f} USDT\n"
@@ -510,6 +677,8 @@ async def menu_callback(update,ctx):
             f"BEP20: <code>{html.escape(str(v4.PAY_BSC))}</code>\n\n"
             "Send USDT only on the selected network and upload payment proof for verification.",
             reply_markup=back_dashboard_kb(),parse_mode="HTML")
+    elif action=="referrals":
+        await show_referrals(update,ctx,s)
     elif action=="market":
         await central.owner_market(update,ctx,s)
     elif action=="level1":
@@ -809,6 +978,39 @@ async def text_handler(update,ctx):
         await central.admin_catalog(update,ctx)
         return
     state=ctx.user_data.get("state")
+    if state=="shop_name":
+        name=(update.message.text or "").strip()
+        if len(name)<2 or len(name)>80:
+            await update.message.reply_text("Shop name must be 2–80 characters. Please try again.")
+            return
+        c=v4.db()
+        try:
+            exists=c.execute(
+                "SELECT id FROM shops WHERE LOWER(shop_name)=LOWER(?)",(name,)
+            ).fetchone()
+        finally:
+            c.close()
+        if exists:
+            await update.message.reply_text(
+                "That shop name is already registered. Please choose another name."
+            )
+            return
+        ctx.user_data["new_shop_name"]=name
+        prefilled=ctx.user_data.get("invite_code_prefill")
+        if prefilled:
+            await continue_registration_with_code(update,ctx,prefilled)
+        else:
+            ctx.user_data["state"]="referral_code"
+            await update.message.reply_text(
+                "Enter the invitation code from the merchant who invited you. "
+                f"A valid invitation code is required to register. If you do not have a merchant invite code, use {ROOT_REFERRAL_CODE}."
+            )
+        return
+    if state=="referral_code":
+        await continue_registration_with_code(
+            update,ctx,(update.message.text or "").strip()
+        )
+        return
     if state=="withdraw_setup_address":
         address=(update.message.text or "").strip()
         if not re.fullmatch(r"T[1-9A-HJ-NP-Za-km-z]{33}",address):
@@ -995,9 +1197,18 @@ async def text_handler(update,ctx):
             reply_markup=wd_kb,parse_mode="HTML")
         ctx.user_data.pop("state",None)
     else:
+        if (update.message.text or "").strip()=="🏪 Register Shop":
+            await register_start(update,ctx)
+            return
         was_registering=state=="shop_password"
         await v3.handle_message(update,ctx)
         if was_registering and v4.shop_for(update.effective_user.id):
+            c=v4.db()
+            try:
+                ensure_referral_code(c,update.effective_user.id)
+                c.commit()
+            finally:
+                c.close()
             await levels(ctx.bot,update.effective_user.id)
 
 
@@ -1362,6 +1573,7 @@ def main():
     if not TOKEN or not ADMIN_ID: raise RuntimeError("BOT_TOKEN and ADMIN_ID are required.")
     v3.setup()
     runtime_schema.ensure_schema(v4.DB)
+    ensure_all_referral_codes()
     v3.ensure_catalog_schema()
     central.setup()
     central.resale_setup()
@@ -1378,7 +1590,7 @@ def main():
     app.add_handler(CallbackQueryHandler(level_back_callback,pattern=r"^lvback$"))
     app.add_handler(CallbackQueryHandler(network_callback,pattern=r"^net:[0-9]+:(trc|bep)$"))
     app.add_handler(CallbackQueryHandler(txid_callback,pattern=r"^txid:[0-9]+$"))
-    app.add_handler(CallbackQueryHandler(menu_callback,pattern=r"^m:(market|level1|upgrade|sellermarket|deposit|depositstart|depositfund|deposit_fund|deposit-fund|depositdone|deposits|withdraw|withdrawsetup|withdrawsetupedit|wallet|products|orders|history|profile|dashboard|support)$"))
+    app.add_handler(CallbackQueryHandler(menu_callback,pattern=r"^m:(market|level1|upgrade|sellermarket|deposit|depositstart|depositfund|deposit_fund|deposit-fund|depositdone|deposits|withdraw|withdrawsetup|withdrawsetupedit|wallet|products|orders|history|profile|referrals|dashboard|support)$"))
     app.add_handler(CallbackQueryHandler(admin_panel_callback,pattern=r"^adm:(home|owners|shops|payments|levelpayments|withdrawals|withdrawwallets|products|orders|levels|settings|central|resale|audit|back)$"))
     app.add_handler(CallbackQueryHandler(central.resale_callback,pattern=r"^rs:(list:[0-9]+|listmenu|market|review:[0-9]+|buy:[0-9]+:[0-9]+)$"))
     app.add_handler(CallbackQueryHandler(audit_callback,pattern=r"^audit:(all|payments|levels|wallet|orders|products):[0-9]+$"))

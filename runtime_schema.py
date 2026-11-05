@@ -39,6 +39,9 @@ def ensure_schema(db_path=None):
                 ("password_hash", "TEXT"),
                 ("level", "INTEGER NOT NULL DEFAULT 0"),
                 ("referred_by_owner_id", "INTEGER"),
+                ("location_country", "TEXT"),
+                ("location_state", "TEXT"),
+                ("location_city", "TEXT"),
             ])
         if "products" in {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}:
             _add_columns(conn, "products", [
@@ -119,6 +122,10 @@ def ensure_schema(db_path=None):
             currency TEXT NOT NULL DEFAULT 'USDT', status TEXT NOT NULL DEFAULT 'pending',
             reference TEXT, admin_note TEXT, actor_id INTEGER, created_at TEXT NOT NULL,
             reviewed_at TEXT)""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS location_geocode_cache (
+            lat_key REAL NOT NULL, lon_key REAL NOT NULL, country TEXT NOT NULL,
+            state TEXT NOT NULL, city TEXT NOT NULL, updated_at TEXT NOT NULL,
+            PRIMARY KEY(lat_key,lon_key))""")
         conn.execute("""CREATE TABLE IF NOT EXISTS merchant_referrals (
             owner_id INTEGER PRIMARY KEY, shop_id INTEGER NOT NULL,
             referral_code TEXT NOT NULL UNIQUE COLLATE NOCASE,

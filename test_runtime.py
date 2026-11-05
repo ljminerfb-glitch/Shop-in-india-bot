@@ -916,7 +916,10 @@ def test_merchant_deposit_screenshot_and_admin_approval():
     rejected_id=cur.lastrowid
     c.commit(); c.close()
     reject_update,reject_message,_=callback_update(999999,f"pay:reject:{rejected_id}")
-    asyncio.run(v4.payment_review(reject_update,context()))
+    payment_reject_ctx=context()
+    asyncio.run(v4.payment_review(reject_update,payment_reject_ctx))
+    reason_update,reason_message=message_update(999999,"This is fake screenshot")
+    asyncio.run(v5.text_handler(reason_update,payment_reject_ctx))
     c=v4.db()
     rejected=c.execute("SELECT status,admin_note FROM payment_requests WHERE id=?",(rejected_id,)).fetchone()
     reject_credit=c.execute("SELECT COUNT(*) FROM ledger WHERE owner_id=101 AND entry_type='deposit_credit' AND note LIKE ?",(f"%#{rejected_id}%",)).fetchone()[0]
@@ -1126,7 +1129,10 @@ def test_usdt_trc20_withdrawal_flow():
     wid2=int(c.execute("SELECT id FROM withdrawals WHERE owner_id=101 AND status='pending' ORDER BY id DESC LIMIT 1").fetchone()[0])
     c.close()
     reject_update,reject_message,reject_query=callback_update(999999,f"wd:reject:{wid2}")
-    asyncio.run(v4.withdrawal_review(reject_update,context()))
+    withdrawal_reject_ctx=context()
+    asyncio.run(v4.withdrawal_review(reject_update,withdrawal_reject_ctx))
+    reason_update,reason_message=message_update(999999,"Withdrawal details need correction.")
+    asyncio.run(v5.text_handler(reason_update,withdrawal_reject_ctx))
     c=v4.db()
     rejected=c.execute("SELECT status FROM withdrawals WHERE id=?",(wid2,)).fetchone()
     debit_count=c.execute("SELECT COUNT(*) FROM ledger WHERE owner_id=101 AND entry_type='withdrawal_debit'").fetchone()[0]

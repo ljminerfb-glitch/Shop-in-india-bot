@@ -1257,7 +1257,7 @@ def test_existing_paid_withdrawal_enables_motivation_reminder():
     # Create an eligible shop with a paid withdrawal but an OFF reminder,
     # simulating a merchant paid before this feature was deployed.
     c.execute("UPDATE shops SET motivation_reminder_status='off',motivation_reminder_next_at=NULL WHERE owner_id=101")
-    c.execute("""INSERT INTO withdrawals(owner_id,shop_id,amount,currency,network,address,status,created_at)
+    c.execute("""INSERT INTO withdrawals(owner_id,shop_id,amount,currency,network,wallet_address,status,created_at)
                  VALUES(101,1,1,'USDT','TRC20','TTEST','paid',?)""",(v4.now(),))
     c.commit(); c.close()
     class FakeApp:

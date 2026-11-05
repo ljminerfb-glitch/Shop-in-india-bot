@@ -1596,9 +1596,86 @@ def test_admin_rejection_reasons():
     print("PASS: Admin rejection reasons saved and delivered for deposits, withdrawals and product listings")
 
 
+def test_admin_shop_controls_and_search():
+    c=v4.db()
+    shop=c.execute("SELECT id FROM shops WHERE owner_id=101 ORDER BY id DESC LIMIT 1").fetchone()
+    require(shop is not None,"Shop control fixture is missing")
+    sid=int(shop["id"])
+    c.close()
+
+    # Admin can freeze and the shared order gate blocks purchases.
+    update,message,_=callback_update(999999,f"admshop:freeze:{sid}")
+    asyncio.run(v5.admin_shop_callback(update,context()))
+    c=v4.db()
+    status=c.execute("SELECT control_status FROM shops WHERE id=?",(sid,)).fetchone()[0]
+    allowed,reason=v4.shop_order_gate(c,sid)
+    c.close()
+    require(status=="frozen" and not allowed and "frozen" in reason,
+            "Freeze did not persist or block new orders")
+
+    # Enable restores access.
+    update,message,_=callback_update(999999,f"admshop:enable:{sid}")
+    asyncio.run(v5.admin_shop_callback(update,context()))
+    c=v4.db()
+    require(c.execute("SELECT control_status FROM shops WHERE id=?",(sid,)).fetchone()[0]=="active",
+            "Enable did not restore the shop")
+    c.close()
+
+    # Warning requires an Admin-entered reason and is consumed once by next successful order.
+    admin_ctx=context()
+    update,message,_=callback_update(999999,f"admshop:warn:{sid}")
+    asyncio.run(v5.admin_shop_callback(update,admin_ctx))
+    require(admin_ctx.user_data.get("admin_shop_warning_id")==sid,
+            "Warn Next Order did not request a reason")
+    reason="Please verify product descriptions before accepting another order."
+    warning_update,warning_message=message_update(999999,reason)
+    asyncio.run(v5.text_handler(warning_update,admin_ctx))
+    c=v4.db()
+    warning=c.execute("SELECT next_order_warning,warning_reason FROM shops WHERE id=?",(sid,)).fetchone()
+    c.close()
+    require(warning["next_order_warning"]==1 and warning["warning_reason"]==reason,
+            "Mandatory next-order warning reason was not saved")
+    c=v4.db()
+    allowed,shown=v4.shop_order_gate(c,sid)
+    c.commit()
+    again=v4.shop_order_gate(c,sid)
+    c.close()
+    require(allowed and shown==reason and again==(True,None),
+            "Warning was not shown and consumed exactly once")
+
+    # Search accepts both the formatted unique ID and the underlying numeric ID.
+    search_ctx=context()
+    search_update,search_message,_=callback_update(999999,"admshop:search")
+    asyncio.run(v5.admin_shop_callback(search_update,search_ctx))
+    require(search_ctx.user_data.get("admin_shop_search") is True,
+            "Shop ID search did not enter search mode")
+    numeric_update,numeric_message=message_update(999999,f"SHOP-{sid:06d}")
+    asyncio.run(v5.text_handler(numeric_update,search_ctx))
+    require(any(f"SHOP-{sid:06d}" in x["text"] for x in numeric_message.replies),
+            "Shop ID search did not return the exact matching shop")
+
+    # Disable and soft-delete also block orders without removing historical rows.
+    for action,expected in (("disable","disabled"),("delete","deleted")):
+        update,message,_=callback_update(999999,f"admshop:{action}:{sid}")
+        asyncio.run(v5.admin_shop_callback(update,context()))
+        c=v4.db()
+        row=c.execute("SELECT control_status FROM shops WHERE id=?",(sid,)).fetchone()
+        allowed,reason=v4.shop_order_gate(c,sid)
+        c.close()
+        require(row["control_status"]==expected and not allowed,
+                f"{action} did not block new orders")
+    c=v4.db()
+    require(c.execute("SELECT COUNT(*) FROM shops WHERE id=?",(sid,)).fetchone()[0]==1,
+            "Soft delete removed the shop record and historical links")
+    c.execute("UPDATE shops SET control_status='active',control_note=NULL WHERE id=?",(sid,))
+    c.commit(); c.close()
+    print("PASS: Unique Shop ID search, freeze/disable/enable/soft-delete controls and one-time reasoned next-order warning")
+
+
 def main():
     test_runtime_schema_bootstrap()
     fixture()
+    test_admin_shop_controls_and_search()
     test_level1_catalogue_quantity_buttons()
     test_admin_catalogue_pagination()
     pid, listing_id, inventory_id = test_central_purchase_and_auto_listing()

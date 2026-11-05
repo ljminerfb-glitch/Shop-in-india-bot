@@ -778,6 +778,20 @@ async def resale_callback(update,ctx):
         try: await ctx.bot.send_message(v4.ADMIN_ID,f"📣 NEW RESALE LISTING #{lid}\n{inv['title']} ×{qty}\nSeller: {q.from_user.id} | Shop #{inv['shop_id']}\nAsking: {price:g} USDT each",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Review / Buy",callback_data=f"rs:review:{lid}")],[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]))
         except Exception: log.exception("Admin listing notification failed")
         return
+    if action=="reject":
+        if q.from_user.id!=v4.ADMIN_ID: await safe_callback_answer(q, "Admin only",show_alert=True); return
+        lid=int(parts[2])
+        c=v4.db()
+        listing=c.execute("SELECT owner_id,status FROM resale_listings WHERE id=?",(lid,)).fetchone()
+        c.close()
+        if not listing or listing["status"]!="active":
+            await safe_callback_answer(q,"Listing not found or already reviewed",show_alert=True); return
+        ctx.user_data["pending_admin_rejection"]={"kind":"central_listing","id":lid}
+        await safe_callback_answer(q)
+        await q.message.reply_text(
+            f"✍️ Enter the rejection reason for resale listing #{lid}. "
+            "The seller will receive this reason. Type CANCEL to stop.")
+        return
     if action=="review":
         if q.from_user.id!=v4.ADMIN_ID: await safe_callback_answer(q, "Admin only",show_alert=True); return
         lid=int(parts[2]); c=v4.db()
@@ -798,7 +812,9 @@ async def resale_callback(update,ctx):
             "<b>ADMIN OFFER</b>\nSend: <code>PRICE QUANTITY</code>\n"
             f"Buy all at asking price: <code>{suggested_price:g} {available_qty}</code>\n"
             f"<i>Maximum quantity: {available_qty}. Type CANCEL to stop.</i>",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]),parse_mode="HTML")
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("❌ REJECT LISTING",callback_data=f"rs:reject:{lid}")],
+                [InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]),parse_mode="HTML")
         return
     if action=="market":
         shop=v4.shop_for(q.from_user.id)

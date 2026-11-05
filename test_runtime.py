@@ -60,6 +60,9 @@ class FakeBot:
         self.sent.append({"args": args, "kwargs": kwargs, "photo": True})
         return SimpleNamespace(message_id=102, chat_id=args[0] if args else kwargs.get("chat_id", 0))
 
+    async def get_user_profile_photos(self,user_id,limit=1):
+        return SimpleNamespace(photos=[[SimpleNamespace(file_id=getattr(self,"profile_file_id","latest-profile-photo"))]])
+
     async def get_me(self):
         return SimpleNamespace(username="test_shop_bot")
 
@@ -394,7 +397,12 @@ def test_list_stock_profit_screen():
 
 def test_seller_market_screen(listing_id):
     update, message, query = callback_update(202, "m:sellermarket")
-    asyncio.run(v5.menu_callback(update, context()))
+    market_ctx=context()
+    asyncio.run(v5.menu_callback(update, market_ctx))
+    require(any(x.get("kwargs",{}).get("photo")=="latest-profile-photo"
+                and "Merchant Telegram profile photo" in x.get("kwargs",{}).get("caption","")
+                for x in market_ctx.bot.sent),
+            "Seller Marketplace did not show the seller's latest Telegram profile photo")
     require(len(message.replies) >= 2, "Seller Marketplace did not render both resale and legacy screens")
     first = message.replies[0]
     require("OTHER ELIGIBLE MERCHANT LISTINGS (LEVEL 1–1)" in first["text"], "Other Level 1 resale section missing")
@@ -1755,8 +1763,12 @@ def test_admin_shop_controls_and_search():
     # The merchant profile must show the random public ID and allow old shops
     # with missing historical location data to add it without re-registering.
     profile_update,profile_message,_=callback_update(101,"m:profile")
-    asyncio.run(v5.menu_callback(profile_update,context()))
-    profile_text=profile_message.replies[0]["text"]
+    profile_ctx=context()
+    asyncio.run(v5.menu_callback(profile_update,profile_ctx))
+    profile_cards=[x for x in profile_ctx.bot.sent if x.get("kwargs",{}).get("photo")=="latest-profile-photo"]
+    require(bool(profile_cards) and "MY ACCOUNT" in profile_cards[0]["kwargs"].get("caption",""),
+            "My Account did not display the owner's latest Telegram profile photo")
+    profile_text=profile_cards[0]["kwargs"]["caption"]
     require(f"Shop ID: <code>{public_id}</code>" in profile_text,
             "My Account does not display the public random Shop ID")
     profile_kb=profile_message.replies[0]["kwargs"]["reply_markup"].inline_keyboard
@@ -1792,6 +1804,14 @@ def main():
     test_runtime_schema_bootstrap()
     fixture()
     test_admin_shop_controls_and_search()
+    # Each shop screen fetches the current profile image again rather than retaining an old photo ID.
+    avatar_bot=FakeBot()
+    asyncio.run(v5.send_shop_profile(avatar_bot,101,101,"Shop card"))
+    avatar_bot.profile_file_id="changed-telegram-dp"
+    asyncio.run(v5.send_shop_profile(avatar_bot,101,101,"Shop card"))
+    require([x["kwargs"].get("photo") for x in avatar_bot.sent]==["latest-profile-photo","changed-telegram-dp"],
+            "Shop profile photo was cached instead of refreshing from Telegram")
+    print("PASS: Merchant shop cards refresh the latest Telegram profile picture on each view")
     test_level1_catalogue_quantity_buttons()
     test_admin_catalogue_pagination()
     pid, listing_id, inventory_id = test_central_purchase_and_auto_listing()

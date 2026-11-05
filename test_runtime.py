@@ -796,10 +796,15 @@ def test_failed_central_purchases(pid):
     require(c.execute("SELECT stock FROM central_catalog WHERE id=?", (pid,)).fetchone()[0] == stock_before,
             "Shared stock changed after rejected wallet purchase")
     c.close()
+    c = v4.db()
+    c.execute("UPDATE shops SET level=2 WHERE owner_id=101")
+    c.commit(); c.close()
     replies = run_central_buy(101, pid, stock_before+1)
     require(any("Insufficient central stock" in x["text"] for x in replies),
             "Insufficient central stock purchase was not rejected")
     c = v4.db()
+    c.execute("UPDATE shops SET level=1 WHERE owner_id=101")
+    c.commit()
     require(c.execute("SELECT stock FROM central_catalog WHERE id=?", (pid,)).fetchone()[0] == stock_before,
             "Shared stock changed after rejected stock purchase")
     require(c.execute("PRAGMA integrity_check").fetchone()[0] == "ok", "SQLite integrity check failed")

@@ -36,6 +36,7 @@ def ensure_schema(db_path=None):
         # Core V3 tables are created by bot_v3.setup(); extend them safely.
         if "shops" in {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}:
             _add_columns(conn, "shops", [
+                ("shop_code", "TEXT"),
                 ("password_hash", "TEXT"),
                 ("level", "INTEGER NOT NULL DEFAULT 0"),
                 ("referred_by_owner_id", "INTEGER"),
@@ -47,6 +48,20 @@ def ensure_schema(db_path=None):
                 ("next_order_warning", "INTEGER NOT NULL DEFAULT 0"),
                 ("warning_reason", "TEXT"),
             ])
+            # Assign permanent, human-readable unique codes to every existing shop.
+            # Keep the internal integer primary key unchanged because historical
+            # orders, ledger entries and product references depend on it.
+            conn.execute("""UPDATE shops SET shop_code='SHOP-' || printf('%06d',id)
+                            WHERE shop_code IS NULL OR TRIM(shop_code)=''""")
+            conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_shops_shop_code_unique ON shops(shop_code)")
+            # Future registrations receive the same permanent code automatically.
+            conn.execute("""CREATE TRIGGER IF NOT EXISTS trg_shops_assign_shop_code
+                AFTER INSERT ON shops
+                WHEN NEW.shop_code IS NULL OR TRIM(NEW.shop_code)=''
+                BEGIN
+                    UPDATE shops SET shop_code='SHOP-' || printf('%06d',NEW.id)
+                    WHERE id=NEW.id;
+                END""")
         if "products" in {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}:
             _add_columns(conn, "products", [
                 ("stock", "INTEGER NOT NULL DEFAULT 1"),

@@ -1107,6 +1107,16 @@ async def withdrawal_review_callback(update,ctx):
 
 
 async def text_handler(update,ctx):
+    pending_photo=ctx.user_data.get("central_admin_photo")
+    if pending_photo:
+        if update.effective_user.id!=ADMIN_ID:
+            ctx.user_data.pop("central_admin_photo",None); return
+        if (update.message.text or "").strip().lower()=="cancel":
+            ctx.user_data.pop("central_admin_photo",None)
+            await update.message.reply_text("Picture change cancelled. The current product image is unchanged.")
+        else:
+            await update.message.reply_text("Please send a photo, or type CANCEL to keep the existing image.")
+        return
     if ctx.user_data.get("admin_shop_search"):
         if update.effective_user.id!=ADMIN_ID:
             ctx.user_data.pop("admin_shop_search",None); return
@@ -2004,13 +2014,18 @@ def main():
     app.add_handler(CallbackQueryHandler(central.admin_catalog_page_callback,pattern=r"^ccadminpage:(?:[12]:)?[0-9]+$"))
     app.add_handler(CallbackQueryHandler(central.owner_level_callback,pattern=r"^cclevel:[12]$"))
     app.add_handler(CallbackQueryHandler(central.owner_catalog_page_callback,pattern=r"^ccpage:(?:[12]:)?[0-9]+$"))
-    app.add_handler(CallbackQueryHandler(central.admin_callback,pattern=r"^cc:(view|orders|price|stock|toggle|fulfill|refund)(:[0-9]+)?$"))
+    app.add_handler(CallbackQueryHandler(central.admin_callback,pattern=r"^cc:(view|orders|price|stock|photo|toggle|fulfill|refund)(:[0-9]+)?$"))
     app.add_handler(CallbackQueryHandler(central.owner_buy_callback,pattern=r"^ccbuy:[0-9]+:[0-9]+$"))
     app.add_handler(CallbackQueryHandler(v3.product_review,pattern=r"^product:(approve|reject):[0-9]+$"))
     app.add_handler(CallbackQueryHandler(v4.payment_review,pattern=r"^pay:(approve|reject):[0-9]+$"))
     app.add_handler(CallbackQueryHandler(withdrawal_review_callback,pattern=r"^wd:(paid|reject):[0-9]+$"))
     app.add_handler(MessageHandler(filters.LOCATION,location_handler))
-    app.add_handler(MessageHandler(filters.PHOTO,v4.payment_photo))
+    async def photo_handler(update,ctx):
+        if ctx.user_data.get("central_admin_photo"):
+            await central.admin_photo(update,ctx)
+        else:
+            await v4.payment_photo(update,ctx)
+    app.add_handler(MessageHandler(filters.PHOTO,photo_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,text_handler))
     print("SHOP IN INDIA V5 Telegram UI started.")
     asyncio.set_event_loop(asyncio.new_event_loop())

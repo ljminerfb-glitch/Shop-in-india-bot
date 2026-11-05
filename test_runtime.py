@@ -1495,7 +1495,7 @@ def test_admin_rejection_reasons():
     c=v4.db(); payment=c.execute("SELECT status,admin_note FROM payment_requests WHERE id=?",(payment_id,)).fetchone(); c.close()
     require(payment["status"]=="rejected" and payment["admin_note"]==reason,
             "Payment rejection reason was not saved")
-    require(any(x["args"] and x["args"][0]==101 and reason in x["kwargs"].get("text","")
+    require(any(x["args"] and x["args"][0]==101 and reason in (x["args"][1] if len(x["args"])>1 else x["kwargs"].get("text",""))
                 for x in admin_ctx.bot.sent),
             "Merchant did not receive the payment rejection reason")
 
@@ -1516,7 +1516,7 @@ def test_admin_rejection_reasons():
     c=v4.db(); withdrawal=c.execute("SELECT status,admin_note FROM withdrawals WHERE id=?",(withdrawal_id,)).fetchone(); c.close()
     require(withdrawal["status"]=="rejected" and withdrawal["admin_note"]==wreason,
             "Withdrawal rejection reason was not saved")
-    require(any(x["args"] and x["args"][0]==101 and wreason in x["kwargs"].get("text","")
+    require(any(x["args"] and x["args"][0]==101 and wreason in (x["args"][1] if len(x["args"])>1 else x["kwargs"].get("text",""))
                 for x in admin_ctx.bot.sent),
             "Merchant did not receive the withdrawal rejection reason")
 
@@ -1537,7 +1537,7 @@ def test_admin_rejection_reasons():
     asyncio.run(v5.text_handler(pru,admin_ctx))
     c=v4.db(); product=c.execute("SELECT status FROM product_suggestions WHERE id=?",(suggestion_id,)).fetchone(); c.close()
     require(product["status"]=="rejected","Product suggestion was not rejected after reason entry")
-    require(any(x["args"] and x["args"][0]==101 and preason in x["kwargs"].get("text","")
+    require(any(x["args"] and x["args"][0]==101 and preason in (x["args"][1] if len(x["args"])>1 else x["kwargs"].get("text",""))
                 for x in admin_ctx.bot.sent),
             "Merchant did not receive the product listing rejection reason")
     print("PASS: Admin rejection reasons saved and delivered for deposits, withdrawals and product listings")

@@ -1,5 +1,6 @@
 """V5 Telegram-chat UI: inline level selection, owner panel and deposits."""
 import os, logging, asyncio, html, re, secrets, json, time
+from datetime import datetime, timedelta, timezone
 from urllib.request import Request, urlopen
 from urllib.parse import urlencode
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove, CopyTextButton, KeyboardButton
@@ -60,6 +61,7 @@ def owner_kb():
       [InlineKeyboardButton("📦 My Products",callback_data="m:products"),InlineKeyboardButton("🧾 My Orders",callback_data="m:orders")],
       [InlineKeyboardButton("📊 Profit & History",callback_data="m:history"),InlineKeyboardButton("👤 My Account",callback_data="m:profile")],
       [InlineKeyboardButton("👥 Invited Merchants",callback_data="m:referrals")],
+      [InlineKeyboardButton("⏰ Motivation Reminder",callback_data="m:motivation")],
       [InlineKeyboardButton("💬 Support",callback_data="m:support")]
     ])
 
@@ -2014,7 +2016,7 @@ def main():
     v3.ensure_catalog_schema()
     central.setup()
     central.resale_setup()
-    app=ApplicationBuilder().token(TOKEN).build()
+    app=ApplicationBuilder().token(TOKEN).post_init(start_motivation_reminder_worker).build()
     app.add_handler(CommandHandler("start",start)); app.add_handler(CommandHandler("dashboard",dashboard))
     for cmd,fn in [("help",help_command),("support",support_command),("admin",admin_panel),("verifywallet",v3.verify_wallet),
       ("buy",v4.buy),("addproduct",addproduct),("setproductlevel",v4.setproductlevel),("setlevel",v4.setlevel),("setfx",v4.setfx),("setfee",v4.setfee),
@@ -2027,9 +2029,9 @@ def main():
     app.add_handler(CallbackQueryHandler(level_back_callback,pattern=r"^lvback$"))
     app.add_handler(CallbackQueryHandler(network_callback,pattern=r"^net:[0-9]+:(trc|bep)$"))
     app.add_handler(CallbackQueryHandler(txid_callback,pattern=r"^txid:[0-9]+$"))
-    app.add_handler(CallbackQueryHandler(menu_callback,pattern=r"^m:(market|level1|upgrade|sellermarket|deposit|depositstart|depositfund|deposit_fund|deposit-fund|depositdone|deposits|withdraw|withdrawsetup|withdrawsetupedit|wallet|products|orders|history|profile|referrals|dashboard|support)$"))
+    app.add_handler(CallbackQueryHandler(menu_callback,pattern=r"^m:(market|level1|upgrade|sellermarket|deposit|depositstart|depositfund|deposit_fund|deposit-fund|depositdone|deposits|withdraw|withdrawsetup|withdrawsetupedit|wallet|products|orders|history|profile|referrals|motivation|dashboard|support)$"))
     app.add_handler(CallbackQueryHandler(admin_panel_callback,pattern=r"^adm:(home|owners|shops|payments|levelpayments|withdrawals|withdrawwallets|products|orders|levels|settings|central|resale|audit|back)$"))
-    app.add_handler(CallbackQueryHandler(admin_shop_callback,pattern=r"^admshop:(search|view:[0-9]+|freeze:[0-9]+|disable:[0-9]+|enable:[0-9]+|delete:[0-9]+|warn:[0-9]+)$"))
+    app.add_handler(CallbackQueryHandler(admin_shop_callback,pattern=r"^admshop:(search|view:[0-9]+|freeze:[0-9]+|disable:[0-9]+|enable:[0-9]+|delete:[0-9]+|warn:[0-9]+|motivationstop:[0-9]+)$"))
     app.add_handler(CallbackQueryHandler(central.resale_callback,pattern=r"^rs:(list:[0-9]+|listmenu|market|review:[0-9]+|reject:[0-9]+|buy:[0-9]+:[0-9]+)$"))
     app.add_handler(CallbackQueryHandler(audit_callback,pattern=r"^audit:(all|payments|levels|wallet|orders|products):[0-9]+$"))
     app.add_handler(CallbackQueryHandler(delivered_callback,pattern=r"^order:delivered:[0-9]+$"))

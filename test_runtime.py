@@ -1245,8 +1245,8 @@ def test_runtime_schema_bootstrap():
             level1_price=conn.execute(
                 "SELECT activation_usdt FROM level_settings WHERE level=1"
             ).fetchone()
-            require(level1_price and float(level1_price[0])==5.0,
-                    f"Level 1 price should remain unchanged: {level1_price!r}")
+            require(level1_price and float(level1_price[0])==10.0,
+                    f"Level 1 activation price must be 10 USDT: {level1_price!r}")
             level2_products=conn.execute(
                 "SELECT COUNT(*),MIN(stock),MAX(stock) FROM central_catalog WHERE level_required=2"
             ).fetchone()
@@ -1503,8 +1503,13 @@ def test_referral_registration_and_bonuses():
             "Two approved $10 payments did not award two 20% bonuses")
     require(abs(inviter_bonus_total-0.4)<1e-8 and rewards[0]==2 and abs(float(rewards[1])-0.4)<1e-8,
             "Inviter did not receive 2% on both verified deposit and level-payment transactions")
-    require(abs(cc.balance(c,505)-14.0)<1e-8,
-            "Child wallet balance does not include its base deposit and both bonus credits")
+    level_payment_credit=float(c.execute(
+        "SELECT COALESCE(SUM(amount),0) FROM ledger WHERE owner_id=505 AND entry_type='level_activation_wallet_credit'"
+    ).fetchone()[0])
+    require(abs(level_payment_credit-10.0)<1e-8,
+            "Approved level activation did not credit the full 10 USDT payment")
+    require(abs(cc.balance(c,505)-24.0)<1e-8,
+            "Wallet balance must include the base deposit, full level payment and both 20% bonuses")
     c.close()
 
     # The inviter dashboard must list the new merchant and show accumulated rewards.

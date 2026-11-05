@@ -405,7 +405,19 @@ async def payment_review(update,ctx):
         if action=="approve" and r["payment_type"] in ("wallet_deposit","level_activation"):
             payment_amount=float(r["amount"])
             if str(r["currency"] or "USDT").upper()=="USDT":
-                # Every manually verified deposit or level payment earns a 20% wallet bonus.
+                # Credit the full verified amount for BOTH wallet deposits and level payments.
+                # Level activation must not consume/deduct the merchant's paid amount.
+                if r["payment_type"]=="level_activation":
+                    c.execute("""INSERT INTO ledger(transaction_id,shop_id,owner_id,entry_type,amount,currency,note,created_at)
+                                 VALUES(?,?,?,'level_activation_wallet_credit',?,'USDT',?,?)""",
+                              (rid,r["shop_id"],r["owner_id"],payment_amount,
+                               f"Full payment credited for level activation #{rid}",reviewed_at))
+                else:
+                    c.execute("""INSERT INTO ledger(transaction_id,shop_id,owner_id,entry_type,amount,currency,note,created_at)
+                                 VALUES(NULL,?,?, 'deposit_credit',?,'USDT',?,?)""",
+                              (r["shop_id"],r["owner_id"],payment_amount,
+                               f"Admin-approved deposit #{rid}",reviewed_at))
+                # Every manually verified USDT payment earns an additional 20% wallet bonus.
                 cashback_amount=round(payment_amount*0.20,6)
                 if cashback_amount>0:
                     c.execute("""INSERT INTO ledger(transaction_id,shop_id,owner_id,entry_type,amount,currency,note,created_at)
@@ -451,10 +463,7 @@ async def payment_review(update,ctx):
                               (r["shop_id"],r["owner_id"],old,new,
                                f"Approved activation payment #{rid}",ADMIN_ID,reviewed_at))
                     audit_shop(c,r["shop_id"],r["owner_id"],ADMIN_ID,"level_activated",old,new)
-            elif str(r["currency"] or "USDT").upper()=="USDT":
-                c.execute("INSERT INTO ledger(transaction_id,shop_id,owner_id,entry_type,amount,currency,note,created_at) VALUES(NULL,?,?, 'deposit_credit',?,'USDT',?,?)",
-                          (r["shop_id"],r["owner_id"],payment_amount,
-                           f"Admin-approved deposit #{rid}",reviewed_at))
+
 
         c.execute("INSERT INTO admin_audit(admin_id,owner_id,action,details,created_at) VALUES(?,?,?,?,?)",
                   (ADMIN_ID,r["owner_id"],"payment_"+status,
@@ -503,7 +512,8 @@ async def payment_review(update,ctx):
             r["owner_id"],
             f"{'✅ APPROVED' if status == 'approved' else '❌ REJECTED'} — Payment request #{rid}."+
             ((f" Your shop level is now L{r['level']}." if r["payment_type"]=="level_activation" else "") +
-             (f" {cashback_amount:g} USDT (20% payment bonus) has been credited to your wallet." if cashback_amount>0 else "")))
+             (f" {float(r['amount']):g} USDT full payment + {cashback_amount:g} USDT (20% bonus) have been credited to your wallet." if status=="approved" and r["payment_type"]=="level_activation" and str(r["currency"] or "USDT").upper()=="USDT" else
+              (f" {cashback_amount:g} USDT (20% payment bonus) has been credited to your wallet." if cashback_amount>0 else ""))))
     except Exception:
         log.exception("Payment review owner notification failed")
 

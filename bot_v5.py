@@ -339,7 +339,7 @@ async def start(update,ctx):
     s=v4.shop_for(update.effective_user.id)
     if not s:
         await update.message.reply_text(
-            "<b>🔷 SHOP IN INDIA</b>\n━━━━━━━━━━━━━━━━━━\n"
+            "<b>🔷 SHOP MARKETPLACE</b>\n━━━━━━━━━━━━━━━━━━\n"
             "Welcome! Manage your shop, products and orders from one place.\n"
             "<b>Choose an option to continue:</b>",
             reply_markup=ReplyKeyboardMarkup(

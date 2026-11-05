@@ -1771,7 +1771,7 @@ def test_admin_shop_controls_and_search():
     profile_text=profile_cards[0]["kwargs"]["caption"]
     require(f"Shop ID: <code>{public_id}</code>" in profile_text,
             "My Account does not display the public random Shop ID")
-    profile_kb=profile_message.replies[0]["kwargs"]["reply_markup"].inline_keyboard
+    profile_kb=profile_cards[0]["kwargs"]["reply_markup"].inline_keyboard
     require(any(button.callback_data=="m:location" for row in profile_kb for button in row),
             "My Account is missing the Update Location action")
     location_ctx=context()

@@ -764,20 +764,11 @@ async def product_review(update, context):
         return
 
     if action == "reject":
-        con.execute(
-            "UPDATE product_suggestions SET status='rejected', reviewed_at=? WHERE id=?",
-            (now(), sid)
-        )
-        con.commit()
         con.close()
-        await query.edit_message_text(f"Suggestion #{sid} rejected.")
-        try:
-            await context.bot.send_message(
-                item["owner_id"],
-                f"❌ Your product suggestion #{sid} was rejected by Admin."
-            )
-        except Exception:
-            log.exception("Owner rejection notification failed")
+        context.user_data["pending_admin_rejection"]={"kind":"product_suggestion","id":sid}
+        await query.message.reply_text(
+            f"✍️ Enter the rejection reason for product suggestion #{sid}.\n"
+            "The merchant will receive this reason. Type CANCEL to stop.")
         return
 
     con.execute(
@@ -791,6 +782,33 @@ async def product_review(update, context):
         f"Suggestion #{sid} approved for listing.\n"
         "Now enter the FINAL selling price in INR. This price will be controlled by Admin."
     )
+
+
+async def reject_product_suggestion_with_reason(update,context,reason):
+    data=context.user_data.pop("pending_admin_rejection",None)
+    if not data or data.get("kind")!="product_suggestion": return False
+    sid=int(data["id"]); reason=str(reason).strip()
+    ensure_catalog_schema()
+    con=connect()
+    try:
+        item=con.execute("SELECT * FROM product_suggestions WHERE id=?",(sid,)).fetchone()
+        if not item or item["status"]!="pending":
+            await update.message.reply_text("Product suggestion missing or already reviewed."); return True
+        con.execute("UPDATE product_suggestions SET status='rejected',reviewed_at=? WHERE id=? AND status='pending'",
+                    (now(),sid))
+        con.commit()
+    except Exception:
+        con.rollback(); log.exception("Product suggestion rejection failed")
+        await update.message.reply_text("Could not reject product suggestion."); return True
+    finally: con.close()
+    try:
+        await context.bot.send_message(
+            item["owner_id"],
+            f"❌ <b>PRODUCT LISTING REJECTED</b>\nSuggestion: <code>#{sid}</code>\n"
+            f"Reason: {html.escape(reason)}",parse_mode="HTML")
+    except Exception: log.exception("Product rejection notification failed")
+    await update.message.reply_text(f"Product suggestion #{sid} rejected. Reason sent to merchant.")
+    return True
 
 
 async def admin_product_price(update, context):

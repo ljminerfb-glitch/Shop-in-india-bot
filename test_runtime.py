@@ -1062,6 +1062,8 @@ def test_usdt_trc20_withdrawal_flow():
     require(address in submitted,"Withdrawal request did not use saved address")
     require(withdraw_ctx.user_data.get("state") is None,
             "Withdrawal state was not cleared after submission")
+    require(withdraw_ctx.bot.sent[-2]["kwargs"].get("parse_mode")=="HTML",
+            "Merchant withdrawal confirmation was sent without HTML parse mode")
 
     c=v4.db()
     row=c.execute("SELECT * FROM withdrawals WHERE owner_id=101 ORDER BY id DESC LIMIT 1").fetchone()
@@ -1089,6 +1091,8 @@ def test_usdt_trc20_withdrawal_flow():
     paid_update,paid_message,paid_query=callback_update(999999,f"wd:paid:{wid}")
     paid_ctx=context()
     asyncio.run(v5.withdrawal_review_callback(paid_update,paid_ctx))
+    require(any(x["kwargs"].get("parse_mode")=="HTML" for x in paid_message.edits),
+            "Admin withdrawal review result was edited without HTML parse mode")
     require(any("POST-WITHDRAWAL WALLET SUMMARY" in x["text"] and
                 "Sale proceeds remaining: <b>4.300000 USDT</b>" in x["text"]
                 for x in paid_message.replies),

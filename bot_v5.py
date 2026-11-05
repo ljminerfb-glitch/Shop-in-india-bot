@@ -266,7 +266,7 @@ async def start(update,ctx):
         await update.message.reply_text(
             f"<b>🔷 SHOP IN INDIA</b>\n━━━━━━━━━━━━━━━━━━\n"
             f"🏪 <b>{html.escape(str(s['shop_name']))}</b> • <b>LEVEL {s['level']}</b>\n\n"
-            "<b>OWNER DASHBOARD</b>\nWelcome back! Choose a section below.",
+            "<b>MERCHANT COMMAND CENTER</b>\nWelcome back! Choose a section below.",
             reply_markup=owner_kb(),parse_mode="HTML")
 
 async def approved_callback(update,ctx):

@@ -624,6 +624,9 @@ def test_level2_catalogue_and_purchase_flow():
     replies=run_central_buy(303,first_pid,2)
     require(any("Purchase successful" in x["text"] for x in replies),
             f"Level 2 central purchase failed: {replies!r}")
+    repeat_replies=run_central_buy(303,first_pid,1)
+    require(any("already been purchased" in x["text"].lower() for x in repeat_replies),
+            f"Level 2 duplicate product purchase was not blocked: {repeat_replies!r}")
     c=v4.db()
     stock=int(c.execute("SELECT stock FROM central_catalog WHERE id=?",(first_pid,)).fetchone()[0])
     require(stock==48, f"Level 2 central stock should fall from 50 to 48, got {stock}")
@@ -641,6 +644,14 @@ def test_level2_catalogue_and_purchase_flow():
     require(2.0 <= margin_pct <= 6.5,
             f"Level 2 resale margin is outside 2.0–6.5%: {margin_pct:.4f}%")
     listing_id=int(listing["id"])
+    order_count=c.execute(
+        "SELECT COUNT(*) FROM central_orders WHERE buyer_shop_id=? AND catalog_id=?",(inv["shop_id"],first_pid)
+    ).fetchone()[0]
+    bought_units=c.execute(
+        "SELECT COALESCE(SUM(quantity),0) FROM central_orders WHERE buyer_shop_id=? AND catalog_id=?",(inv["shop_id"],first_pid)
+    ).fetchone()[0]
+    require((int(order_count),int(bought_units))==(1,2),
+            "Level 2 product order/unit counters are incorrect after first purchase")
     c.close()
 
     # Level 2 merchants can also buy Level 1 inventory, retaining its original +0.8 USDT margin.
@@ -672,6 +683,19 @@ def test_level2_catalogue_and_purchase_flow():
     asyncio.run(cc.resale_callback(stock_screen_update,stock_screen_ctx))
     require(any(l1_title in x["text"] for x in stock_screen_message.replies),
             "Level 2 merchant's Level 1 inventory was hidden from List My Stock")
+    l2_stock_card=next((x["text"] for x in stock_screen_message.replies if "Purchase orders:" in x["text"]), "")
+    require("Purchase orders: <b>1</b>" in l2_stock_card
+            and "Items bought: <b>2</b>" in l2_stock_card
+            and "Items sold: <b>0</b>" in l2_stock_card,
+            f"Level 2 inventory screen does not show purchase/sale counts: {l2_stock_card!r}")
+    repeat_catalog_ctx=context()
+    repeat_catalog_update,_,_=callback_update(303,"cclevel:2")
+    asyncio.run(cc.owner_level_callback(repeat_catalog_update,repeat_catalog_ctx))
+    bought_card=next(x for x in repeat_catalog_ctx.bot.sent if first_pid in product_card_ids([x]))
+    require("Already purchased" in sent_text(bought_card),
+            "Level 2 catalogue does not mark the previously purchased product")
+    require(not any(cb.startswith(f"ccbuy:{first_pid}:") for cb in sent_callback_data(bought_card)),
+            "Level 2 catalogue still offers buy buttons for an already purchased product")
 
     # My Products displays the actual random resale price and percentage for Level 2 stock.
     products_update,products_message,_=callback_update(303,"m:products")

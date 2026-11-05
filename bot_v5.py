@@ -64,6 +64,21 @@ def owner_kb():
     ])
 
 
+async def send_shop_profile(bot, chat_id, owner_id, caption, reply_markup=None, parse_mode="HTML"):
+    """Fetch and display the owner's latest Telegram profile photo on the shop card."""
+    try:
+        photos=await bot.get_user_profile_photos(user_id=int(owner_id),limit=1)
+        photo_sets=getattr(photos,"photos",None) or []
+        if photo_sets and photo_sets[0]:
+            file_id=getattr(photo_sets[0][-1],"file_id",None)
+            if file_id:
+                return await bot.send_photo(chat_id=chat_id,photo=file_id,caption=caption[:1024],
+                                            reply_markup=reply_markup,parse_mode=parse_mode)
+    except Exception:
+        log.info("Could not fetch Telegram profile photo for shop owner %s",owner_id,exc_info=True)
+    return await bot.send_message(chat_id=chat_id,text=caption,reply_markup=reply_markup,parse_mode=parse_mode)
+
+
 async def edit_screen(ctx, update, text, reply_markup=None):
     """Append a new screen; never overwrite earlier chat messages."""
     sent = await ctx.bot.send_message(
@@ -836,7 +851,8 @@ async def menu_callback(update,ctx):
         central.resale_setup()
         c=v4.db()
         try:
-            rows=c.execute("""SELECT p.id,p.title,p.description,p.price,p.currency,p.stock,s.shop_name
+            rows=c.execute("""SELECT p.id,p.title,p.description,p.price,p.currency,p.stock,
+                s.shop_name,s.owner_id,s.id shop_id
               FROM products p JOIN shops s ON s.id=p.shop_id
               WHERE p.active=1 AND p.stock>0 AND s.status='approved' AND p.shop_id<>?
               ORDER BY p.id DESC LIMIT 30""",(s["id"],)).fetchall()
@@ -846,13 +862,19 @@ async def menu_callback(update,ctx):
               WHERE l.status='active' AND l.remaining_quantity>0 AND l.owner_id=?
                 AND sh.status='approved' AND sh.level>=p.level_required AND p.level_required<=?
               ORDER BY l.id DESC LIMIT 30""",(q.from_user.id,int(s["level"]))).fetchall()
-            resale=c.execute("""SELECT l.id,l.remaining_quantity,l.ask_price_usdt,p.title,sh.shop_name
+            resale=c.execute("""SELECT l.id,l.remaining_quantity,l.ask_price_usdt,p.title,sh.shop_name,sh.owner_id,sh.id shop_id
               FROM resale_listings l JOIN central_catalog p ON p.id=l.catalog_id
               JOIN shops sh ON sh.id=l.shop_id
               WHERE l.status='active' AND l.remaining_quantity>0 AND l.owner_id<>?
                 AND sh.status='approved' AND sh.level>=p.level_required AND p.level_required<=?
               ORDER BY l.id DESC LIMIT 30""",(q.from_user.id,int(s["level"]))).fetchall()
         finally: c.close()
+        seller_cards={}
+        for seller in list(resale)+list(rows):
+            seller_cards.setdefault(int(seller["owner_id"]),(seller["shop_name"],int(seller["owner_id"])))
+        for seller_name,seller_owner in seller_cards.values():
+            await send_shop_profile(ctx.bot,q.message.chat_id,seller_owner,
+                f"🏬 <b>{html.escape(str(seller_name))}</b>\n<i>Merchant Telegram profile photo</i>")
         body="<b>🏬 SELLER MARKETPLACE</b>\n━━━━━━━━━━━━━━━━━━\n<b>MY ACTIVE USDT LISTINGS</b>\n"
         if own_resale:
             body+="\n\n".join(
@@ -1019,7 +1041,7 @@ async def menu_callback(update,ctx):
             [InlineKeyboardButton("📍 Update Location",callback_data="m:location")],
             [InlineKeyboardButton("⬅️ Back to Dashboard",callback_data="m:dashboard")]
         ])
-        await q.message.reply_text(body,reply_markup=profile_kb,parse_mode="HTML")
+        await send_shop_profile(ctx.bot,q.message.chat_id,q.from_user.id,body,reply_markup=profile_kb)
     elif action=="support":
         await q.message.reply_text(
             "<b>💬 SUPPORT</b>\n━━━━━━━━━━━━━━━━━━\n"
@@ -1981,7 +2003,8 @@ async def dashboard(update,ctx):
     if not s: await start(update,ctx)
     elif s["status"]!="approved": await update.message.reply_text("Awaiting Admin approval.")
     elif int(s["level"])<1: await levels(ctx.bot,update.effective_user.id)
-    else: await update.message.reply_text(f"🏪 {s['shop_name']} | L{s['level']}",reply_markup=owner_kb())
+    else: await send_shop_profile(ctx.bot,update.effective_chat.id,update.effective_user.id,
+        f"🏪 <b>{html.escape(str(s['shop_name']))}</b> | L{s['level']}",reply_markup=owner_kb())
 
 def main():
     if not TOKEN or not ADMIN_ID: raise RuntimeError("BOT_TOKEN and ADMIN_ID are required.")

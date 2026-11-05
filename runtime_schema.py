@@ -42,6 +42,10 @@ def ensure_schema(db_path=None):
                 ("location_country", "TEXT"),
                 ("location_state", "TEXT"),
                 ("location_city", "TEXT"),
+                ("control_status", "TEXT NOT NULL DEFAULT 'active'"),
+                ("control_note", "TEXT"),
+                ("next_order_warning", "INTEGER NOT NULL DEFAULT 0"),
+                ("warning_reason", "TEXT"),
             ])
         if "products" in {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}:
             _add_columns(conn, "products", [

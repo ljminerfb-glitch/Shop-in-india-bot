@@ -1456,7 +1456,6 @@ def test_referral_registration_and_bonuses():
 def main():
     test_runtime_schema_bootstrap()
     fixture()
-    test_referral_registration_and_bonuses()
     test_level1_catalogue_quantity_buttons()
     test_admin_catalogue_pagination()
     pid, listing_id, inventory_id = test_central_purchase_and_auto_listing()
@@ -1472,6 +1471,7 @@ def main():
     test_failed_central_purchases(pid)
     test_admin_refund_safety()
     test_usdt_balance_reconciliation()
+    test_referral_registration_and_bonuses()
     print("PASS: All isolated Telegram-handler end-to-end tests completed.")
 
 

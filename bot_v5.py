@@ -1012,6 +1012,35 @@ async def text_handler(update,ctx):
             except Exception:
                 log.exception("Product rejection notification failed")
             await update.message.reply_text(f"Product suggestion #{sid} rejected. Reason sent to merchant.")
+        elif kind=="central_listing":
+            lid=int(pending_rejection["id"])
+            c=v4.db()
+            try:
+                listing=c.execute("""SELECT l.owner_id,l.status,p.title FROM resale_listings l
+                    JOIN central_catalog p ON p.id=l.catalog_id WHERE l.id=?""",(lid,)).fetchone()
+                if not listing or listing["status"]!="active":
+                    ctx.user_data.pop("pending_admin_rejection",None)
+                    await update.message.reply_text("Resale listing missing or already reviewed.")
+                    return
+                c.execute("UPDATE resale_listings SET status='rejected' WHERE id=? AND status='active'",(lid,))
+                c.execute("INSERT INTO admin_audit(admin_id,owner_id,action,details,created_at) VALUES(?,?,?,?,?)",
+                          (ADMIN_ID,listing["owner_id"],"resale_listing_rejected",f"Listing #{lid}: {reason}",v4.now()))
+                c.commit()
+            except Exception:
+                c.rollback()
+                await update.message.reply_text("Could not reject resale listing. Try again.")
+                return
+            finally:
+                c.close()
+            ctx.user_data.pop("pending_admin_rejection",None)
+            try:
+                await ctx.bot.send_message(listing["owner_id"],
+                    f"❌ <b>YOUR RESALE LISTING WAS REJECTED</b>\\n"
+                    f"Listing: <b>#{lid} — {html.escape(str(listing['title']))}</b>\\n"
+                    f"Reason: {html.escape(reason)}",parse_mode="HTML")
+            except Exception:
+                log.exception("Resale listing rejection notification failed")
+            await update.message.reply_text(f"Resale listing #{lid} rejected. Reason sent to seller.")
         elif kind=="shop_application":
             sid=int(pending_rejection["id"])
             c=v4.db()
@@ -1680,7 +1709,7 @@ def main():
     app.add_handler(CallbackQueryHandler(txid_callback,pattern=r"^txid:[0-9]+$"))
     app.add_handler(CallbackQueryHandler(menu_callback,pattern=r"^m:(market|level1|upgrade|sellermarket|deposit|depositstart|depositfund|deposit_fund|deposit-fund|depositdone|deposits|withdraw|withdrawsetup|withdrawsetupedit|wallet|products|orders|history|profile|referrals|dashboard|support)$"))
     app.add_handler(CallbackQueryHandler(admin_panel_callback,pattern=r"^adm:(home|owners|shops|payments|levelpayments|withdrawals|withdrawwallets|products|orders|levels|settings|central|resale|audit|back)$"))
-    app.add_handler(CallbackQueryHandler(central.resale_callback,pattern=r"^rs:(list:[0-9]+|listmenu|market|review:[0-9]+|buy:[0-9]+:[0-9]+)$"))
+    app.add_handler(CallbackQueryHandler(central.resale_callback,pattern=r"^rs:(list:[0-9]+|listmenu|market|review:[0-9]+|reject:[0-9]+|buy:[0-9]+:[0-9]+)$"))
     app.add_handler(CallbackQueryHandler(audit_callback,pattern=r"^audit:(all|payments|levels|wallet|orders|products):[0-9]+$"))
     app.add_handler(CallbackQueryHandler(delivered_callback,pattern=r"^order:delivered:[0-9]+$"))
     app.add_handler(CallbackQueryHandler(central.admin_level_callback,pattern=r"^ccadminlevel:[12]$"))

@@ -1509,7 +1509,7 @@ def test_admin_rejection_reasons():
             "Merchant did not receive the withdrawal rejection reason")
 
     # Product suggestion rejection must also collect a reason and notify the owner.
-    v3.ensure_catalog_schema()
+    v5.v3.ensure_catalog_schema()
     c=v4.db()
     cur=c.execute("""INSERT INTO product_suggestions
         (owner_id,shop_id,title,description,suggested_price,status,created_at)
@@ -1517,7 +1517,7 @@ def test_admin_rejection_reasons():
         (shop["id"],v4.now()))
     suggestion_id=int(cur.lastrowid); c.commit(); c.close()
     pu2,pm2,pq2=callback_update(999999,f"product:reject:{suggestion_id}")
-    asyncio.run(v3.product_review(pu2,admin_ctx))
+    asyncio.run(v5.v3.product_review(pu2,admin_ctx))
     require(admin_ctx.user_data.get("pending_admin_rejection")=={"kind":"product_suggestion","id":suggestion_id},
             "Product listing rejection did not request an Admin reason")
     preason="Product photos or details need correction."

@@ -53,7 +53,7 @@ def shop_order_gate(c, shop_id):
         # Commit only the warning acknowledgement; the attempted order is not placed.
         c.commit()
         return False, ("⚠️ ADMIN WARNING — " + warning +
-                       "\\nYour order was NOT placed. Please review this notice, then submit the order again if you wish to continue.")
+                       "\nYour order was NOT placed. Please review this notice, then submit the order again if you wish to continue.")
     return True, None
 
 def shop_control_state(c, shop_id):

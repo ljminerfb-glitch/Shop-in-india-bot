@@ -255,12 +255,12 @@ def test_level1_catalogue_quantity_buttons():
                for b in row if getattr(b,"callback_data",None)]
     visible_labels=[b.text for row in markup.inline_keyboard
                     for b in row if getattr(b,"callback_data",None)]
-    expected=[f"ccbuy:{pid}:{n}" for n in range(1,11)]
-    require(callbacks[:10]==expected,"Level 1 catalogue does not show quantities 1 through 10")
-    require(visible_labels[:10]==[str(n) for n in range(1,11)],
-            f"Quantity button labels are not visible numbers: {visible_labels[:10]!r}")
-    require([len(row) for row in markup.inline_keyboard[:5]]==[2,2,2,2,2],
-            "Quantity buttons are not arranged in compact two-button rows")
+    expected=[f"ccbuy:{pid}:1"]
+    require(callbacks[:1]==expected,"Level 1 catalogue must show only the quantity-1 purchase option")
+    require(visible_labels[:1]==["1"],
+            f"Level 1 quantity button label is not 1: {visible_labels[:1]!r}")
+    require(f"ccbuy:{pid}:2" not in callbacks,
+            "Level 1 catalogue must not offer purchase quantities above one")
     require("m:products" in callbacks and "m:dashboard" in callbacks,
             "Catalogue quantity buttons lost their Back/Dashboard navigation")
     c=v4.db()
@@ -274,10 +274,9 @@ def test_level1_catalogue_quantity_buttons():
                   for row in x["kwargs"]["reply_markup"].inline_keyboard for b in row))
     callbacks=[b.callback_data for row in item["kwargs"]["reply_markup"].inline_keyboard
                for b in row if getattr(b,"callback_data",None)]
-    require(callbacks[:3]==[f"ccbuy:{pid}:{n}" for n in range(1,4)] and
-            f"ccbuy:{pid}:4" not in callbacks,
-            "Catalogue offers quantities above available stock")
-    print("PASS: Level 1 catalogue Buy ×1–×10 buttons and stock cap")
+    require(callbacks[:1]==[f"ccbuy:{pid}:1"] and f"ccbuy:{pid}:2" not in callbacks,
+            "Level 1 catalogue did not enforce the single-item purchase option")
+    print("PASS: Level 1 catalogue shows only Buy ×1")
 
 
 def test_admin_catalogue_pagination():
@@ -316,13 +315,20 @@ def test_central_purchase_and_auto_listing():
     require(cc.balance(c, 101) == 12.5, "USDT wallet balance calculation failed")
     c.close()
 
-    replies = run_central_buy(101, pid, 2)
-    require(any("Purchase successful" in x["text"] for x in replies), "Central purchase did not succeed")
+    blocked = run_central_buy(101, pid, 2)
+    require(any("only 1 item per order" in x["text"] for x in blocked),
+            "Server did not block a Level 1 purchase quantity above one")
     c = v4.db()
+    c.execute("UPDATE shops SET level=2 WHERE owner_id=101")
+    c.commit(); c.close()
+    replies = run_central_buy(101, pid, 2)
+    require(any("Purchase successful" in x["text"] for x in replies), "Level 2 central purchase did not succeed")
+    c = v4.db()
+    c.execute("UPDATE shops SET level=1 WHERE owner_id=101")
     require(c.execute("SELECT stock FROM central_catalog WHERE id=?", (pid,)).fetchone()[0] == 3,
             "Central shared stock was not reduced")
     order = c.execute("SELECT id FROM central_orders WHERE buyer_owner_id=101 AND quantity=2").fetchone()
-    require(order is not None, "Central purchase order missing")
+    require(order is not None, "Level 2 purchase order missing")
     inv = c.execute("SELECT * FROM central_inventory WHERE owner_id=101 AND remaining_quantity=2").fetchone()
     require(inv is not None, "Buyer inventory missing")
     listing = c.execute("SELECT * FROM resale_listings WHERE owner_id=101 AND status='active'").fetchone()

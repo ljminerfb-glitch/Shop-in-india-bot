@@ -46,12 +46,15 @@ def shop_order_gate(c, shop_id):
     if status != "active":
         labels={"frozen":"frozen","disabled":"disabled","deleted":"deleted"}
         return False, f"This shop is {labels.get(status, status)} by Admin. New orders are unavailable."
-    warning=None
     if int(row["next_order_warning"] or 0):
         warning=str(row["warning_reason"] or "Please follow marketplace rules.")
         c.execute("UPDATE shops SET next_order_warning=0,warning_reason=NULL WHERE id=?",
                   (int(shop_id),))
-    return True, warning
+        # Commit only the warning acknowledgement; the attempted order is not placed.
+        c.commit()
+        return False, ("⚠️ ADMIN WARNING — " + warning +
+                       "\\nYour order was NOT placed. Please review this notice, then submit the order again if you wish to continue.")
+    return True, None
 
 def shop_control_state(c, shop_id):
     row=c.execute("SELECT control_status FROM shops WHERE id=?",(int(shop_id),)).fetchone()

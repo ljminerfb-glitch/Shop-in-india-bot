@@ -35,6 +35,30 @@ def inr_to_usdt(amount_inr, rate):
     return round(float(amount_inr) / float(rate), 6)
 def shop_for(uid):
     c=db(); r=c.execute("SELECT * FROM shops WHERE owner_id=? ORDER BY id DESC LIMIT 1",(uid,)).fetchone(); c.close(); return r
+
+def shop_order_gate(c, shop_id):
+    """Check Admin controls and consume a one-time next-order warning transactionally."""
+    row=c.execute("SELECT control_status,next_order_warning,warning_reason FROM shops WHERE id=?",
+                  (int(shop_id),)).fetchone()
+    if not row:
+        return False, "Shop not found."
+    status=str(row["control_status"] or "active").lower()
+    if status != "active":
+        labels={"frozen":"frozen","disabled":"disabled","deleted":"deleted"}
+        return False, f"This shop is {labels.get(status, status)} by Admin. New orders are unavailable."
+    if int(row["next_order_warning"] or 0):
+        warning=str(row["warning_reason"] or "Please follow marketplace rules.")
+        c.execute("UPDATE shops SET next_order_warning=0,warning_reason=NULL WHERE id=?",
+                  (int(shop_id),))
+        # Commit only the warning acknowledgement; the attempted order is not placed.
+        c.commit()
+        return False, ("⚠️ ADMIN WARNING — " + warning +
+                       "\nYour order was NOT placed. Please review this notice, then submit the order again if you wish to continue.")
+    return True, None
+
+def shop_control_state(c, shop_id):
+    row=c.execute("SELECT control_status FROM shops WHERE id=?",(int(shop_id),)).fetchone()
+    return str(row["control_status"] or "active").lower() if row else "missing"
 def audit_product(c,p,shop,owner,actor,action,old,new):
     c.execute("""INSERT INTO product_audit(product_id,shop_id,owner_id,actor_id,action,old_value,new_value,created_at)
                   VALUES(?,?,?,?,?,?,?,?)""",(p,shop,owner,actor,action,str(old),str(new),now()))
@@ -194,10 +218,15 @@ async def buy(update,ctx):
     c=db()
     try:
         c.execute("BEGIN IMMEDIATE")
-        p=c.execute("""SELECT p.*,s.owner_id,s.status seller_status,s.level seller_level
+        allowed, buyer_warning=shop_order_gate(c,buyer["id"])
+        if not allowed:
+            c.rollback(); await update.message.reply_text(buyer_warning); return
+        p=c.execute("""SELECT p.*,s.owner_id,s.status seller_status,s.level seller_level,s.control_status seller_control
                        FROM products p JOIN shops s ON s.id=p.shop_id WHERE p.id=? AND p.active=1""",(pid,)).fetchone()
         if not p or p["stock"]<qty or p["shop_id"]==buyer["id"]:
             c.rollback(); await update.message.reply_text("Product unavailable, insufficient stock, or buying from your own shop is not allowed."); return
+        if str(p["seller_control"] or "active").lower()!="active":
+            c.rollback(); await update.message.reply_text("This seller shop is not accepting new orders."); return
         target=p["level_required"] if "level_required" in p.keys() else 1
         if int(buyer["level"])!=int(target):
             c.rollback(); await update.message.reply_text(f"This product requires buyer shop L{target}."); return
@@ -216,7 +245,8 @@ async def buy(update,ctx):
         c.rollback(); log.exception("Buy failed"); await update.message.reply_text("Order could not be created; no payment has been taken.")
         return
     finally: c.close()
-    await update.message.reply_text(f"Order #{oid} created. Amount ₹{total:.2f}. Payment and fulfilment require Admin review; stock is reserved.")
+    await update.message.reply_text(f"Order #{oid} created. Amount ₹{total:.2f}. Payment and fulfilment require Admin review; stock is reserved." +
+        (f"\\n⚠️ ADMIN WARNING: {buyer_warning}" if buyer_warning else ""))
     try: await ctx.bot.send_message(ADMIN_ID,f"🛒 ORDER #{oid}\nProduct #{pid} {p['title']}\nBuyer shop #{buyer['id']}\nSeller shop #{p['shop_id']}\nQty {qty} | Total ₹{total:.2f}\nFee ₹{fee:.2f} | Seller allocation ₹{seller:.2f}\nUse /orderdone {oid} after real delivery and payment verification, or /orderreject {oid} REASON.")
     except Exception: log.exception("Admin order alert failed")
 
@@ -358,6 +388,13 @@ async def payment_review(update,ctx):
         await q.message.reply_text("Invalid payment review action.")
         return
 
+    if action=="reject":
+        ctx.user_data["pending_admin_rejection"]={"kind":"payment","id":rid}
+        await q.message.reply_text(
+            f"✍️ Enter the rejection reason for payment request #{rid}.\n"
+            "The merchant will receive this reason. Type CANCEL to stop.")
+        return
+
     c=db()
     try:
         c.execute("BEGIN IMMEDIATE")
@@ -393,32 +430,70 @@ async def payment_review(update,ctx):
            r["created_at"],reviewed_at))
 
         cashback_amount=0.0
-        if action=="approve" and r["payment_type"]=="level_activation":
-            shop=c.execute("SELECT level FROM shops WHERE id=? AND owner_id=?",
-                           (r["shop_id"],r["owner_id"])).fetchone()
-            if not shop:
-                raise RuntimeError("Shop missing for payment request")
-            old=int(shop["level"])
-            new=int(r["level"])
-            if new>old:
-                c.execute("UPDATE shops SET level=? WHERE id=?",(new,r["shop_id"]))
-                c.execute("INSERT INTO level_history(shop_id,owner_id,old_level,new_level,reason,actor_id,created_at) VALUES(?,?,?,?,?,?,?)",
-                          (r["shop_id"],r["owner_id"],old,new,
-                           f"Approved activation payment #{rid}",ADMIN_ID,reviewed_at))
-                audit_shop(c,r["shop_id"],r["owner_id"],ADMIN_ID,"level_activated",old,new)
-            # Credit 50% of the approved activation fee to the owner's USDT wallet.
-            # The pending->approved transition above prevents duplicate credits.
-            cashback_amount=round(float(r["amount"])*0.50,6)
-            if cashback_amount>0:
-                c.execute("""INSERT INTO ledger(transaction_id,shop_id,owner_id,entry_type,amount,currency,note,created_at)
-                              VALUES(NULL,?,?, 'level_activation_wallet_credit',?,'USDT',?,?)""",
-                          (r["shop_id"],r["owner_id"],cashback_amount,
-                           f"50% wallet cashback for approved level activation #{rid}",reviewed_at))
+        referral_bonus_amount=0.0
+        referrer_owner_id=None
+        if action=="approve" and r["payment_type"] in ("wallet_deposit","level_activation"):
+            payment_amount=float(r["amount"])
+            if str(r["currency"] or "USDT").upper()=="USDT":
+                # Credit the full verified amount for BOTH wallet deposits and level payments.
+                # Level activation must not consume/deduct the merchant's paid amount.
+                if r["payment_type"]=="level_activation":
+                    c.execute("""INSERT INTO ledger(transaction_id,shop_id,owner_id,entry_type,amount,currency,note,created_at)
+                                 VALUES(?,?,?,'level_activation_wallet_credit',?,'USDT',?,?)""",
+                              (rid,r["shop_id"],r["owner_id"],payment_amount,
+                               f"Full payment credited for level activation #{rid}",reviewed_at))
+                else:
+                    c.execute("""INSERT INTO ledger(transaction_id,shop_id,owner_id,entry_type,amount,currency,note,created_at)
+                                 VALUES(NULL,?,?, 'deposit_credit',?,'USDT',?,?)""",
+                              (r["shop_id"],r["owner_id"],payment_amount,
+                               f"Admin-approved deposit #{rid}",reviewed_at))
+                # Every manually verified USDT payment earns an additional 20% wallet bonus.
+                cashback_amount=round(payment_amount*0.20,6)
+                if cashback_amount>0:
+                    c.execute("""INSERT INTO ledger(transaction_id,shop_id,owner_id,entry_type,amount,currency,note,created_at)
+                                  VALUES(?,?,?,'deposit_bonus_credit',?,'USDT',?,?)""",
+                              (rid,r["shop_id"],r["owner_id"],cashback_amount,
+                               f"20% bonus for approved payment #{rid}",reviewed_at))
 
-        if action=="approve" and r["payment_type"]=="wallet_deposit":
-            c.execute("INSERT INTO ledger(transaction_id,shop_id,owner_id,entry_type,amount,currency,note,created_at) VALUES(NULL,?,?, 'deposit_credit',?,'USDT',?,?)",
-                      (r["shop_id"],r["owner_id"],float(r["amount"]),
-                       f"Admin-approved deposit #{rid}",reviewed_at))
+                # Pay the inviter 2% of the referred merchant's verified payment.
+                referral=c.execute(
+                    "SELECT referred_by_owner_id FROM shops WHERE id=? AND owner_id=?",
+                    (r["shop_id"],r["owner_id"])).fetchone()
+                if referral and referral["referred_by_owner_id"] is not None:
+                    candidate=int(referral["referred_by_owner_id"])
+                    inviter=c.execute(
+                        "SELECT id FROM shops WHERE owner_id=? AND status='approved' ORDER BY id DESC LIMIT 1",
+                        (candidate,)).fetchone()
+                    if inviter and candidate!=int(r["owner_id"]):
+                        referral_bonus_amount=round(payment_amount*0.02,6)
+                        if referral_bonus_amount>0:
+                            reward=c.execute("""INSERT OR IGNORE INTO referral_rewards
+                                (payment_request_id,referrer_owner_id,referred_owner_id,payment_amount,bonus_amount,currency,created_at)
+                                VALUES(?,?,?,?,?,'USDT',?)""",
+                                (rid,candidate,r["owner_id"],payment_amount,referral_bonus_amount,reviewed_at))
+                            if reward.rowcount==1:
+                                referrer_owner_id=candidate
+                                c.execute("""INSERT INTO ledger(transaction_id,shop_id,owner_id,entry_type,amount,currency,note,created_at)
+                                    VALUES(?,?,?,'referral_bonus_credit',?,'USDT',?,?)""",
+                                    (rid,inviter["id"],candidate,referral_bonus_amount,
+                                     f"2% referral bonus from merchant {r['owner_id']} payment #{rid}",reviewed_at))
+                            else:
+                                referral_bonus_amount=0.0
+
+            if r["payment_type"]=="level_activation":
+                shop=c.execute("SELECT level FROM shops WHERE id=? AND owner_id=?",
+                               (r["shop_id"],r["owner_id"])).fetchone()
+                if not shop:
+                    raise RuntimeError("Shop missing for payment request")
+                old=int(shop["level"])
+                new=int(r["level"])
+                if new>old:
+                    c.execute("UPDATE shops SET level=? WHERE id=?",(new,r["shop_id"]))
+                    c.execute("INSERT INTO level_history(shop_id,owner_id,old_level,new_level,reason,actor_id,created_at) VALUES(?,?,?,?,?,?,?)",
+                              (r["shop_id"],r["owner_id"],old,new,
+                               f"Approved activation payment #{rid}",ADMIN_ID,reviewed_at))
+                    audit_shop(c,r["shop_id"],r["owner_id"],ADMIN_ID,"level_activated",old,new)
+
 
         c.execute("INSERT INTO admin_audit(admin_id,owner_id,action,details,created_at) VALUES(?,?,?,?,?)",
                   (ADMIN_ID,r["owner_id"],"payment_"+status,
@@ -466,10 +541,21 @@ async def payment_review(update,ctx):
         await ctx.bot.send_message(
             r["owner_id"],
             f"{'✅ APPROVED' if status == 'approved' else '❌ REJECTED'} — Payment request #{rid}."+
-            (f" Your shop level is now L{r['level']}. {cashback_amount:g} USDT (50% of activation fee) has been credited to your wallet."
-             if status=="approved" and r["payment_type"]=="level_activation" else ""))
+            ((f" Your shop level is now L{r['level']}." if r["payment_type"]=="level_activation" else "") +
+             (f" {float(r['amount']):g} USDT full payment + {cashback_amount:g} USDT (20% bonus) have been credited to your wallet." if status=="approved" and r["payment_type"]=="level_activation" and str(r["currency"] or "USDT").upper()=="USDT" else
+              (f" {cashback_amount:g} USDT (20% payment bonus) has been credited to your wallet." if cashback_amount>0 else ""))))
     except Exception:
         log.exception("Payment review owner notification failed")
+
+    if status=="approved" and referrer_owner_id and referral_bonus_amount>0:
+        try:
+            await ctx.bot.send_message(
+                referrer_owner_id,
+                f"🎉 Referral bonus received: <b>{referral_bonus_amount:.6f} USDT</b> "
+                f"(2% of merchant {r['owner_id']}'s verified payment #{rid}).",
+                parse_mode="HTML")
+        except Exception:
+            log.exception("Referral bonus notification failed")
 
 async def setshoplevel(update,ctx):
     if not admin(update.effective_user.id): return
@@ -551,6 +637,12 @@ async def withdrawal_review(update,ctx):
         if action not in ("paid","reject"): raise ValueError()
     except (ValueError,IndexError):
         await q.message.reply_text("Invalid withdrawal review action."); return
+    if action=="reject":
+        ctx.user_data["pending_admin_rejection"]={"kind":"withdrawal","id":wid}
+        await q.message.reply_text(
+            f"✍️ Enter the rejection reason for withdrawal #{wid}.\n"
+            "The merchant will receive this reason. Type CANCEL to stop.")
+        return
     c=db()
     try:
         c.execute("BEGIN IMMEDIATE")
@@ -586,12 +678,16 @@ async def withdrawal_review(update,ctx):
     try:
         old_text=q.message.text or q.message.caption or f"WITHDRAWAL #{wid}"
         clean_text=old_text.split("\n\nREVIEW RESULT:",1)[0]
-        await q.message.edit_text(clean_text+f"\n\nREVIEW RESULT: {result_label}",reply_markup=None)
+        await q.message.edit_text(
+            clean_text+f"\n\nREVIEW RESULT: {result_label}",
+            reply_markup=None,parse_mode="HTML")
     except Exception:
         try:
             old_caption=q.message.caption or f"WITHDRAWAL #{wid}"
             clean_caption=old_caption.split("\n\nREVIEW RESULT:",1)[0]
-            await q.message.edit_caption(clean_caption+f"\n\nREVIEW RESULT: {result_label}",reply_markup=None)
+            await q.message.edit_caption(
+                clean_caption+f"\n\nREVIEW RESULT: {result_label}",
+                reply_markup=None,parse_mode="HTML")
         except Exception:
             log.exception("Could not update reviewed withdrawal card")
     await q.message.reply_text(result_text,parse_mode="HTML")
@@ -599,6 +695,72 @@ async def withdrawal_review(update,ctx):
         await ctx.bot.send_message(r["owner_id"],result_text,parse_mode="HTML")
     except Exception:
         log.exception("Withdrawal owner notification failed")
+
+
+async def reject_payment_with_reason(update,ctx,reason):
+    data=ctx.user_data.pop("pending_admin_rejection",None)
+    if not data or data.get("kind")!="payment": return False
+    rid=int(data["id"]); reason=str(reason).strip()
+    c=db()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        r=c.execute("SELECT * FROM payment_requests WHERE id=?",(rid,)).fetchone()
+        if not r or r["status"]!="pending":
+            c.rollback(); await update.message.reply_text("Payment request missing or already reviewed."); return True
+        reviewed=now()
+        changed=c.execute("UPDATE payment_requests SET status='rejected',reviewed_at=?,admin_note=? WHERE id=? AND status='pending'",
+                          (reviewed,reason,rid))
+        if changed.rowcount!=1:
+            c.rollback(); await update.message.reply_text("Payment request was already reviewed."); return True
+        c.execute("""INSERT INTO payment_history(owner_id,shop_id,payment_type,amount,currency,status,reference,admin_note,actor_id,created_at,reviewed_at)
+                     VALUES(?,?,?,?,?,'rejected',?,?,?,?,?)""",
+                  (r["owner_id"],r["shop_id"],r["payment_type"],r["amount"],r["currency"],
+                   f"payment_request:{rid}",reason,ADMIN_ID,r["created_at"],reviewed))
+        c.execute("INSERT INTO admin_audit(admin_id,owner_id,action,details,created_at) VALUES(?,?,?,?,?)",
+                  (ADMIN_ID,r["owner_id"],"payment_rejected",f"Payment request #{rid}: {reason}",reviewed))
+        c.commit()
+    except Exception:
+        c.rollback(); log.exception("Reasoned payment rejection failed")
+        await update.message.reply_text("Could not reject payment. No changes were committed."); return True
+    finally: c.close()
+    try:
+        await ctx.bot.send_message(r["owner_id"],
+            f"❌ <b>PAYMENT REQUEST REJECTED</b>\nRequest: <code>#{rid}</code>\n"
+            f"Reason: {html.escape(reason)}",parse_mode="HTML")
+    except Exception: log.exception("Payment rejection notification failed")
+    await update.message.reply_text(f"Payment request #{rid} rejected. Reason sent to merchant.")
+    return True
+
+
+async def reject_withdrawal_with_reason(update,ctx,reason):
+    data=ctx.user_data.pop("pending_admin_rejection",None)
+    if not data or data.get("kind")!="withdrawal": return False
+    wid=int(data["id"]); reason=str(reason).strip()
+    c=db()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        r=c.execute("SELECT * FROM withdrawals WHERE id=?",(wid,)).fetchone()
+        if not r or r["status"]!="pending":
+            c.rollback(); await update.message.reply_text("Withdrawal missing or already reviewed."); return True
+        reviewed=now()
+        changed=c.execute("UPDATE withdrawals SET status='rejected',reviewed_at=?,admin_note=? WHERE id=? AND status='pending'",
+                          (reviewed,reason,wid))
+        if changed.rowcount!=1:
+            c.rollback(); await update.message.reply_text("Withdrawal was already reviewed."); return True
+        c.execute("INSERT INTO admin_audit(admin_id,owner_id,action,details,created_at) VALUES(?,?,?,?,?)",
+                  (ADMIN_ID,r["owner_id"],"withdrawal_rejected",f"Withdrawal #{wid}: {reason}",reviewed))
+        c.commit()
+    except Exception:
+        c.rollback(); log.exception("Reasoned withdrawal rejection failed")
+        await update.message.reply_text("Could not reject withdrawal. No changes were committed."); return True
+    finally: c.close()
+    notice=(f"<b>❌ WITHDRAWAL REJECTED</b>\nRequest: <code>#{wid}</code>\n"
+            f"Amount: <b>{float(r['amount']):.6f} {html.escape(str(r['currency'] or 'USDT'))}</b>\n"
+            f"Reason: {html.escape(reason)}")
+    try: await ctx.bot.send_message(r["owner_id"],notice,parse_mode="HTML")
+    except Exception: log.exception("Withdrawal rejection notification failed")
+    await update.message.reply_text(f"Withdrawal #{wid} rejected. Reason sent to merchant.")
+    return True
 
 
 async def myproductaudit(update,ctx):

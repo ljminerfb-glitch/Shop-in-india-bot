@@ -1,6 +1,9 @@
 """V5 Telegram-chat UI: inline level selection, owner panel and deposits."""
-import os, logging, asyncio, html, re
-from telegram import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove, CopyTextButton
+import os, logging, asyncio, html, re, secrets, json, time
+from datetime import datetime, timedelta, timezone
+from urllib.request import Request, urlopen
+from urllib.parse import urlencode
+from telegram import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove, CopyTextButton, KeyboardButton
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 import bot_v3 as v3
 import bot_v4 as v4
@@ -10,8 +13,11 @@ import runtime_schema
 
 TOKEN=os.getenv("BOT_TOKEN")
 ADMIN_ID=int(os.getenv("ADMIN_ID","0"))
+ROOT_REFERRAL_CODE=os.getenv("ROOT_REFERRAL_CODE","SHOPINDIA").strip().upper() or "SHOPINDIA"
 logging.basicConfig(level=logging.INFO)
 log=logging.getLogger("shop_v5")
+_geocode_lock=asyncio.Lock()
+_geocode_last_request=0.0
 v3.main_keyboard=lambda: ReplyKeyboardRemove()
 
 def level_kb():
@@ -26,20 +32,61 @@ def level_kb():
             callback_data=f"lv:{r['level']}")])
     return InlineKeyboardMarkup(buttons)
 
+def upgrade_level_kb(current_level):
+    """Offer only levels higher than the merchant's currently active level."""
+    c=v4.db()
+    try:
+        rows=c.execute(
+            "SELECT level,activation_usdt,product_target FROM level_settings WHERE level>? ORDER BY level",
+            (int(current_level),)
+        ).fetchall()
+    finally:
+        c.close()
+    buttons=[]
+    for row in rows:
+        target="Unlimited" if not row["product_target"] else f"{int(row['product_target'])} products"
+        buttons.append([InlineKeyboardButton(
+            f"⬆️ Upgrade to Level {int(row['level'])} • {float(row['activation_usdt']):g} USDT",
+            callback_data=f"lv:{int(row['level'])}")])
+    buttons.append([InlineKeyboardButton("⬅️ Back to Dashboard",callback_data="m:dashboard")])
+    return InlineKeyboardMarkup(buttons)
+
+
 def owner_kb():
     return InlineKeyboardMarkup([
-      [InlineKeyboardButton("🛍 Level 1 Central Catalogue",callback_data="m:market")],
+      [InlineKeyboardButton("🛍 My Level Catalogue",callback_data="m:market")],
+      [InlineKeyboardButton("🚀 Upgrade Shop Level",callback_data="m:upgrade")],
       [InlineKeyboardButton("🏬 Seller Marketplace",callback_data="m:sellermarket"),InlineKeyboardButton("💳 Deposit",callback_data="m:deposit")],
       [InlineKeyboardButton("💸 Withdraw",callback_data="m:withdraw"),InlineKeyboardButton("👛 Wallet",callback_data="m:wallet")],
       [InlineKeyboardButton("📦 My Products",callback_data="m:products"),InlineKeyboardButton("🧾 My Orders",callback_data="m:orders")],
       [InlineKeyboardButton("📊 Profit & History",callback_data="m:history"),InlineKeyboardButton("👤 My Account",callback_data="m:profile")],
+      [InlineKeyboardButton("👥 Invited Merchants",callback_data="m:referrals")],
+      [InlineKeyboardButton("⏰ Motivation Reminder",callback_data="m:motivation")],
       [InlineKeyboardButton("💬 Support",callback_data="m:support")]
     ])
 
 
+async def send_shop_profile(bot, chat_id, owner_id, caption, reply_markup=None, parse_mode="HTML"):
+    """Fetch and display the owner's latest Telegram profile photo on the shop card."""
+    try:
+        photos=await bot.get_user_profile_photos(user_id=int(owner_id),limit=1)
+        photo_sets=getattr(photos,"photos",None) or []
+        if photo_sets and photo_sets[0]:
+            file_id=getattr(photo_sets[0][-1],"file_id",None)
+            if file_id:
+                return await bot.send_photo(chat_id=chat_id,photo=file_id,caption=caption[:1024],
+                                            reply_markup=reply_markup,parse_mode=parse_mode)
+    except Exception:
+        log.info("Could not fetch Telegram profile photo for shop owner %s",owner_id,exc_info=True)
+    return await bot.send_message(chat_id=chat_id,text=caption,reply_markup=reply_markup,parse_mode=parse_mode)
+
+
 async def edit_screen(ctx, update, text, reply_markup=None):
     """Append a new screen; never overwrite earlier chat messages."""
-    sent = await ctx.bot.send_message(chat_id=update.effective_chat.id, text=text, reply_markup=reply_markup)
+    sent = await ctx.bot.send_message(
+        chat_id=update.effective_chat.id, text=text,
+        reply_markup=reply_markup, parse_mode="HTML"
+    )
     ctx.user_data["screen_message_id"] = sent.message_id
     ctx.user_data["screen_chat_id"] = sent.chat_id
     return sent
@@ -48,21 +95,297 @@ async def edit_screen(ctx, update, text, reply_markup=None):
 def back_dashboard_kb():
     return InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back to Dashboard", callback_data="m:dashboard")]])
 
+def location_request_keyboard():
+    return ReplyKeyboardMarkup(
+        [[KeyboardButton("📍 Share my location",request_location=True)]],
+        resize_keyboard=True,one_time_keyboard=True
+    )
+
+def _reverse_geocode_sync(latitude,longitude):
+    params=urlencode({"format":"jsonv2","lat":latitude,"lon":longitude,"zoom":10,"addressdetails":1})
+    request=Request("https://nominatim.openstreetmap.org/reverse?"+params,
+        headers={"User-Agent":"ShopInIndiaTelegramBot/1.0 (merchant registration)","Accept":"application/json"})
+    with urlopen(request,timeout=12) as response:
+        payload=json.loads(response.read().decode("utf-8"))
+    address=payload.get("address") or {}
+    city=(address.get("city") or address.get("town") or address.get("village")
+          or address.get("municipality") or address.get("hamlet") or address.get("locality"))
+    state=address.get("state") or address.get("province") or address.get("region")
+    country=address.get("country")
+    if not country:
+        raise ValueError("Country could not be identified from the shared location.")
+    return {"country":country,"state":state or "Not available","city":city or "Not available"}
+
+async def reverse_geocode(latitude,longitude):
+    """Resolve coarse admin geography; exact GPS coordinates are never persisted."""
+    global _geocode_last_request
+    lat_key=round(float(latitude),2); lon_key=round(float(longitude),2)
+    c=v4.db()
+    try:
+        cached=c.execute("SELECT country,state,city FROM location_geocode_cache WHERE lat_key=? AND lon_key=?",
+                         (lat_key,lon_key)).fetchone()
+        if cached:
+            return {"country":cached["country"],"state":cached["state"],"city":cached["city"]}
+    finally:
+        c.close()
+    async with _geocode_lock:
+        delay=1.05-(time.monotonic()-_geocode_last_request)
+        if delay>0:
+            await asyncio.sleep(delay)
+        result=await asyncio.to_thread(_reverse_geocode_sync,latitude,longitude)
+        _geocode_last_request=time.monotonic()
+    c=v4.db()
+    try:
+        c.execute("INSERT OR REPLACE INTO location_geocode_cache(lat_key,lon_key,country,state,city,updated_at) VALUES(?,?,?,?,?,?)",
+                  (lat_key,lon_key,result["country"],result["state"],result["city"],v4.now()))
+        c.commit()
+    finally:
+        c.close()
+    return result
+
+async def location_handler(update,ctx):
+    state=ctx.user_data.get("state")
+    if state not in ("shop_location","shop_location_update"):
+        return
+    location=getattr(update.message,"location",None)
+    if not location:
+        await update.message.reply_text("Please use the Share my location button.",
+                                        reply_markup=location_request_keyboard())
+        return
+    try:
+        place=await reverse_geocode(location.latitude,location.longitude)
+    except Exception:
+        log.exception("Merchant location reverse-geocoding failed")
+        await update.message.reply_text(
+            "I could not identify your country/state/city right now. Please try sharing your location again.",
+            reply_markup=location_request_keyboard())
+        return
+    if state=="shop_location_update":
+        c=v4.db()
+        try:
+            c.execute("""UPDATE shops SET location_country=?,location_state=?,location_city=?
+                         WHERE owner_id=?""",
+                      (place["country"],place["state"],place["city"],update.effective_user.id))
+            c.commit()
+        finally:
+            c.close()
+        ctx.user_data.pop("state",None)
+        await update.message.reply_text(
+            "<b>✅ SHOP LOCATION UPDATED</b>\n"
+            f"City: <b>{html.escape(place['city'])}</b>\n"
+            f"State/Province: <b>{html.escape(place['state'])}</b>\n"
+            f"Country: <b>{html.escape(place['country'])}</b>\n\n"
+            "Your exact GPS coordinates are not saved.",
+            parse_mode="HTML",reply_markup=ReplyKeyboardRemove())
+        return
+    ctx.user_data.update({"location_country":place["country"],"location_state":place["state"],
+                          "location_city":place["city"]})
+    ctx.user_data["state"]="shop_password"
+    await update.message.reply_text(
+        "<b>📍 LOCATION VERIFIED</b>\n"
+        f"Country: <b>{html.escape(place['country'])}</b>\n"
+        f"State/Province: <b>{html.escape(place['state'])}</b>\n"
+        f"City: <b>{html.escape(place['city'])}</b>\n\n"
+        "Your exact GPS coordinates are not saved. Now create your shop password (minimum 8 characters).",
+        parse_mode="HTML",reply_markup=ReplyKeyboardRemove())
+
+def ensure_referral_code(c, owner_id):
+    """Return a stable invitation code for a registered merchant."""
+    existing=c.execute(
+        "SELECT referral_code FROM merchant_referrals WHERE owner_id=?",
+        (int(owner_id),)
+    ).fetchone()
+    if existing:
+        return str(existing["referral_code"])
+    shop=c.execute(
+        "SELECT id FROM shops WHERE owner_id=? ORDER BY id DESC LIMIT 1",
+        (int(owner_id),)
+    ).fetchone()
+    if not shop:
+        return None
+    for _ in range(20):
+        code="SI"+secrets.token_hex(4).upper()
+        try:
+            c.execute(
+                "INSERT INTO merchant_referrals(owner_id,shop_id,referral_code,created_at) VALUES(?,?,?,?)",
+                (int(owner_id),int(shop["id"]),code,v4.now())
+            )
+            return code
+        except Exception:
+            collision=c.execute(
+                "SELECT 1 FROM merchant_referrals WHERE referral_code=?",(code,)
+            ).fetchone()
+            if collision:
+                continue
+            raise
+    raise RuntimeError("Could not allocate a unique merchant invitation code")
+
+
+def ensure_all_referral_codes():
+    c=v4.db()
+    try:
+        owners=c.execute("SELECT DISTINCT owner_id FROM shops ORDER BY owner_id").fetchall()
+        for row in owners:
+            ensure_referral_code(c,int(row["owner_id"]))
+        c.commit()
+    finally:
+        c.close()
+
+
+def referral_code_owner(c, code, registering_owner_id):
+    """Resolve a valid inviter code. The platform code is the no-upline entry."""
+    normalized=str(code or "").strip().upper()
+    if not normalized or len(normalized)>64:
+        return False,None
+    if normalized==ROOT_REFERRAL_CODE:
+        return True,None
+    row=c.execute("""SELECT mr.owner_id
+        FROM merchant_referrals mr JOIN shops s ON s.id=mr.shop_id
+        WHERE UPPER(mr.referral_code)=? AND s.status='approved' AND mr.owner_id<>?
+        ORDER BY s.id DESC LIMIT 1""",
+        (normalized,int(registering_owner_id))
+    ).fetchone()
+    return (True,int(row["owner_id"])) if row else (False,None)
+
+
+async def register_start(update,ctx):
+    existing=v4.shop_for(update.effective_user.id)
+    if existing:
+        await update.message.reply_text(
+            f"You already have a shop application.\n"
+            f"Shop: {html.escape(str(existing['shop_name']))}\n"
+            f"Status: {html.escape(str(existing['status']))}"
+        )
+        return
+    invite_code=ctx.user_data.get("invite_code_prefill")
+    ctx.user_data.clear()
+    if invite_code:
+        ctx.user_data["invite_code_prefill"]=invite_code
+    ctx.user_data["state"]="shop_name"
+    await update.message.reply_text("What would you like to name your shop?")
+
+
+async def continue_registration_with_code(update,ctx,code):
+    c=v4.db()
+    try:
+        valid,referrer_owner_id=referral_code_owner(
+            c,code,update.effective_user.id
+        )
+    finally:
+        c.close()
+    if not valid:
+        ctx.user_data["state"]="referral_code"
+        await update.message.reply_text(
+            "That invitation code is invalid or inactive. Enter a valid merchant invitation code, "
+            f"or use the platform code {ROOT_REFERRAL_CODE}."
+        )
+        return False
+    ctx.user_data["referrer_owner_id"]=referrer_owner_id
+    ctx.user_data.pop("invite_code_prefill",None)
+    ctx.user_data["state"]="shop_location"
+    await update.message.reply_text(
+        "<b>📍 SHARE YOUR LOCATION — REQUIRED</b>\n"
+        "To complete merchant registration, share your current location using the button below. "
+        "We use it to identify your country, state/province and city for the Admin application. "
+        "Your exact GPS coordinates are not stored.",
+        parse_mode="HTML",reply_markup=location_request_keyboard()
+    )
+    return True
+
+
+async def show_referrals(update,ctx,shop):
+    c=v4.db()
+    try:
+        code=ensure_referral_code(c,update.effective_user.id)
+        c.commit()
+        rows=c.execute("""SELECT s.owner_id,s.shop_name,s.status,s.level,
+            (SELECT COALESCE(SUM(p.amount),0) FROM payment_requests p
+             WHERE p.owner_id=s.owner_id AND p.status='approved' AND p.currency='USDT'
+               AND p.payment_type IN ('wallet_deposit','level_activation')) AS verified_payments
+            FROM shops s WHERE s.referred_by_owner_id=?
+            ORDER BY s.id DESC LIMIT 50""",
+            (update.effective_user.id,)
+        ).fetchall()
+        totals=c.execute("""SELECT COUNT(*),COALESCE(SUM(bonus_amount),0)
+            FROM referral_rewards WHERE referrer_owner_id=?""",
+            (update.effective_user.id,)
+        ).fetchone()
+    finally:
+        c.close()
+    username=""
+    try:
+        me=await ctx.bot.get_me()
+        username=getattr(me,"username",None) or ""
+    except Exception:
+        username=""
+    invite_link=f"https://t.me/{username}?start={code}" if username and code else ""
+    link_text=(f'<a href="{html.escape(invite_link,quote=True)}">Join with my code</a>'
+               if invite_link else "Share the invitation code above")
+    body=(
+        "<b>👥 MY INVITED MERCHANTS</b>\n━━━━━━━━━━━━━━━━━━\n"
+        f"Your invite code: <code>{html.escape(str(code or 'Unavailable'))}</code>\n"
+        f"Invite link: {link_text}\n\n"
+        f"Invited merchants: <b>{len(rows)}</b>\n"
+        f"Verified referral bonus earned: <b>{float(totals[1] or 0):.6f} USDT</b>\n"
+        "Referral reward: <b>2% of each invited merchant's verified USDT payment</b>\n\n"
+    )
+    if rows:
+        body+="\n\n".join(
+            f"<b>{html.escape(str(r['shop_name']))}</b> • {html.escape(str(r['status']).upper())} • Level {int(r['level'] or 0)}\n"
+            f"Merchant ID: <code>{r['owner_id']}</code>\n"
+            f"Verified payments: <b>{float(r['verified_payments'] or 0):.6f} USDT</b>"
+            for r in rows
+        )
+    else:
+        body+="No merchants have joined with your invitation code yet."
+    buttons=[]
+    if code:
+        buttons.append([InlineKeyboardButton(
+            "📋 COPY INVITE CODE",copy_text=CopyTextButton(text=code)
+        )])
+    buttons.append([InlineKeyboardButton(
+        "⬅️ Back to Dashboard",callback_data="m:dashboard"
+    )])
+    await update.callback_query.message.reply_text(
+        body[:3900],reply_markup=InlineKeyboardMarkup(buttons),parse_mode="HTML"
+    )
+
+
+def format_usdt(value):
+    """Display USDT without meaningless trailing decimal zeros, retaining up to 6 decimals."""
+    rendered = f"{float(value or 0):.6f}".rstrip("0").rstrip(".")
+    return rendered if rendered and rendered != "-0" else "0"
+
+
+def shop_brand(shop):
+    """Country-aware merchant brand; fall back only when registration country is unavailable."""
+    country = shop["location_country"] if shop is not None and "location_country" in shop.keys() else None
+    return f"SHOP IN {str(country).strip().upper()}" if country else "SHOP MARKETPLACE"
+
 
 async def levels(bot,uid):
+    shop=v4.shop_for(uid)
+    brand=html.escape(shop_brand(shop))
     await bot.send_message(
         uid,
-        "<b>🔷 SHOP IN INDIA</b>\n━━━━━━━━━━━━━━━━━━\n"
+        f"<b>🔷 {brand}</b>\n━━━━━━━━━━━━━━━━━━\n"
         "<b>SELECT YOUR SHOP LEVEL</b>\n"
         "Choose a level to see its price and benefits. Payment is made in USDT.",
         reply_markup=level_kb(),parse_mode="HTML")
 
 async def start(update,ctx):
+    invite_payload=(ctx.args[0].strip() if getattr(ctx,"args",None) else None)
     ctx.user_data.clear()
+    if invite_payload:
+        ctx.user_data["invite_code_prefill"]=invite_payload
     s=v4.shop_for(update.effective_user.id)
+    if s and str(s["control_status"] or "active").lower()!="active":
+        await update.message.reply_text(
+            f"⛔ Your shop {shop_number(s['id'])} is currently {str(s['control_status']).upper()} by Admin. New orders and purchases are unavailable. Please contact Support.")
+        return
     if not s:
         await update.message.reply_text(
-            "<b>🔷 SHOP IN INDIA</b>\n━━━━━━━━━━━━━━━━━━\n"
+            "<b>🔷 SHOP MARKETPLACE</b>\n━━━━━━━━━━━━━━━━━━\n"
             "Welcome! Manage your shop, products and orders from one place.\n"
             "<b>Choose an option to continue:</b>",
             reply_markup=ReplyKeyboardMarkup(
@@ -77,15 +400,28 @@ async def start(update,ctx):
         await levels(ctx.bot,update.effective_user.id)
     else:
         await update.message.reply_text(
-            f"<b>🔷 SHOP IN INDIA</b>\n━━━━━━━━━━━━━━━━━━\n"
-            f"🏪 <b>{html.escape(str(s['shop_name']))}</b> • <b>LEVEL {s['level']}</b>\n\n"
-            "<b>OWNER DASHBOARD</b>\nWelcome back! Choose a section below.",
+            f"<b>🔷 {html.escape(shop_brand(s))}</b>\n━━━━━━━━━━━━━━━━━━\n"
+            f"🏪 <b>{html.escape(str(s['shop_name']))}</b> • <b>LEVEL {s['level']}</b>\n"
+            + (f"📍 <b>{html.escape(str(s['location_country']))}</b>\n" if s["location_country"] else "")
+            + "\n<b>MERCHANT COMMAND CENTER</b>\nWelcome back! Choose a section below.",
             reply_markup=owner_kb(),parse_mode="HTML")
 
 async def approved_callback(update,ctx):
     q=update.callback_query
     if q.from_user.id!=ADMIN_ID: await q.answer("Admin only",show_alert=True); return
-    action,sid=q.data.split(":"); c=v4.db(); row=c.execute("SELECT owner_id,level FROM shops WHERE id=?",(int(sid),)).fetchone(); c.close()
+    action,sid=q.data.split(":")
+    if action=="reject":
+        c=v4.db()
+        row=c.execute("SELECT owner_id,shop_name,status FROM shops WHERE id=?",(int(sid),)).fetchone()
+        c.close()
+        if not row or row["status"]!="pending":
+            await q.message.reply_text("Shop application missing or already reviewed."); return
+        ctx.user_data["pending_admin_rejection"]={"kind":"shop_application","id":int(sid)}
+        await q.message.reply_text(
+            f"✍️ Enter the rejection reason for shop application #{sid}. "
+            "The applicant will receive this reason. Type CANCEL to stop.")
+        return
+    c=v4.db(); row=c.execute("SELECT owner_id,level FROM shops WHERE id=?",(int(sid),)).fetchone(); c.close()
     await v3.approval(update,ctx)
     if action=="approve" and row:
         if int(row["level"])<1: await levels(ctx.bot,row["owner_id"])
@@ -128,9 +464,10 @@ async def level_callback(update,ctx):
         f"📈 Profit/margin reference: {float(cfg['profit_min']):g}%–{float(cfg['profit_max']):g}%\n"
         "🔓 Marketplace access according to this level"
     )
+    back_label="⬅️ Back to upgrade options" if int(s["level"])>=1 else "⬅️ Back to all levels"
     kb=InlineKeyboardMarkup([
         [InlineKeyboardButton(f"💳 Continue to payment • {float(cfg['activation_usdt']):g} USDT",callback_data=f"lvpay:{lv}")],
-        [InlineKeyboardButton("⬅️ Back to all levels",callback_data="lvback")]
+        [InlineKeyboardButton(back_label,callback_data="lvback")]
     ])
     await q.message.reply_text(
         f"<b>🔷 SHOP LEVEL {lv}</b>\n━━━━━━━━━━━━━━━━━━\n"
@@ -182,10 +519,11 @@ async def level_pay_callback(update,ctx):
         c.close()
 
     ctx.user_data.update({"state":"await_deposit_done","payment_request_id":rid})
-    kb=InlineKeyboardMarkup([[
-        InlineKeyboardButton("🔵 USDT TRC20",callback_data=f"net:{rid}:trc"),
-        InlineKeyboardButton("🔵 USDT BEP20",callback_data=f"net:{rid}:bep")
-    ]])
+    kb=InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔵 USDT TRC20",callback_data=f"net:{rid}:trc"),
+         InlineKeyboardButton("🔵 USDT BEP20",callback_data=f"net:{rid}:bep")],
+        [InlineKeyboardButton("⬅️ Back to Dashboard",callback_data="m:dashboard")]
+    ])
     await q.message.reply_text(
         f"<b>💳 LEVEL {lv} PAYMENT</b>\n━━━━━━━━━━━━━━━━━━\n"
         f"Request: <code>#{rid}</code>\n"
@@ -197,6 +535,24 @@ async def level_pay_callback(update,ctx):
 async def level_back_callback(update,ctx):
     q=update.callback_query
     await q.answer()
+    shop=v4.shop_for(q.from_user.id)
+    if shop and shop["status"]=="approved" and int(shop["level"])>=1:
+        current=int(shop["level"])
+        c=v4.db()
+        try:
+            available=c.execute("SELECT COUNT(*) FROM level_settings WHERE level>?",(current,)).fetchone()[0]
+        finally:
+            c.close()
+        if available:
+            await q.message.reply_text(
+                f"<b>🚀 UPGRADE YOUR SHOP</b>\nCurrent active level: <b>LEVEL {current}</b>\n"
+                "Choose a higher level to continue.",
+                reply_markup=upgrade_level_kb(current),parse_mode="HTML")
+        else:
+            await q.message.reply_text(
+                f"<b>🏆 Highest level already active: LEVEL {current}</b>",
+                reply_markup=back_dashboard_kb(),parse_mode="HTML")
+        return
     await q.message.reply_text(
         "<b>🔷 SELECT YOUR SHOP LEVEL</b>\n━━━━━━━━━━━━━━━━━━\n"
         "Choose a level to view its price and benefits.",
@@ -221,20 +577,22 @@ async def network_callback(update,ctx):
     finally:
         c.close()
     is_wallet_deposit=(r["payment_type"]=="wallet_deposit")
-    ctx.user_data.update({"state":"await_deposit_done" if is_wallet_deposit else "payment_proof","payment_request_id":rid,
+    ctx.user_data.update({"state":"await_deposit_done","payment_request_id":rid,
                           "screen_message_id":q.message.message_id,"screen_chat_id":q.message.chat_id})
-    rows=[[InlineKeyboardButton("📋 Copy Deposit Address",copy_text=CopyTextButton(text=address))]]
-    if is_wallet_deposit:
-        rows.append([InlineKeyboardButton("➕ Add TXID (optional)",callback_data=f"txid:{rid}")])
-        rows.append([InlineKeyboardButton("✅ I HAVE DEPOSITED",callback_data="m:depositdone")])
-    rows.append([InlineKeyboardButton("⬅️ Back to Dashboard",callback_data="m:dashboard")])
+    rows=[[InlineKeyboardButton("📋 Copy Deposit Address",copy_text=CopyTextButton(text=address))],
+          [InlineKeyboardButton("➕ Add TXID (optional)",callback_data=f"txid:{rid}")],
+          [InlineKeyboardButton("✅ I HAVE DEPOSITED",callback_data="m:depositdone")],
+          [InlineKeyboardButton("⬅️ Back to Dashboard",callback_data="m:dashboard")]]
     kb=InlineKeyboardMarkup(rows)
+    address_title="DEPOSIT ADDRESS" if is_wallet_deposit else "LEVEL UPGRADE PAYMENT ADDRESS"
     await q.message.reply_text(
-        f"💳 <b>{network} DEPOSIT ADDRESS</b>\n━━━━━━━━━━━━━━━━━━\n\n"
+        f"💳 <b>{network} {address_title}</b>\n━━━━━━━━━━━━━━━━━━\n\n"
         f"<b><i>Address:</i></b>\n\n<code>{address}</code>\n\n"
         f"<b>Amount:</b> {float(r['amount']):g} USDT\n"
         f"<b>Rate:</b> 1 USDT = INR {rate:,.2f}\n\n"
-        + ( "<i>Send USDT only on the selected network. After payment, tap I HAVE DEPOSITED below and upload your transaction screenshot. Admin will verify it manually.</i>" if is_wallet_deposit else "<i>Send USDT only on the selected network. Upload your payment screenshot; Admin will verify it manually.</i>" ),
+        "<i>Send USDT only on the selected network. After payment, tap I HAVE DEPOSITED below. "
+        "You may add the TXID first (optional), then upload your transaction screenshot. "
+        "Admin will verify the payment manually before crediting your wallet or activating your level.</i>",
         reply_markup=kb,parse_mode="HTML")
 
 
@@ -244,18 +602,18 @@ async def txid_callback(update,ctx):
     try:
         rid=int(q.data.split(":",1)[1])
     except (ValueError,IndexError):
-        await q.message.reply_text("Invalid deposit request.",reply_markup=back_dashboard_kb())
+        await q.message.reply_text("Invalid payment request.",reply_markup=back_dashboard_kb())
         return
     c=v4.db()
     try:
         row=c.execute("""SELECT id FROM payment_requests
-            WHERE id=? AND owner_id=? AND payment_type='wallet_deposit'
+            WHERE id=? AND owner_id=? AND payment_type IN ('wallet_deposit','level_activation')
               AND status='pending' AND network IN ('USDT TRC20','USDT BEP20')""",
             (rid,q.from_user.id)).fetchone()
     finally:
         c.close()
     if not row:
-        await q.message.reply_text("Pending wallet deposit with selected network was not found.",
+        await q.message.reply_text("Pending payment request with selected network was not found.",
                                    reply_markup=back_dashboard_kb())
         return
     ctx.user_data.update({"state":"deposit_tx_hash","payment_request_id":rid})
@@ -274,6 +632,63 @@ async def menu_callback(update,ctx):
     ctx.user_data["screen_chat_id"]=q.message.chat_id
     s=v4.shop_for(q.from_user.id)
 
+    if action=="motivation":
+        if not s:
+            await q.message.reply_text("Shop account was not found.")
+            return
+        c=v4.db()
+        try:
+            reminder=c.execute("SELECT motivation_reminder_status FROM shops WHERE id=?",(int(s["id"]),)).fetchone()
+        finally:
+            c.close()
+        state=str(reminder["motivation_reminder_status"] or "off") if reminder else "off"
+        label="🟢 ON — hourly messages active" if state=="on" else "⏸ STOPPED BY ADMIN" if state=="stopped" else "Not activated — starts after your first paid withdrawal"
+        await q.message.reply_text(
+            "<b>⏰ SHOP GROWTH REMINDER</b>\n━━━━━━━━━━━━━━━━━━\n"
+            f"Status: <b>{label}</b>\n"
+            "Messages include encouragement for Level 2, genuine sales, commissions and shop profit. "
+            "Only Admin can stop this reminder.",
+            reply_markup=back_dashboard_kb(),parse_mode="HTML")
+        return
+
+    if action=="upgrade":
+        if not s or s["status"]!="approved" or int(s["level"])<1:
+            await q.message.reply_text(
+                "Approved shop with an active level is required before upgrading.",
+                reply_markup=back_dashboard_kb())
+            return
+        current_level=int(s["level"])
+        c=v4.db()
+        try:
+            available=c.execute(
+                "SELECT COUNT(*) FROM level_settings WHERE level>?",(current_level,)
+            ).fetchone()[0]
+        finally:
+            c.close()
+        if not available:
+            await q.message.reply_text(
+                f"<b>🏆 YOU ARE ALREADY AT THE HIGHEST LEVEL</b>\nCurrent level: <b>{current_level}</b>",
+                reply_markup=back_dashboard_kb(),parse_mode="HTML")
+            return
+        await q.message.reply_text(
+            f"<b>🚀 UPGRADE YOUR SHOP</b>\n━━━━━━━━━━━━━━━━━━\n"
+            f"Current active level: <b>LEVEL {current_level}</b>\n"
+            "Select the next level you want to activate. Admin verifies the payment before the upgrade takes effect.",
+            reply_markup=upgrade_level_kb(current_level),parse_mode="HTML")
+        return
+
+    if action=="location":
+        if not s:
+            await q.message.reply_text("Shop account was not found.")
+            return
+        ctx.user_data["state"]="shop_location_update"
+        await q.message.reply_text(
+            "<b>📍 UPDATE SHOP LOCATION</b>\n"
+            "Share your current Telegram location using the button below. "
+            "Your country, state/province and city will be saved; exact GPS coordinates will not be stored.",
+            reply_markup=location_request_keyboard(),parse_mode="HTML")
+        return
+
     if action=="dashboard":
         if not s or s["status"]!="approved" or int(s["level"])<1:
             await q.message.reply_text("Approved shop aur active level zaroori hai.")
@@ -282,7 +697,9 @@ async def menu_callback(update,ctx):
         ctx.user_data["screen_message_id"]=q.message.message_id
         ctx.user_data["screen_chat_id"]=q.message.chat_id
         await q.message.reply_text(
-            f"<b>🔷 SHOP IN INDIA</b>\n━━━━━━━━━━━━━━━━━━\n🏪 <b>{html.escape(str(s['shop_name']))}</b> • <b>LEVEL {s['level']}</b>\n\n<b>OWNER DASHBOARD</b>\nChoose a section below.",
+            f"<b>🔷 {html.escape(shop_brand(s))}</b>\n━━━━━━━━━━━━━━━━━━\n🏪 <b>{html.escape(str(s['shop_name']))}</b> • <b>LEVEL {s['level']}</b>\n"
+            + (f"📍 <b>{html.escape(str(s['location_country']))}</b>\n" if s["location_country"] else "")
+            + "\n<b>MERCHANT COMMAND CENTER</b>\nChoose a section below.",
             reply_markup=owner_kb(),parse_mode="HTML")
         return
 
@@ -324,23 +741,25 @@ async def menu_callback(update,ctx):
     elif action=="depositdone":
         rid=ctx.user_data.get("payment_request_id")
         if not rid or ctx.user_data.get("state")!="await_deposit_done":
-            await q.message.reply_text("Please complete the deposit amount and network selection first.",reply_markup=back_dashboard_kb()); return
+            await q.message.reply_text("Please complete the payment request and network selection first.",reply_markup=back_dashboard_kb()); return
         c=v4.db()
         try:
             row=c.execute(
                 "SELECT id,payment_type FROM payment_requests WHERE id=? AND owner_id=? "
-                "AND payment_type='wallet_deposit' AND status='pending'",
+                "AND payment_type IN ('wallet_deposit','level_activation') "
+                "AND status='pending' AND network IN ('USDT TRC20','USDT BEP20')",
                 (rid,q.from_user.id)).fetchone()
         finally:
             c.close()
         if not row:
-            await q.message.reply_text("This payment request is no longer pending.",reply_markup=back_dashboard_kb()); return
+            await q.message.reply_text("This payment request is no longer pending or its network is not selected.",
+                                       reply_markup=back_dashboard_kb()); return
         ctx.user_data["state"]="payment_proof"
         await q.message.reply_text(
             "<b>📸 UPLOAD YOUR PAYMENT SCREENSHOT</b>\n━━━━━━━━━━━━━━━━━━\n"
             "Send a clear screenshot of your completed USDT transfer. "
             "Your proof will be sent to Admin for manual verification. "
-            "Your payment will be credited or activated only after Admin approves it.",
+            "Wallet deposits are credited and level upgrades are activated only after Admin approves the payment.",
             reply_markup=back_dashboard_kb(),parse_mode="HTML")
     elif action=="depositstart" or action in ("depositfund","deposit_fund","deposit-fund"):
         ctx.user_data["state"]="deposit_amount"
@@ -420,25 +839,31 @@ async def menu_callback(update,ctx):
             invested=c.execute("SELECT COALESCE(SUM(amount),0) FROM ledger WHERE owner_id=? AND currency='USDT' AND entry_type='central_purchase_debit'",(q.from_user.id,)).fetchone()[0]
             profit=c.execute("SELECT COALESCE(SUM(amount),0) FROM ledger WHERE owner_id=? AND currency='USDT' AND entry_type IN ('resale_profit_credit','central_sale_profit')",(q.from_user.id,)).fetchone()[0]
             dep=c.execute("SELECT COALESCE(SUM(amount),0) FROM ledger WHERE owner_id=? AND currency='USDT' AND entry_type='deposit_credit'",(q.from_user.id,)).fetchone()[0]
+            deposit_bonus=c.execute("SELECT COALESCE(SUM(amount),0) FROM ledger WHERE owner_id=? AND currency='USDT' AND entry_type='deposit_bonus_credit'",(q.from_user.id,)).fetchone()[0]
+            referral_bonus=c.execute("SELECT COALESCE(SUM(amount),0) FROM ledger WHERE owner_id=? AND currency='USDT' AND entry_type='referral_bonus_credit'",(q.from_user.id,)).fetchone()[0]
         finally: c.close()
-        balance_line=(f"Available balance: <b>{available_wallet:.6f} USDT</b>" if bal>=-1e-9 else
-                      f"⚠️ <b>Wallet shortfall: {abs(bal):.6f} USDT</b>")
+        balance_line=(f"Available balance: <b>{format_usdt(available_wallet)} USDT</b>" if bal>=-1e-9 else
+                      f"⚠️ <b>Wallet shortfall: {format_usdt(abs(bal))} USDT</b>")
         await q.message.reply_text(
             "<b>👛 USDT WALLET</b>\n━━━━━━━━━━━━━━━━━━\n"
             f"{balance_line}\n"
-            f"Total deposits: {float(dep):.6f} USDT\n"
-            f"Catalogue investment: {float(invested):.6f} USDT\n"
-            f"Total resale proceeds: {float(summary['earned']):.6f} USDT\n"
-            f"Paid withdrawals: {float(summary['paid']):.6f} USDT\n"
-            f"Pending withdrawals: {float(summary['pending']):.6f} USDT\n"
-            f"Sale proceeds remaining: {float(summary['sale_remaining']):.6f} USDT\n"
-            f"Available to withdraw: <b>{float(summary['available']):.6f} USDT</b>\n"
-            f"💚 <b>Recorded profit: +{float(profit):.6f} USDT</b>\n\n"
+            f"Total deposits: {format_usdt(dep)} USDT\n"
+            f"Deposit bonuses (20%): {format_usdt(deposit_bonus)} USDT\n"
+            f"Referral bonuses (2%): {format_usdt(referral_bonus)} USDT\n"
+            f"Catalogue investment: {format_usdt(invested)} USDT\n"
+            f"Total resale proceeds: {format_usdt(summary['earned'])} USDT\n"
+            f"Paid withdrawals: {format_usdt(summary['paid'])} USDT\n"
+            f"Pending withdrawals: {format_usdt(summary['pending'])} USDT\n"
+            f"Sale proceeds remaining: {format_usdt(summary['sale_remaining'])} USDT\n"
+            f"Available to withdraw: <b>{format_usdt(summary['available'])} USDT</b>\n"
+            f"💚 <b>Recorded profit: +{format_usdt(profit)} USDT</b>\n\n"
             "<b>DEPOSIT NETWORKS</b>\n"
             f"TRC20: <code>{html.escape(str(v4.PAY_TRON))}</code>\n"
             f"BEP20: <code>{html.escape(str(v4.PAY_BSC))}</code>\n\n"
             "Send USDT only on the selected network and upload payment proof for verification.",
             reply_markup=back_dashboard_kb(),parse_mode="HTML")
+    elif action=="referrals":
+        await show_referrals(update,ctx,s)
     elif action=="market":
         await central.owner_market(update,ctx,s)
     elif action=="level1":
@@ -447,7 +872,8 @@ async def menu_callback(update,ctx):
         central.resale_setup()
         c=v4.db()
         try:
-            rows=c.execute("""SELECT p.id,p.title,p.description,p.price,p.currency,p.stock,s.shop_name
+            rows=c.execute("""SELECT p.id,p.title,p.description,p.price,p.currency,p.stock,
+                s.shop_name,s.owner_id,s.id shop_id
               FROM products p JOIN shops s ON s.id=p.shop_id
               WHERE p.active=1 AND p.stock>0 AND s.status='approved' AND p.shop_id<>?
               ORDER BY p.id DESC LIMIT 30""",(s["id"],)).fetchall()
@@ -455,15 +881,21 @@ async def menu_callback(update,ctx):
               FROM resale_listings l JOIN central_catalog p ON p.id=l.catalog_id
               JOIN shops sh ON sh.id=l.shop_id
               WHERE l.status='active' AND l.remaining_quantity>0 AND l.owner_id=?
-                AND sh.status='approved' AND sh.level=1
-              ORDER BY l.id DESC LIMIT 30""",(q.from_user.id,)).fetchall()
-            resale=c.execute("""SELECT l.id,l.remaining_quantity,l.ask_price_usdt,p.title,sh.shop_name
+                AND sh.status='approved' AND sh.level>=p.level_required AND p.level_required<=?
+              ORDER BY l.id DESC LIMIT 30""",(q.from_user.id,int(s["level"]))).fetchall()
+            resale=c.execute("""SELECT l.id,l.remaining_quantity,l.ask_price_usdt,p.title,sh.shop_name,sh.owner_id,sh.id shop_id
               FROM resale_listings l JOIN central_catalog p ON p.id=l.catalog_id
               JOIN shops sh ON sh.id=l.shop_id
               WHERE l.status='active' AND l.remaining_quantity>0 AND l.owner_id<>?
-                AND sh.status='approved' AND sh.level=1
-              ORDER BY l.id DESC LIMIT 30""",(q.from_user.id,)).fetchall()
+                AND sh.status='approved' AND sh.level>=p.level_required AND p.level_required<=?
+              ORDER BY l.id DESC LIMIT 30""",(q.from_user.id,int(s["level"]))).fetchall()
         finally: c.close()
+        seller_cards={}
+        for seller in list(resale)+list(rows):
+            seller_cards.setdefault(int(seller["owner_id"]),(seller["shop_name"],int(seller["owner_id"])))
+        for seller_name,seller_owner in seller_cards.values():
+            await send_shop_profile(ctx.bot,q.message.chat_id,seller_owner,
+                f"🏬 <b>{html.escape(str(seller_name))}</b>\n<i>Merchant Telegram profile photo</i>")
         body="<b>🏬 SELLER MARKETPLACE</b>\n━━━━━━━━━━━━━━━━━━\n<b>MY ACTIVE USDT LISTINGS</b>\n"
         if own_resale:
             body+="\n\n".join(
@@ -472,8 +904,8 @@ async def menu_callback(update,ctx):
                 f"Asking price: <b>{float(r['ask_price_usdt']):g} USDT / item</b>"
                 for r in own_resale)
         else:
-            body+="No active USDT listings yet. Approved Level 1 catalogue purchases are listed automatically."
-        body+="\n\n<b>OTHER LEVEL 1 MERCHANT LISTINGS</b>\n"
+            body+="No active USDT listings yet. Approved catalogue purchases from your available levels are listed automatically."
+        body+=f"\n\n<b>OTHER ELIGIBLE MERCHANT LISTINGS (LEVEL 1–{int(s['level'])})</b>\n"
         if resale:
             body+="\n\n".join(
                 f"<b>#{r['id']} {html.escape(str(r['title']))}</b>\n"
@@ -481,10 +913,13 @@ async def menu_callback(update,ctx):
                 f"Price: <b>{float(r['ask_price_usdt']):g} USDT / item</b> | Stock: {r['remaining_quantity']}"
                 for r in resale)
         else:
-            body+="No other Level 1 merchant listings available right now."
+            body+="No other merchant listings available in your level range right now."
         await q.message.reply_text(body[:4000],reply_markup=InlineKeyboardMarkup(
-            [[InlineKeyboardButton(f"Buy #{r['id']} ×1",callback_data=f"rs:buy:{r['id']}:1"),
-              InlineKeyboardButton("Buy ×5",callback_data=f"rs:buy:{r['id']}:5")] for r in resale]+
+            [([InlineKeyboardButton(f"Buy #{r['id']} ×1",callback_data=f"rs:buy:{r['id']}:1"),
+               InlineKeyboardButton("Buy ×5",callback_data=f"rs:buy:{r['id']}:5")]
+              if int(r["remaining_quantity"])>=5 else
+              [InlineKeyboardButton(f"Buy #{r['id']} ×1",callback_data=f"rs:buy:{r['id']}:1")])
+             for r in resale]+
             [[InlineKeyboardButton("⬅️ Dashboard",callback_data="m:dashboard")]]),parse_mode="HTML")
         legacy_body="<b>LEGACY INR MARKETPLACE</b>\n<i>Separate from USDT resale listings</i>"
         legacy_body+="\n\n".join(
@@ -494,11 +929,19 @@ async def menu_callback(update,ctx):
             for r in rows) if rows else "\nNo INR products are published. Your USDT listings appear above."
         await q.message.reply_text(legacy_body[:4000],reply_markup=back_dashboard_kb(),parse_mode="HTML")
     elif action=="products":
+        central.resale_setup()
         c=v4.db()
         try:
             rows=c.execute("""SELECT i.catalog_id,i.quantity,i.remaining_quantity,i.unit_cost_usdt,i.status,
-                p.title FROM central_inventory i JOIN central_catalog p ON p.id=i.catalog_id
+                p.title,p.level_required,
+                (SELECT l.ask_price_usdt FROM resale_listings l
+                 WHERE l.inventory_id=i.id AND l.status='active' AND l.remaining_quantity>0
+                 ORDER BY l.id DESC LIMIT 1) current_ask
+                FROM central_inventory i JOIN central_catalog p ON p.id=i.catalog_id
                 WHERE i.owner_id=? ORDER BY i.id DESC LIMIT 30""",(q.from_user.id,)).fetchall()
+            level2_margin=c.execute(
+                "SELECT profit_min,profit_max FROM level_settings WHERE level=2"
+            ).fetchone()
             legacy=c.execute("SELECT id,title,price,currency,stock,active FROM products WHERE shop_id=? ORDER BY id DESC LIMIT 20",(s["id"],)).fetchall()
         finally: c.close()
         body="<b>📦 MY PRODUCTS & INVENTORY</b>\n━━━━━━━━━━━━━━━━━━\n"
@@ -509,11 +952,26 @@ async def menu_callback(update,ctx):
                 remaining=int(r["remaining_quantity"])
                 cost=float(r["unit_cost_usdt"])
                 state="🟢 IN STOCK" if remaining>0 else "🔴 SOLD OUT"
-                expected=round(remaining*0.8,6) if int(s["level"])==1 else 0
-                margin=(f"💚 Expected margin: <b>+0.8 USDT / item</b> | Potential: <b>+{expected:g} USDT</b>\n"
-                        if int(s["level"])==1 and remaining>0 else "")
+                item_level=int(r["level_required"])
+                if remaining>0 and item_level==1:
+                    expected=round(remaining*0.8,6)
+                    margin=(f"💚 Expected margin: <b>+0.8 USDT / item</b> | Potential: <b>+{expected:g} USDT</b>\n")
+                elif remaining>0 and item_level==2:
+                    ask=float(r["current_ask"] or 0)
+                    if ask>0 and cost>0:
+                        actual_profit=round(ask-cost,6)
+                        actual_pct=actual_profit/cost*100
+                        potential=round(actual_profit*remaining,6)
+                        margin=(f"💚 Resale price: <b>{ask:g} USDT / item</b> | Margin: <b>{actual_pct:.2f}%</b>\n"
+                                f"Potential profit if all remaining units sell: <b>+{potential:g} USDT</b>\n")
+                    else:
+                        low=float(level2_margin["profit_min"]) if level2_margin else 2.0
+                        high=float(level2_margin["profit_max"]) if level2_margin else 6.5
+                        margin=(f"💚 Resale margin reference: <b>{low:g}%–{high:g}%</b>\n")
+                else:
+                    margin=""
                 body+=(
-                    f"\n<b>{html.escape(str(r['title']))}</b>\n"
+                    f"\n<b>{html.escape(str(r['title']))}</b> • L{item_level}\n"
                     f"Available quantity: <b>{remaining}</b>\n"
                     f"Purchase cost: {cost:g} USDT / item\n"
                     f"{margin}Status: {state}\n"
@@ -525,7 +983,7 @@ async def menu_callback(update,ctx):
                 f"#{r['id']} {html.escape(str(r['title']))} — {html.escape(str(r['currency']))} {r['price']} | Stock {r['stock']}"
                 for r in legacy)
         await q.message.reply_text(body[:4000],reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🛍 LEVEL 1 PRODUCTS / CATALOGUE",callback_data="m:level1")],
+            [InlineKeyboardButton("🛍 MY LEVEL PRODUCTS / CATALOGUE",callback_data="m:level1")],
             [InlineKeyboardButton("⬅️ Back",callback_data="m:dashboard"),
              InlineKeyboardButton("🏠 Dashboard",callback_data="m:dashboard")]]),parse_mode="HTML")
         await q.message.reply_text(
@@ -591,7 +1049,8 @@ async def menu_callback(update,ctx):
         body=(
             "<b>👤 MY ACCOUNT</b>\n━━━━━━━━━━━━━━━━━━\n"
             f"Shop: <b>{html.escape(str(s['shop_name']))}</b>\n"
-            f"Shop ID: <code>{s['id']}</code> • Level: <b>L{s['level']}</b>\n"
+            f"Shop ID: <code>{html.escape(str(s['shop_code'] or 'Pending'))}</code> • Level: <b>L{s['level']}</b>\n"
+            f"📍 Location: <b>{html.escape(str(s['location_city'] or 'Not available'))}, {html.escape(str(s['location_state'] or 'Not available'))}, {html.escape(str(s['location_country'] or 'Not available'))}</b>\n"
             "Withdrawal network: <b>USDT TRC20 only</b>\n"
             "Enter your TRC20 address with each withdrawal request.\n\n"
             "<b>DEPOSIT NETWORKS</b>\n"
@@ -599,7 +1058,11 @@ async def menu_callback(update,ctx):
             f"BEP20: <code>{html.escape(str(v4.PAY_BSC))}</code>\n\n"
             "<i>Withdrawal address is requested separately for every payout.</i>"
         )
-        await q.message.reply_text(body,reply_markup=back_dashboard_kb(),parse_mode="HTML")
+        profile_kb=InlineKeyboardMarkup([
+            [InlineKeyboardButton("📍 Update Location",callback_data="m:location")],
+            [InlineKeyboardButton("⬅️ Back to Dashboard",callback_data="m:dashboard")]
+        ])
+        await send_shop_profile(ctx.bot,q.message.chat_id,q.from_user.id,body,reply_markup=profile_kb)
     elif action=="support":
         await q.message.reply_text(
             "<b>💬 SUPPORT</b>\n━━━━━━━━━━━━━━━━━━\n"
@@ -642,6 +1105,99 @@ def available_withdrawal_usdt(owner_id):
         c.close()
 
 
+
+MOTIVATION_MESSAGES = [
+    "🌟 Your first withdrawal is a milestone! Keep improving your shop, explore Level 2, and work towards more genuine sales, commissions and profit.",
+    "🚀 Great progress! Review your Level 2 catalogue and product opportunities. Consistent service and real sales can help grow your commissions.",
+    "💪 Keep building momentum: add quality listings, serve buyers well, and consider Level 2 when it suits your business. Every genuine sale is progress.",
+    "📈 Your shop journey is moving forward. Learn the Level 2 benefits, improve your product range, and focus on sustainable sales and profit.",
+    "🏆 One withdrawal completed—well done! Keep your shop active, support your customers, and work steadily towards stronger commissions.",
+    "✨ Think growth: compare Level 2 features, keep product information clear, and build trust with buyers for more opportunities to earn.",
+    "🔥 Keep learning and improving! Better listings and reliable customer service can support more sales, commissions and shop profit.",
+    "🎯 Set your next shop goal: explore Level 2, improve your catalogue, and focus on genuine customer demand. Small improvements add up.",
+    "🌱 Your first payout is a good start. Grow at a pace that works for you—quality products, honest service and consistent effort matter.",
+    "💼 Keep developing your business. Check the Level 2 options and look for practical ways to increase sales and commission opportunities."
+]
+
+def _motivation_now():
+    return datetime.now(timezone.utc)
+
+def _motivation_stamp(value):
+    return value.astimezone(timezone.utc).isoformat(timespec="seconds")
+
+def _next_motivation_message(last_index):
+    choices=[i for i in range(len(MOTIVATION_MESSAGES)) if i != last_index]
+    index=secrets.choice(choices)
+    return index,MOTIVATION_MESSAGES[index]
+
+async def send_due_motivation_reminders(bot, now_dt=None):
+    """Deliver due hourly reminders; persisted due times survive bot restarts."""
+    current=now_dt or _motivation_now()
+    current_stamp=_motivation_stamp(current)
+    c=v4.db()
+    try:
+        due=c.execute("""SELECT id,owner_id,shop_name,motivation_reminder_last_index
+                         FROM shops WHERE motivation_reminder_status='on'
+                           AND motivation_reminder_next_at IS NOT NULL
+                           AND motivation_reminder_next_at<=?
+                         ORDER BY id LIMIT 100""",(current_stamp,)).fetchall()
+    finally:
+        c.close()
+    sent=0
+    for shop in due:
+        last=int(shop["motivation_reminder_last_index"] if shop["motivation_reminder_last_index"] is not None else -1)
+        index,message=_next_motivation_message(last)
+        body=(f"<b>⏰ SHOP GROWTH REMINDER</b>\n━━━━━━━━━━━━━━━━━━\n"
+              f"🏪 <b>{html.escape(str(shop['shop_name']))}</b>\n\n{message}\n\n"
+              "<i>Hourly encouragement • Contact Admin if you need help.</i>")
+        try:
+            await bot.send_message(chat_id=int(shop["owner_id"]),text=body,parse_mode="HTML")
+        except Exception:
+            log.info("Motivation reminder delivery failed for shop %s",shop["id"],exc_info=True)
+        next_stamp=_motivation_stamp(current+timedelta(hours=1))
+        c=v4.db()
+        try:
+            cur=c.execute("""UPDATE shops SET motivation_reminder_next_at=?,
+                             motivation_reminder_last_index=?
+                             WHERE id=? AND motivation_reminder_status='on'
+                               AND motivation_reminder_next_at<=?""",
+                          (next_stamp,index,int(shop["id"]),current_stamp))
+            c.commit()
+            if cur.rowcount==1:
+                sent+=1
+        finally:
+            c.close()
+    return sent
+
+async def motivation_reminder_worker(app):
+    """Poll once per minute; each shop receives no more than one reminder per due hour."""
+    while True:
+        try:
+            await send_due_motivation_reminders(app.bot)
+        except Exception:
+            log.exception("Hourly motivation reminder worker failed")
+        await asyncio.sleep(60)
+
+async def start_motivation_reminder_worker(app):
+    # Backfill merchants whose first withdrawal was already paid before this
+    # feature was deployed. Preserve Admin-stopped shops permanently.
+    c=v4.db()
+    try:
+        due_at=_motivation_stamp(_motivation_now()+timedelta(hours=1))
+        c.execute("""UPDATE shops
+                     SET motivation_reminder_status='on',
+                         motivation_reminder_next_at=?,
+                         motivation_reminder_last_index=-1
+                     WHERE motivation_reminder_status='off'
+                       AND EXISTS (
+                           SELECT 1 FROM withdrawals w
+                           WHERE w.owner_id=shops.owner_id AND w.status='paid'
+                       )""",(due_at,))
+        c.commit()
+    finally:
+        c.close()
+    app.create_task(motivation_reminder_worker(app),name="shop-motivation-reminders")
+
 async def withdrawal_review_callback(update,ctx):
     """Apply Admin review, then show the same post-payout figures to Admin and merchant."""
     q=update.callback_query
@@ -661,6 +1217,35 @@ async def withdrawal_review_callback(update,ctx):
     await v4.withdrawal_review(update,ctx)
     if action!="paid" or not was_pending or owner_id is None:
         return
+
+    # Activate the reminder only after the first confirmed paid withdrawal.
+    c=v4.db()
+    try:
+        paid_count=int(c.execute(
+            "SELECT COUNT(*) FROM withdrawals WHERE owner_id=? AND status='paid'",(owner_id,)
+        ).fetchone()[0])
+        if paid_count==1:
+            shop=c.execute("SELECT id,shop_name,motivation_reminder_status FROM shops WHERE owner_id=? ORDER BY id DESC LIMIT 1",
+                           (owner_id,)).fetchone()
+            if shop and str(shop["motivation_reminder_status"] or "off")=="off":
+                next_at=_motivation_stamp(_motivation_now()+timedelta(hours=1))
+                c.execute("""UPDATE shops SET motivation_reminder_status='on',
+                             motivation_reminder_next_at=?,motivation_reminder_last_index=-1
+                             WHERE id=? AND motivation_reminder_status='off'""",
+                          (next_at,int(shop["id"])))
+                activated=c.execute("SELECT changes()").fetchone()[0]==1
+                c.commit()
+                if activated:
+                    try:
+                        await ctx.bot.send_message(owner_id,
+                            "<b>🎉 FIRST WITHDRAWAL COMPLETED!</b>\n━━━━━━━━━━━━━━━━━━\n"
+                            "Your hourly Shop Growth Reminder is now <b>ON</b>. You will receive fresh encouragement "
+                            "about Level 2, sales, commissions and profit every hour. Admin manages this reminder.",
+                            parse_mode="HTML")
+                    except Exception:
+                        log.exception("Could not notify merchant that motivation reminders started")
+    finally:
+        c.close()
     c=v4.db()
     try:
         summary=usdt_wallet_summary(c,owner_id)
@@ -687,6 +1272,171 @@ async def withdrawal_review_callback(update,ctx):
 
 
 async def text_handler(update,ctx):
+    pending_photo=ctx.user_data.get("central_admin_photo")
+    if pending_photo:
+        if update.effective_user.id!=ADMIN_ID:
+            ctx.user_data.pop("central_admin_photo",None); return
+        if (update.message.text or "").strip().lower()=="cancel":
+            ctx.user_data.pop("central_admin_photo",None)
+            await update.message.reply_text("Picture change cancelled. The current product image is unchanged.")
+        else:
+            await update.message.reply_text("Please send a photo, or type CANCEL to keep the existing image.")
+        return
+    if ctx.user_data.get("admin_shop_search"):
+        if update.effective_user.id!=ADMIN_ID:
+            ctx.user_data.pop("admin_shop_search",None); return
+        raw=(update.message.text or "").strip()
+        if raw.lower()=="cancel":
+            ctx.user_data.pop("admin_shop_search",None)
+            await update.message.reply_text("Shop search cancelled."); return
+        match=re.fullmatch(r"(?:SHOP-)?(\d{1,6})",raw,re.IGNORECASE)
+        if not match:
+            await update.message.reply_text("Invalid Shop ID. Enter the six-digit Shop ID, or CANCEL."); return
+        public_id=match.group(1)
+        c=v4.db()
+        try:
+            found=c.execute("SELECT id FROM shops WHERE shop_code=?",(public_id,)).fetchone()
+            if not found and len(public_id)<6:
+                found=c.execute("SELECT id FROM shops WHERE id=?",(int(public_id),)).fetchone()
+        finally:
+            c.close()
+        ctx.user_data.pop("admin_shop_search",None)
+        if not found:
+            await update.message.reply_text("Shop ID not found.")
+            return
+        await show_admin_shop(update,ctx,int(found["id"]))
+        return
+    warning_sid=ctx.user_data.get("admin_shop_warning_id")
+    if warning_sid is not None:
+        if update.effective_user.id!=ADMIN_ID:
+            ctx.user_data.pop("admin_shop_warning_id",None); return
+        reason=(update.message.text or "").strip()
+        if reason.lower()=="cancel":
+            ctx.user_data.pop("admin_shop_warning_id",None)
+            await update.message.reply_text("Next-order warning cancelled."); return
+        if not reason or len(reason)>1000:
+            await update.message.reply_text("Warning reason is mandatory (1–1000 characters). Enter it or CANCEL."); return
+        c=v4.db()
+        try:
+            row=c.execute("SELECT owner_id,shop_name FROM shops WHERE id=?",(int(warning_sid),)).fetchone()
+            if not row:
+                await update.message.reply_text("Shop ID not found."); return
+            c.execute("UPDATE shops SET next_order_warning=1,warning_reason=?,control_note=? WHERE id=?",
+                      (reason,f"Next-order warning: {reason}",int(warning_sid)))
+            c.execute("INSERT INTO admin_audit(admin_id,owner_id,action,details,created_at) VALUES(?,?,?,?,?)",
+                      (ADMIN_ID,row["owner_id"],"shop_next_order_warning",f"{shop_number(warning_sid)}: {reason}",v4.now()))
+            c.commit()
+        except Exception:
+            c.rollback(); log.exception("Saving next-order warning failed")
+            await update.message.reply_text("Warning could not be saved. Try again."); return
+        finally:
+            c.close()
+        ctx.user_data.pop("admin_shop_warning_id",None)
+        await update.message.reply_text(f"Warning saved for {shop_number(warning_sid)}. Reason will be shown on its next successful order.")
+        await show_admin_shop(update,ctx,int(warning_sid))
+        return
+    pending_rejection=ctx.user_data.get("pending_admin_rejection")
+    if pending_rejection:
+        if update.effective_user.id!=ADMIN_ID:
+            ctx.user_data.pop("pending_admin_rejection",None)
+            return
+        reason=(update.message.text or "").strip()
+        if reason.lower()=="cancel":
+            ctx.user_data.pop("pending_admin_rejection",None)
+            await update.message.reply_text("Rejection cancelled. Request remains pending.")
+            return
+        if not reason or len(reason)>1000:
+            await update.message.reply_text("Please enter a reason (1–1000 characters), or type CANCEL.")
+            return
+        kind=pending_rejection.get("kind")
+        if kind=="payment":
+            await v4.reject_payment_with_reason(update,ctx,reason)
+        elif kind=="withdrawal":
+            await v4.reject_withdrawal_with_reason(update,ctx,reason)
+        elif kind=="product_suggestion":
+            sid=int(pending_rejection["id"])
+            c=v4.db()
+            try:
+                item=c.execute("SELECT * FROM product_suggestions WHERE id=?",(sid,)).fetchone()
+                if not item or item["status"]!="pending":
+                    ctx.user_data.pop("pending_admin_rejection",None)
+                    await update.message.reply_text("Product suggestion missing or already reviewed.")
+                    return
+                c.execute("UPDATE product_suggestions SET status='rejected',reviewed_at=? WHERE id=? AND status='pending'",
+                          (v4.now(),sid))
+                c.commit()
+            except Exception:
+                c.rollback()
+                await update.message.reply_text("Could not reject product suggestion. Try again.")
+                return
+            finally:
+                c.close()
+            ctx.user_data.pop("pending_admin_rejection",None)
+            try:
+                await ctx.bot.send_message(item["owner_id"],
+                    f"❌ <b>PRODUCT LISTING REJECTED</b>\\nSuggestion: <code>#{sid}</code>\\n"
+                    f"Reason: {html.escape(reason)}",parse_mode="HTML")
+            except Exception:
+                log.exception("Product rejection notification failed")
+            await update.message.reply_text(f"Product suggestion #{sid} rejected. Reason sent to merchant.")
+        elif kind=="central_listing":
+            lid=int(pending_rejection["id"])
+            c=v4.db()
+            try:
+                listing=c.execute("""SELECT l.owner_id,l.status,p.title FROM resale_listings l
+                    JOIN central_catalog p ON p.id=l.catalog_id WHERE l.id=?""",(lid,)).fetchone()
+                if not listing or listing["status"]!="active":
+                    ctx.user_data.pop("pending_admin_rejection",None)
+                    await update.message.reply_text("Resale listing missing or already reviewed.")
+                    return
+                c.execute("UPDATE resale_listings SET status='rejected' WHERE id=? AND status='active'",(lid,))
+                c.execute("INSERT INTO admin_audit(admin_id,owner_id,action,details,created_at) VALUES(?,?,?,?,?)",
+                          (ADMIN_ID,listing["owner_id"],"resale_listing_rejected",f"Listing #{lid}: {reason}",v4.now()))
+                c.commit()
+            except Exception:
+                c.rollback()
+                await update.message.reply_text("Could not reject resale listing. Try again.")
+                return
+            finally:
+                c.close()
+            ctx.user_data.pop("pending_admin_rejection",None)
+            try:
+                await ctx.bot.send_message(listing["owner_id"],
+                    f"❌ <b>YOUR RESALE LISTING WAS REJECTED</b>\\n"
+                    f"Listing: <b>#{lid} — {html.escape(str(listing['title']))}</b>\\n"
+                    f"Reason: {html.escape(reason)}",parse_mode="HTML")
+            except Exception:
+                log.exception("Resale listing rejection notification failed")
+            await update.message.reply_text(f"Resale listing #{lid} rejected. Reason sent to seller.")
+        elif kind=="shop_application":
+            sid=int(pending_rejection["id"])
+            c=v4.db()
+            try:
+                row=c.execute("SELECT owner_id,shop_name,status FROM shops WHERE id=?",(sid,)).fetchone()
+                if not row or row["status"]!="pending":
+                    ctx.user_data.pop("pending_admin_rejection",None)
+                    await update.message.reply_text("Shop application missing or already reviewed.")
+                    return
+                c.execute("UPDATE shops SET status='rejected' WHERE id=? AND status='pending'",(sid,))
+                c.execute("INSERT INTO admin_audit(admin_id,owner_id,action,details,created_at) VALUES(?,?,?,?,?)",
+                          (ADMIN_ID,row["owner_id"],"rejected",f"{row['shop_name']}: {reason}",v4.now()))
+                c.commit()
+            except Exception:
+                c.rollback()
+                await update.message.reply_text("Could not reject shop application. Try again.")
+                return
+            finally:
+                c.close()
+            ctx.user_data.pop("pending_admin_rejection",None)
+            try:
+                await ctx.bot.send_message(row["owner_id"],
+                    f"❌ <b>YOUR SHOP APPLICATION WAS REJECTED</b>\n"
+                    f"Shop: <b>{html.escape(str(row['shop_name']))}</b>\n"
+                    f"Reason: {html.escape(reason)}",parse_mode="HTML")
+            except Exception:
+                log.exception("Shop rejection notification failed")
+            await update.message.reply_text(f"Shop application #{sid} rejected. Reason sent to applicant.")
+        return
     if await central.admin_resale_text(update,ctx): return
     edit=ctx.user_data.get("central_admin_edit")
     if edit:
@@ -712,6 +1462,44 @@ async def text_handler(update,ctx):
         await central.admin_catalog(update,ctx)
         return
     state=ctx.user_data.get("state")
+    if state=="shop_location":
+        await update.message.reply_text(
+            "Location sharing is required to register. Please tap 📍 Share my location below.",
+            reply_markup=location_request_keyboard())
+        return
+    if state=="shop_name":
+        name=(update.message.text or "").strip()
+        if len(name)<2 or len(name)>80:
+            await update.message.reply_text("Shop name must be 2–80 characters. Please try again.")
+            return
+        c=v4.db()
+        try:
+            exists=c.execute(
+                "SELECT id FROM shops WHERE LOWER(shop_name)=LOWER(?)",(name,)
+            ).fetchone()
+        finally:
+            c.close()
+        if exists:
+            await update.message.reply_text(
+                "That shop name is already registered. Please choose another name."
+            )
+            return
+        ctx.user_data["new_shop_name"]=name
+        prefilled=ctx.user_data.get("invite_code_prefill")
+        if prefilled:
+            await continue_registration_with_code(update,ctx,prefilled)
+        else:
+            ctx.user_data["state"]="referral_code"
+            await update.message.reply_text(
+                "Enter the invitation code from the merchant who invited you. "
+                f"A valid invitation code is required to register. If you do not have a merchant invite code, use {ROOT_REFERRAL_CODE}."
+            )
+        return
+    if state=="referral_code":
+        await continue_registration_with_code(
+            update,ctx,(update.message.text or "").strip()
+        )
+        return
     if state=="withdraw_setup_address":
         address=(update.message.text or "").strip()
         if not re.fullmatch(r"T[1-9A-HJ-NP-Za-km-z]{33}",address):
@@ -775,14 +1563,22 @@ async def text_handler(update,ctx):
         rid=ctx.user_data.get("payment_request_id")
         c=v4.db()
         try:
-            cur=c.execute("""UPDATE payment_requests SET transaction_hash=? WHERE id=? AND owner_id=? AND payment_type='wallet_deposit' AND status='pending'""",(tx_hash,rid,update.effective_user.id))
+            cur=c.execute("""UPDATE payment_requests SET transaction_hash=? WHERE id=? AND owner_id=?
+                AND payment_type IN ('wallet_deposit','level_activation') AND status='pending'""",
+                (tx_hash,rid,update.effective_user.id))
             c.commit()
         finally: c.close()
         if cur.rowcount!=1:
-            await update.message.reply_text("Deposit request not found or already reviewed.",reply_markup=back_dashboard_kb()); ctx.user_data.pop("state",None); return
+            await update.message.reply_text("Payment request not found or already reviewed.",
+                                            reply_markup=back_dashboard_kb())
+            ctx.user_data.pop("state",None)
+            return
         ctx.user_data["deposit_tx_hash"]=tx_hash
         ctx.user_data["state"]="payment_proof"
-        await update.message.reply_text("📸 <b>Now send your payment screenshot/photo.</b>\nTransaction hash saved. Please send a clear screenshot showing the transfer details.",parse_mode="HTML",reply_markup=back_dashboard_kb())
+        await update.message.reply_text(
+            "📸 <b>Now send your payment screenshot/photo.</b>\n"
+            "Transaction hash saved. Please send a clear screenshot showing the transfer details.",
+            parse_mode="HTML",reply_markup=back_dashboard_kb())
         return
     if state=="deposit_amount":
         try:
@@ -890,11 +1686,143 @@ async def text_handler(update,ctx):
             reply_markup=wd_kb,parse_mode="HTML")
         ctx.user_data.pop("state",None)
     else:
+        if (update.message.text or "").strip()=="🏪 Register Shop":
+            await register_start(update,ctx)
+            return
         was_registering=state=="shop_password"
         await v3.handle_message(update,ctx)
         if was_registering and v4.shop_for(update.effective_user.id):
+            c=v4.db()
+            try:
+                ensure_referral_code(c,update.effective_user.id)
+                c.commit()
+            finally:
+                c.close()
             await levels(ctx.bot,update.effective_user.id)
 
+
+def shop_number(shop_id):
+    """Resolve the public random Shop ID while retaining the internal DB key."""
+    c=v4.db()
+    try:
+        row=c.execute("SELECT shop_code FROM shops WHERE id=?",(int(shop_id),)).fetchone()
+        return str(row["shop_code"]) if row and row["shop_code"] else "Pending"
+    finally:
+        c.close()
+
+async def show_admin_shop(update,ctx,shop_id,edit=False):
+    c=v4.db()
+    try:
+        row=c.execute("SELECT * FROM shops WHERE id=?",(int(shop_id),)).fetchone()
+    finally:
+        c.close()
+    if not row:
+        await update.effective_message.reply_text("Shop ID not found.")
+        return
+    control=str(row["control_status"] or "active").lower()
+    reminder_status=str(row["motivation_reminder_status"] or "off")
+    body=(f"<b>🏪 SHOP MANAGEMENT — {shop_number(row['id'])}</b>\n━━━━━━━━━━━━━━━━━━\n"
+          f"Name: <b>{html.escape(str(row['shop_name']))}</b>\n"
+          f"Owner: <code>{row['owner_id']}</code>\n"
+          f"Application: <b>{html.escape(str(row['status']).upper())}</b> • Level {row['level']}\n"
+          f"Control: <b>{html.escape(control.upper())}</b>\n"
+          f"Location: {html.escape(str(row['location_city'] or 'N/A'))}, {html.escape(str(row['location_state'] or 'N/A'))}, {html.escape(str(row['location_country'] or 'N/A'))}\n"
+          f"Warning queued: <b>{'YES' if row['next_order_warning'] else 'NO'}</b>\n"
+          f"Motivation reminder: <b>{html.escape(reminder_status.upper())}</b>\n"
+          f"Control note: {html.escape(str(row['control_note'] or 'None'))}\n"
+          f"Warning reason: {html.escape(str(row['warning_reason'] or 'None'))}")
+    kb_rows=[
+        [InlineKeyboardButton("❄️ Freeze",callback_data=f"admshop:freeze:{row['id']}"),
+         InlineKeyboardButton("⛔ Disable",callback_data=f"admshop:disable:{row['id']}")],
+        [InlineKeyboardButton("✅ Enable",callback_data=f"admshop:enable:{row['id']}"),
+         InlineKeyboardButton("🗑 Delete",callback_data=f"admshop:delete:{row['id']}")],
+        [InlineKeyboardButton("⚠️ Warn Next Order",callback_data=f"admshop:warn:{row['id']}")],
+    ]
+    if reminder_status=="on":
+        kb_rows.append([InlineKeyboardButton("🛑 STOP Motivation Reminder",callback_data=f"admshop:motivationstop:{row['id']}")])
+    kb_rows.extend([
+        [InlineKeyboardButton("🔎 Search Shop ID",callback_data="admshop:search"),
+         InlineKeyboardButton("⬅️ All Shops",callback_data="adm:shops")],
+        [InlineKeyboardButton("🏠 Admin Panel",callback_data="adm:home")]
+    ])
+    kb=InlineKeyboardMarkup(kb_rows)
+    await update.effective_message.reply_text(body,reply_markup=kb,parse_mode="HTML")
+
+async def admin_shop_callback(update,ctx):
+    q=update.callback_query
+    if q.from_user.id!=ADMIN_ID:
+        await q.answer("Admin only",show_alert=True); return
+    await q.answer()
+    parts=q.data.split(":")
+    action=parts[1]
+    if action=="search":
+        ctx.user_data["admin_shop_search"]=True
+        await q.message.reply_text("🔎 Enter the six-digit public Shop ID (example: 798546). Type CANCEL to stop.")
+        return
+    sid=int(parts[2])
+    if action=="view":
+        await show_admin_shop(update,ctx,sid); return
+    if action=="motivationstop":
+        c=v4.db()
+        try:
+            row=c.execute("SELECT owner_id,shop_name,motivation_reminder_status FROM shops WHERE id=?",(sid,)).fetchone()
+            if not row:
+                await q.message.reply_text("Shop ID not found."); return
+            if str(row["motivation_reminder_status"] or "off")!="on":
+                await q.message.reply_text("This shop's motivation reminder is not active.")
+                await show_admin_shop(update,ctx,sid); return
+            c.execute("""UPDATE shops SET motivation_reminder_status='stopped',
+                         motivation_reminder_next_at=NULL WHERE id=? AND motivation_reminder_status='on'""",(sid,))
+            c.execute("INSERT INTO admin_audit(admin_id,owner_id,action,details,created_at) VALUES(?,?,?,?,?)",
+                      (ADMIN_ID,row["owner_id"],"motivation_reminder_stopped",
+                       f"{shop_number(sid)} ({row['shop_name']}): Admin stopped hourly motivation reminders",v4.now()))
+            c.commit()
+        except Exception:
+            c.rollback(); log.exception("Could not stop motivation reminders")
+            await q.message.reply_text("Reminder could not be stopped. Please retry."); return
+        finally:
+            c.close()
+        try:
+            await ctx.bot.send_message(row["owner_id"],
+                "<b>⏸ SHOP GROWTH REMINDERS STOPPED</b>\nAdmin has stopped your hourly motivational messages.",
+                parse_mode="HTML")
+        except Exception:
+            log.exception("Could not notify shop owner about stopped reminders")
+        await q.message.reply_text(f"Hourly motivation reminders stopped for {shop_number(sid)}.")
+        await show_admin_shop(update,ctx,sid)
+        return
+    if action=="warn":
+        ctx.user_data["admin_shop_warning_id"]=sid
+        await q.message.reply_text(f"⚠️ Enter the mandatory warning reason for {shop_number(sid)}. This will be shown to the buyer on that shop's next successful order. Type CANCEL to stop.")
+        return
+    control={"freeze":"frozen","disable":"disabled","enable":"active","delete":"deleted"}.get(action)
+    if not control:
+        await q.message.reply_text("Unknown shop action."); return
+    c=v4.db()
+    try:
+        row=c.execute("SELECT owner_id,shop_name,control_status FROM shops WHERE id=?",(sid,)).fetchone()
+        if not row:
+            await q.message.reply_text("Shop ID not found."); return
+        previous=str(row["control_status"] or "active")
+        note=f"Admin set shop control status to {control}"
+        c.execute("UPDATE shops SET control_status=?,control_note=? WHERE id=?",(control,note,sid))
+        c.execute("INSERT INTO admin_audit(admin_id,owner_id,action,details,created_at) VALUES(?,?,?,?,?)",
+                  (ADMIN_ID,row["owner_id"],f"shop_{control}",f"{shop_number(sid)} ({row['shop_name']}): {previous} -> {control}",v4.now()))
+        c.commit()
+    except Exception:
+        c.rollback(); log.exception("Shop control update failed")
+        await q.message.reply_text("Shop control could not be updated. Try again."); return
+    finally:
+        c.close()
+    try:
+        await ctx.bot.send_message(row["owner_id"],
+            f"🏪 <b>SHOP STATUS UPDATED</b>\nShop: <b>{html.escape(str(row['shop_name']))}</b> ({shop_number(sid)})\n"
+            f"New control status: <b>{control.upper()}</b>\nNew orders and purchases are {'blocked' if control!='active' else 'enabled'}.",
+            parse_mode="HTML")
+    except Exception:
+        log.exception("Shop control notification failed")
+    await q.message.reply_text(f"{shop_number(sid)} control status updated to {control.upper()}.")
+    await show_admin_shop(update,ctx,sid)
 
 async def admin_panel(update,ctx):
     if update.effective_user.id != ADMIN_ID:
@@ -956,6 +1884,7 @@ async def admin_panel_callback(update,ctx):
             await central.admin_resale_market(update,ctx)
         elif action=="owners":
             rows=c.execute("""SELECT s.id,s.shop_name,s.owner_id,s.status,s.level,
+                s.location_country,s.location_state,s.location_city,
                 (SELECT COUNT(*) FROM products p WHERE p.shop_id=s.id) products,
                 (SELECT COUNT(*) FROM v4_orders o WHERE o.buyer_shop_id=s.id) buys,
                 (SELECT COUNT(*) FROM v4_orders o WHERE o.seller_shop_id=s.id) sells
@@ -964,6 +1893,7 @@ async def admin_panel_callback(update,ctx):
             owner_body+="\n\n".join(
               f"<b>🏪 {html.escape(str(r['shop_name']))}</b> • Shop #{r['id']}\n"
               f"Owner: <code>{r['owner_id']}</code>\n"
+              f"Location: {html.escape(str(r['location_city'] or 'Not available'))}, {html.escape(str(r['location_state'] or 'Not available'))}, {html.escape(str(r['location_country'] or 'Not available'))}\n"
               f"Status: {'✅' if r['status']=='approved' else '❌' if r['status']=='rejected' else '🟡'} <b>{html.escape(str(r['status']).upper())}</b> • Level {r['level']}\n"
               f"Products: {r['products']} • Buys: {r['buys']} • Sells: {r['sells']}\n"
               f"<code>/owner {r['owner_id']}</code>"
@@ -971,14 +1901,15 @@ async def admin_panel_callback(update,ctx):
             await q.message.reply_text(owner_body[:4000],
               reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]),parse_mode="HTML")
         elif action=="shops":
-            rows=c.execute("SELECT id,shop_name,owner_id,status,level FROM shops ORDER BY id DESC LIMIT 40").fetchall()
-            shops_body="<b>🏪 ALL SHOPS</b>\n━━━━━━━━━━━━━━━━━━\n"
+            rows=c.execute("SELECT id,shop_name,owner_id,status,level,control_status FROM shops ORDER BY id DESC LIMIT 10").fetchall()
+            shops_body="<b>🏪 ALL SHOPS — MANAGEMENT</b>\n━━━━━━━━━━━━━━━━━━\nSearch by unique Shop ID or select a recent shop below.\n\n"
             shops_body+="\n".join(
-              f"#{r['id']} <b>{html.escape(str(r['shop_name']))}</b> • Owner <code>{r['owner_id']}</code>\n"
-              f"{'✅' if r['status']=='approved' else '❌' if r['status']=='rejected' else '🟡'} {html.escape(str(r['status']).upper())} • Level {r['level']}"
+              f"<b>{shop_number(r['id'])}</b> • {html.escape(str(r['shop_name']))}\nOwner: <code>{r['owner_id']}</code> • {html.escape(str(r['status']).upper())} • {html.escape(str(r['control_status'] or 'active').upper())}"
               for r in rows) if rows else "No shops registered."
-            await q.message.reply_text(shops_body[:4000],
-              reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]),parse_mode="HTML")
+            buttons=[[InlineKeyboardButton(f"{shop_number(r['id'])} • {str(r['shop_name'])[:20]}",callback_data=f"admshop:view:{r['id']}")] for r in rows]
+            buttons.insert(0,[InlineKeyboardButton("🔎 SEARCH BY SHOP ID",callback_data="admshop:search")])
+            buttons.append([InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")])
+            await q.message.reply_text(shops_body[:3500],reply_markup=InlineKeyboardMarkup(buttons),parse_mode="HTML")
         elif action in ("payments","levelpayments"):
             payment_type="wallet_deposit" if action=="payments" else "level_activation"
             section_title="PENDING DEPOSITS" if action=="payments" else "PENDING LEVEL PAYMENTS"
@@ -1251,16 +2182,18 @@ async def dashboard(update,ctx):
     if not s: await start(update,ctx)
     elif s["status"]!="approved": await update.message.reply_text("Awaiting Admin approval.")
     elif int(s["level"])<1: await levels(ctx.bot,update.effective_user.id)
-    else: await update.message.reply_text(f"🏪 {s['shop_name']} | L{s['level']}",reply_markup=owner_kb())
+    else: await send_shop_profile(ctx.bot,update.effective_chat.id,update.effective_user.id,
+        f"🏪 <b>{html.escape(str(s['shop_name']))}</b> | L{s['level']}",reply_markup=owner_kb())
 
 def main():
     if not TOKEN or not ADMIN_ID: raise RuntimeError("BOT_TOKEN and ADMIN_ID are required.")
     v3.setup()
     runtime_schema.ensure_schema(v4.DB)
+    ensure_all_referral_codes()
     v3.ensure_catalog_schema()
     central.setup()
     central.resale_setup()
-    app=ApplicationBuilder().token(TOKEN).build()
+    app=ApplicationBuilder().token(TOKEN).post_init(start_motivation_reminder_worker).build()
     app.add_handler(CommandHandler("start",start)); app.add_handler(CommandHandler("dashboard",dashboard))
     for cmd,fn in [("help",help_command),("support",support_command),("admin",admin_panel),("verifywallet",v3.verify_wallet),
       ("buy",v4.buy),("addproduct",addproduct),("setproductlevel",v4.setproductlevel),("setlevel",v4.setlevel),("setfx",v4.setfx),("setfee",v4.setfee),
@@ -1273,20 +2206,28 @@ def main():
     app.add_handler(CallbackQueryHandler(level_back_callback,pattern=r"^lvback$"))
     app.add_handler(CallbackQueryHandler(network_callback,pattern=r"^net:[0-9]+:(trc|bep)$"))
     app.add_handler(CallbackQueryHandler(txid_callback,pattern=r"^txid:[0-9]+$"))
-    app.add_handler(CallbackQueryHandler(menu_callback,pattern=r"^m:(market|level1|sellermarket|deposit|depositstart|depositfund|deposit_fund|deposit-fund|depositdone|deposits|withdraw|withdrawsetup|withdrawsetupedit|wallet|products|orders|history|profile|dashboard|support)$"))
+    app.add_handler(CallbackQueryHandler(menu_callback,pattern=r"^m:(market|level1|upgrade|sellermarket|deposit|depositstart|depositfund|deposit_fund|deposit-fund|depositdone|deposits|withdraw|withdrawsetup|withdrawsetupedit|wallet|products|orders|history|profile|referrals|motivation|dashboard|support)$"))
     app.add_handler(CallbackQueryHandler(admin_panel_callback,pattern=r"^adm:(home|owners|shops|payments|levelpayments|withdrawals|withdrawwallets|products|orders|levels|settings|central|resale|audit|back)$"))
-    app.add_handler(CallbackQueryHandler(central.resale_callback,pattern=r"^rs:(list:[0-9]+|listmenu|market|review:[0-9]+|buy:[0-9]+:[0-9]+)$"))
+    app.add_handler(CallbackQueryHandler(admin_shop_callback,pattern=r"^admshop:(search|view:[0-9]+|freeze:[0-9]+|disable:[0-9]+|enable:[0-9]+|delete:[0-9]+|warn:[0-9]+|motivationstop:[0-9]+)$"))
+    app.add_handler(CallbackQueryHandler(central.resale_callback,pattern=r"^rs:(list:[0-9]+|listmenu|market|review:[0-9]+|reject:[0-9]+|buy:[0-9]+:[0-9]+)$"))
     app.add_handler(CallbackQueryHandler(audit_callback,pattern=r"^audit:(all|payments|levels|wallet|orders|products):[0-9]+$"))
     app.add_handler(CallbackQueryHandler(delivered_callback,pattern=r"^order:delivered:[0-9]+$"))
-    app.add_handler(CallbackQueryHandler(central.admin_level_callback,pattern=r"^ccadminlevel:1$"))
-    app.add_handler(CallbackQueryHandler(central.admin_catalog_page_callback,pattern=r"^ccadminpage:[0-9]+$"))
-    app.add_handler(CallbackQueryHandler(central.owner_level_callback,pattern=r"^cclevel:1$"))
-    app.add_handler(CallbackQueryHandler(central.owner_catalog_page_callback,pattern=r"^ccpage:[0-9]+$"))
-    app.add_handler(CallbackQueryHandler(central.admin_callback,pattern=r"^cc:(view|orders|price|stock|toggle|fulfill|refund)(:[0-9]+)?$"))
+    app.add_handler(CallbackQueryHandler(central.admin_level_callback,pattern=r"^ccadminlevel:[12]$"))
+    app.add_handler(CallbackQueryHandler(central.admin_catalog_page_callback,pattern=r"^ccadminpage:(?:[12]:)?[0-9]+$"))
+    app.add_handler(CallbackQueryHandler(central.owner_level_callback,pattern=r"^cclevel:[12]$"))
+    app.add_handler(CallbackQueryHandler(central.owner_catalog_page_callback,pattern=r"^ccpage:(?:[12]:)?[0-9]+$"))
+    app.add_handler(CallbackQueryHandler(central.admin_callback,pattern=r"^cc:(view|orders|price|stock|photo|toggle|fulfill|refund)(:[0-9]+)?$"))
     app.add_handler(CallbackQueryHandler(central.owner_buy_callback,pattern=r"^ccbuy:[0-9]+:[0-9]+$"))
+    app.add_handler(CallbackQueryHandler(v3.product_review,pattern=r"^product:(approve|reject):[0-9]+$"))
     app.add_handler(CallbackQueryHandler(v4.payment_review,pattern=r"^pay:(approve|reject):[0-9]+$"))
     app.add_handler(CallbackQueryHandler(withdrawal_review_callback,pattern=r"^wd:(paid|reject):[0-9]+$"))
-    app.add_handler(MessageHandler(filters.PHOTO,v4.payment_photo))
+    app.add_handler(MessageHandler(filters.LOCATION,location_handler))
+    async def photo_handler(update,ctx):
+        if ctx.user_data.get("central_admin_photo"):
+            await central.admin_photo(update,ctx)
+        else:
+            await v4.payment_photo(update,ctx)
+    app.add_handler(MessageHandler(filters.PHOTO,photo_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,text_handler))
     print("SHOP IN INDIA V5 Telegram UI started.")
     asyncio.set_event_loop(asyncio.new_event_loop())

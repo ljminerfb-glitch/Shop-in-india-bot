@@ -5,6 +5,8 @@ safe to run on every worker start and avoids requiring a manual migration step.
 """
 import os
 import sqlite3
+import secrets
+import re
 
 
 def _columns(conn, table):
@@ -36,9 +38,50 @@ def ensure_schema(db_path=None):
         # Core V3 tables are created by bot_v3.setup(); extend them safely.
         if "shops" in {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}:
             _add_columns(conn, "shops", [
+                ("shop_code", "TEXT"),
                 ("password_hash", "TEXT"),
                 ("level", "INTEGER NOT NULL DEFAULT 0"),
+                ("referred_by_owner_id", "INTEGER"),
+                ("location_country", "TEXT"),
+                ("location_state", "TEXT"),
+                ("location_city", "TEXT"),
+                ("control_status", "TEXT NOT NULL DEFAULT 'active'"),
+                ("control_note", "TEXT"),
+                ("next_order_warning", "INTEGER NOT NULL DEFAULT 0"),
+                ("warning_reason", "TEXT"),
+                ("motivation_reminder_status", "TEXT NOT NULL DEFAULT 'off'"),
+                ("motivation_reminder_next_at", "TEXT"),
+                ("motivation_reminder_last_index", "INTEGER NOT NULL DEFAULT -1"),
             ])
+            # Public Shop IDs are random six-digit numbers, separate from the
+            # internal primary key. Never rewrite an already valid public ID.
+            used = {str(row[0]) for row in conn.execute(
+                "SELECT shop_code FROM shops WHERE shop_code GLOB '[0-9][0-9][0-9][0-9][0-9][0-9]'"
+            )}
+            legacy_rows = conn.execute(
+                "SELECT id,shop_code FROM shops ORDER BY id"
+            ).fetchall()
+            for shop_id, current_code in legacy_rows:
+                if current_code and re.fullmatch(r"[0-9]{6}", str(current_code)):
+                    continue
+                while True:
+                    candidate = str(secrets.randbelow(900000) + 100000)
+                    if candidate not in used:
+                        break
+                conn.execute("UPDATE shops SET shop_code=? WHERE id=?", (candidate, shop_id))
+                used.add(candidate)
+            conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_shops_shop_code_unique ON shops(shop_code)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_shops_motivation_due ON shops(motivation_reminder_status,motivation_reminder_next_at)")
+            # Future registrations get a random six-digit public ID automatically.
+            conn.execute("DROP TRIGGER IF EXISTS trg_shops_assign_shop_code")
+            conn.execute("""CREATE TRIGGER trg_shops_assign_shop_code
+                AFTER INSERT ON shops
+                WHEN NEW.shop_code IS NULL OR TRIM(NEW.shop_code)=''
+                BEGIN
+                    UPDATE shops
+                    SET shop_code=printf('%06d', abs(random()) % 900000 + 100000)
+                    WHERE id=NEW.id;
+                END""")
         if "products" in {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}:
             _add_columns(conn, "products", [
                 ("stock", "INTEGER NOT NULL DEFAULT 1"),
@@ -118,6 +161,20 @@ def ensure_schema(db_path=None):
             currency TEXT NOT NULL DEFAULT 'USDT', status TEXT NOT NULL DEFAULT 'pending',
             reference TEXT, admin_note TEXT, actor_id INTEGER, created_at TEXT NOT NULL,
             reviewed_at TEXT)""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS location_geocode_cache (
+            lat_key REAL NOT NULL, lon_key REAL NOT NULL, country TEXT NOT NULL,
+            state TEXT NOT NULL, city TEXT NOT NULL, updated_at TEXT NOT NULL,
+            PRIMARY KEY(lat_key,lon_key))""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS merchant_referrals (
+            owner_id INTEGER PRIMARY KEY, shop_id INTEGER NOT NULL,
+            referral_code TEXT NOT NULL UNIQUE COLLATE NOCASE,
+            created_at TEXT NOT NULL)""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS referral_rewards (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            payment_request_id INTEGER NOT NULL UNIQUE,
+            referrer_owner_id INTEGER NOT NULL, referred_owner_id INTEGER NOT NULL,
+            payment_amount REAL NOT NULL, bonus_amount REAL NOT NULL,
+            currency TEXT NOT NULL DEFAULT 'USDT', created_at TEXT NOT NULL)""")
         conn.execute("""CREATE TABLE IF NOT EXISTS platform_settings (
             setting_key TEXT PRIMARY KEY, setting_value TEXT NOT NULL,
             updated_by INTEGER, updated_at TEXT)""")
@@ -136,13 +193,32 @@ def ensure_schema(db_path=None):
             created_at TEXT NOT NULL, updated_at TEXT NOT NULL, completed_at TEXT, admin_note TEXT)""")
 
         defaults = [
-            (1, 5, 12, 1.25, 2.50), (2, 20, 45, 3.50, 6.50),
-            (3, 150, 80, 9.80, 17.40), (4, 150, 200, 15.00, 25.00),
+            (1, 10, 12, 1.25, 2.50), (2, 50, 50, 2.00, 6.50),
+            (3, 150, 80, 9.80, 17.40), (4, 250, 200, 15.00, 25.00),
             (5, 400, 0, 20.00, 35.00),
         ]
         conn.executemany("""INSERT OR IGNORE INTO level_settings
             (level,activation_usdt,product_target,profit_min,profit_max)
             VALUES(?,?,?,?,?)""", defaults)
+        # Correct only the legacy Level 2 defaults; preserve any deliberate admin edits.
+        conn.execute("""UPDATE level_settings
+            SET activation_usdt=50,product_target=50,profit_min=2.00,profit_max=6.50
+            WHERE level=2 AND activation_usdt=20 AND product_target=45
+              AND profit_min=3.50 AND profit_max=6.50""")
+        # Set Level 1 activation price to 10 USDT once; preserve future Admin edits.
+        level1_price_migration = conn.execute(
+            "SELECT setting_value FROM platform_settings WHERE setting_key='migration_level1_price_10_usdt'"
+        ).fetchone()
+        if not level1_price_migration:
+            conn.execute("UPDATE level_settings SET activation_usdt=10 WHERE level=1")
+            conn.execute("INSERT INTO platform_settings(setting_key,setting_value) VALUES('migration_level1_price_10_usdt','done')")
+        # Apply the requested Level 4 price once to existing installations; do not overwrite later Admin edits.
+        level4_price_migration = conn.execute(
+            "SELECT setting_value FROM platform_settings WHERE setting_key='migration_level4_price_250_usdt'"
+        ).fetchone()
+        if not level4_price_migration:
+            conn.execute("UPDATE level_settings SET activation_usdt=250 WHERE level=4")
+            conn.execute("INSERT INTO platform_settings(setting_key,setting_value) VALUES('migration_level4_price_250_usdt','done')")
         conn.execute("INSERT OR IGNORE INTO platform_settings(setting_key,setting_value) VALUES('platform_fee_percent','5')")
         conn.execute("INSERT OR IGNORE INTO platform_settings(setting_key,setting_value) VALUES('usdt_inr_rate','110')")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_product_audit_product ON product_audit(product_id,id DESC)")
@@ -151,6 +227,8 @@ def ensure_schema(db_path=None):
         conn.execute("CREATE INDEX IF NOT EXISTS idx_v4_orders_buyer ON v4_orders(buyer_shop_id,id DESC)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_v4_orders_seller ON v4_orders(seller_shop_id,id DESC)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_ledger_owner ON ledger(owner_id,id DESC)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_referrals_inviter ON shops(referred_by_owner_id,id DESC)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_referral_rewards_referrer ON referral_rewards(referrer_owner_id,id DESC)")
         conn.commit()
         check = conn.execute("PRAGMA integrity_check").fetchone()[0]
         if check != "ok":

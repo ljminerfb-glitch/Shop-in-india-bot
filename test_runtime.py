@@ -1185,6 +1185,43 @@ def test_usdt_trc20_withdrawal_flow():
     paid=c.execute("SELECT status FROM withdrawals WHERE id=?",(wid,)).fetchone()
     debit=c.execute("SELECT amount,currency FROM ledger WHERE owner_id=101 AND entry_type='withdrawal_debit' ORDER BY id DESC LIMIT 1").fetchone()
     require(paid["status"]=="paid","Admin Mark Paid did not close withdrawal")
+    c=v4.db()
+    reminder=c.execute("SELECT motivation_reminder_status,motivation_reminder_next_at FROM shops WHERE owner_id=101 ORDER BY id DESC LIMIT 1").fetchone()
+    c.close()
+    require(reminder["motivation_reminder_status"]=="on" and reminder["motivation_reminder_next_at"],
+            "First paid withdrawal did not activate the shop's hourly motivation reminder")
+    profile_update,profile_message,_=callback_update(101,"m:motivation")
+    asyncio.run(v5.menu_callback(profile_update,context()))
+    require("hourly messages active" in profile_message.replies[0]["text"],
+            "Merchant cannot see that motivation reminders are ON")
+    # Deliver two hourly ticks and verify consecutive reminder content is different.
+    from datetime import datetime, timedelta, timezone
+    fake_now=datetime.now(timezone.utc)+timedelta(hours=2)
+    c=v4.db()
+    c.execute("UPDATE shops SET motivation_reminder_next_at=? WHERE owner_id=101",
+              ((fake_now-timedelta(minutes=1)).isoformat(timespec="seconds"),))
+    c.commit(); c.close()
+    reminder_bot=FakeBot()
+    asyncio.run(v5.send_due_motivation_reminders(reminder_bot,fake_now))
+    require(len(reminder_bot.sent)==1 and "SHOP GROWTH REMINDER" in reminder_bot.sent[0]["kwargs"]["text"],
+            "Due hourly motivation reminder was not delivered")
+    first_text=reminder_bot.sent[0]["kwargs"]["text"]
+    c=v4.db()
+    c.execute("UPDATE shops SET motivation_reminder_next_at=? WHERE owner_id=101",
+              ((fake_now+timedelta(hours=1)-timedelta(minutes=1)).isoformat(timespec="seconds"),))
+    c.commit(); c.close()
+    asyncio.run(v5.send_due_motivation_reminders(reminder_bot,fake_now+timedelta(hours=1)))
+    require(len(reminder_bot.sent)==2 and first_text!=reminder_bot.sent[1]["kwargs"]["text"],
+            "Consecutive hourly motivational messages were not different")
+    stop_update,stop_message,_=callback_update(999999,f"admshop:motivationstop:{int(row['shop_id'])}")
+    asyncio.run(v5.admin_shop_callback(stop_update,context()))
+    c=v4.db()
+    stopped=c.execute("SELECT motivation_reminder_status,motivation_reminder_next_at FROM shops WHERE owner_id=101 ORDER BY id DESC LIMIT 1").fetchone()
+    c.close()
+    require(stopped["motivation_reminder_status"]=="stopped" and stopped["motivation_reminder_next_at"] is None,
+            "Admin STOP did not permanently disable hourly motivation reminders")
+    require(any("stopped" in item["text"].lower() for item in stop_message.replies),
+            "Admin was not shown the reminder stop confirmation")
     require(debit and debit["currency"]=="USDT" and abs(float(debit["amount"])-2.5)<1e-8,
             "Paid withdrawal debit was not written in USDT")
     c.close()
@@ -1212,7 +1249,7 @@ def test_usdt_trc20_withdrawal_flow():
     c.close()
     require(abs(v5.available_withdrawal_usdt(101)-4.3)<1e-8,
             "Rejected withdrawal did not release reserved amount")
-    print("PASS: Merchant Withdraw Setup, saved TRC20 wallet, Admin wallet directory and USDT withdrawal lifecycle")
+    print("PASS: Merchant Withdraw Setup, saved TRC20 wallet, Admin wallet directory, first-withdrawal hourly reminders and Admin STOP")
 
 def test_usdt_balance_reconciliation():
     # Mirrors the reported figures: deposits 50, catalogue investment 138.7,

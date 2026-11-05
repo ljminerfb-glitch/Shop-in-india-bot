@@ -148,7 +148,7 @@ def ensure_schema(db_path=None):
 
         defaults = [
             (1, 5, 12, 1.25, 2.50), (2, 50, 50, 2.00, 6.50),
-            (3, 150, 80, 9.80, 17.40), (4, 150, 200, 15.00, 25.00),
+            (3, 150, 80, 9.80, 17.40), (4, 250, 200, 15.00, 25.00),
             (5, 400, 0, 20.00, 35.00),
         ]
         conn.executemany("""INSERT OR IGNORE INTO level_settings
@@ -159,7 +159,7 @@ def ensure_schema(db_path=None):
             SET activation_usdt=50,product_target=50,profit_min=2.00,profit_max=6.50
             WHERE level=2 AND activation_usdt=20 AND product_target=45
               AND profit_min=3.50 AND profit_max=6.50""")
-        conn.execute("INSERT OR IGNORE INTO platform_settings(setting_key,setting_value) VALUES('platform_fee_percent','5')")
+        # Apply the requested Level 4 price once to existing installations; do not overwrite later Admin edits.\n        level4_price_migration = conn.execute(\n            \"SELECT setting_value FROM platform_settings WHERE setting_key='migration_level4_price_250_usdt'\"\n        ).fetchone()\n        if not level4_price_migration:\n            conn.execute(\"UPDATE level_settings SET activation_usdt=250 WHERE level=4\")\n            conn.execute(\"INSERT INTO platform_settings(setting_key,setting_value) VALUES('migration_level4_price_250_usdt','done')\")\n        conn.execute("INSERT OR IGNORE INTO platform_settings(setting_key,setting_value) VALUES('platform_fee_percent','5')")
         conn.execute("INSERT OR IGNORE INTO platform_settings(setting_key,setting_value) VALUES('usdt_inr_rate','110')")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_product_audit_product ON product_audit(product_id,id DESC)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_shop_audit_shop ON shop_audit(shop_id,id DESC)")

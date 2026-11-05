@@ -625,12 +625,16 @@ async def withdrawal_review(update,ctx):
     try:
         old_text=q.message.text or q.message.caption or f"WITHDRAWAL #{wid}"
         clean_text=old_text.split("\n\nREVIEW RESULT:",1)[0]
-        await q.message.edit_text(clean_text+f"\n\nREVIEW RESULT: {result_label}",reply_markup=None)
+        await q.message.edit_text(
+            clean_text+f"\n\nREVIEW RESULT: {result_label}",
+            reply_markup=None,parse_mode="HTML")
     except Exception:
         try:
             old_caption=q.message.caption or f"WITHDRAWAL #{wid}"
             clean_caption=old_caption.split("\n\nREVIEW RESULT:",1)[0]
-            await q.message.edit_caption(clean_caption+f"\n\nREVIEW RESULT: {result_label}",reply_markup=None)
+            await q.message.edit_caption(
+                clean_caption+f"\n\nREVIEW RESULT: {result_label}",
+                reply_markup=None,parse_mode="HTML")
         except Exception:
             log.exception("Could not update reviewed withdrawal card")
     await q.message.reply_text(result_text,parse_mode="HTML")

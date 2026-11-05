@@ -1182,11 +1182,11 @@ def test_usdt_balance_reconciliation():
     update,message,query=callback_update(101,"m:wallet")
     asyncio.run(v5.menu_callback(update,context()))
     screen=message.replies[0]["text"]
-    require("Wallet shortfall: 69.400000 USDT" in screen,
+    require("Wallet shortfall: 69.4 USDT" in screen,
             f"Merchant wallet did not show the net wallet shortfall; screen was: {screen!r}")
-    require("Sale proceeds remaining: 19.300000 USDT" in screen,
+    require("Sale proceeds remaining: 19.3 USDT" in screen,
             "Merchant wallet did not show 169.3 minus 150 = 19.3")
-    require("Available to withdraw: <b>0.000000 USDT</b>" in screen,
+    require("Available to withdraw: <b>0 USDT</b>" in screen,
             "Merchant was shown withdrawable funds despite a negative net wallet")
     print("PASS: Wallet reconciliation distinguishes remaining sale proceeds from net withdrawable balance")
 

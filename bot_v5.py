@@ -1,6 +1,8 @@
 """V5 Telegram-chat UI: inline level selection, owner panel and deposits."""
-import os, logging, asyncio, html, re, secrets
-from telegram import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove, CopyTextButton
+import os, logging, asyncio, html, re, secrets, json, time
+from urllib.request import Request, urlopen
+from urllib.parse import urlencode
+from telegram import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove, CopyTextButton, KeyboardButton
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 import bot_v3 as v3
 import bot_v4 as v4
@@ -13,6 +15,8 @@ ADMIN_ID=int(os.getenv("ADMIN_ID","0"))
 ROOT_REFERRAL_CODE=os.getenv("ROOT_REFERRAL_CODE","SHOPINDIA").strip().upper() or "SHOPINDIA"
 logging.basicConfig(level=logging.INFO)
 log=logging.getLogger("shop_v5")
+_geocode_lock=asyncio.Lock()
+_geocode_last_request=0.0
 v3.main_keyboard=lambda: ReplyKeyboardRemove()
 
 def level_kb():
@@ -74,6 +78,80 @@ async def edit_screen(ctx, update, text, reply_markup=None):
 def back_dashboard_kb():
     return InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back to Dashboard", callback_data="m:dashboard")]])
 
+def location_request_keyboard():
+    return ReplyKeyboardMarkup(
+        [[KeyboardButton("📍 Share my location",request_location=True)]],
+        resize_keyboard=True,one_time_keyboard=True
+    )
+
+def _reverse_geocode_sync(latitude,longitude):
+    params=urlencode({"format":"jsonv2","lat":latitude,"lon":longitude,"zoom":10,"addressdetails":1})
+    request=Request("https://nominatim.openstreetmap.org/reverse?"+params,
+        headers={"User-Agent":"ShopInIndiaTelegramBot/1.0 (merchant registration)","Accept":"application/json"})
+    with urlopen(request,timeout=12) as response:
+        payload=json.loads(response.read().decode("utf-8"))
+    address=payload.get("address") or {}
+    city=(address.get("city") or address.get("town") or address.get("village")
+          or address.get("municipality") or address.get("hamlet") or address.get("locality"))
+    state=address.get("state") or address.get("province") or address.get("region")
+    country=address.get("country")
+    if not country:
+        raise ValueError("Country could not be identified from the shared location.")
+    return {"country":country,"state":state or "Not available","city":city or "Not available"}
+
+async def reverse_geocode(latitude,longitude):
+    """Resolve coarse admin geography; exact GPS coordinates are never persisted."""
+    global _geocode_last_request
+    lat_key=round(float(latitude),4); lon_key=round(float(longitude),4)
+    c=v4.db()
+    try:
+        cached=c.execute("SELECT country,state,city FROM location_geocode_cache WHERE lat_key=? AND lon_key=?",
+                         (lat_key,lon_key)).fetchone()
+        if cached:
+            return {"country":cached["country"],"state":cached["state"],"city":cached["city"]}
+    finally:
+        c.close()
+    async with _geocode_lock:
+        delay=1.05-(time.monotonic()-_geocode_last_request)
+        if delay>0:
+            await asyncio.sleep(delay)
+        result=await asyncio.to_thread(_reverse_geocode_sync,latitude,longitude)
+        _geocode_last_request=time.monotonic()
+    c=v4.db()
+    try:
+        c.execute("INSERT OR REPLACE INTO location_geocode_cache(lat_key,lon_key,country,state,city,updated_at) VALUES(?,?,?,?,?,?)",
+                  (lat_key,lon_key,result["country"],result["state"],result["city"],v4.now()))
+        c.commit()
+    finally:
+        c.close()
+    return result
+
+async def location_handler(update,ctx):
+    if ctx.user_data.get("state")!="shop_location":
+        return
+    location=getattr(update.message,"location",None)
+    if not location:
+        await update.message.reply_text("Please use the Share my location button to continue registration.",
+                                        reply_markup=location_request_keyboard())
+        return
+    try:
+        place=await reverse_geocode(location.latitude,location.longitude)
+    except Exception:
+        log.exception("Merchant location reverse-geocoding failed")
+        await update.message.reply_text(
+            "I could not identify your country/state/city right now. Please try sharing your location again.",
+            reply_markup=location_request_keyboard())
+        return
+    ctx.user_data.update({"location_country":place["country"],"location_state":place["state"],
+                          "location_city":place["city"]})
+    ctx.user_data["state"]="shop_password"
+    await update.message.reply_text(
+        "<b>📍 LOCATION VERIFIED</b>\n"
+        f"Country: <b>{html.escape(place['country'])}</b>\n"
+        f"State/Province: <b>{html.escape(place['state'])}</b>\n"
+        f"City: <b>{html.escape(place['city'])}</b>\n\n"
+        "Your exact GPS coordinates are not saved. Now create your shop password (minimum 8 characters).",
+        parse_mode="HTML",reply_markup=ReplyKeyboardRemove())
 
 def ensure_referral_code(c, owner_id):
     """Return a stable invitation code for a registered merchant."""
@@ -168,9 +246,13 @@ async def continue_registration_with_code(update,ctx,code):
         return False
     ctx.user_data["referrer_owner_id"]=referrer_owner_id
     ctx.user_data.pop("invite_code_prefill",None)
-    ctx.user_data["state"]="shop_password"
+    ctx.user_data["state"]="shop_location"
     await update.message.reply_text(
-        "Create a password for your shop.\nMinimum 8 characters. Do not share it with anyone."
+        "<b>📍 SHARE YOUR LOCATION — REQUIRED</b>\n"
+        "To complete merchant registration, share your current location using the button below. "
+        "We use it to identify your country, state/province and city for the Admin application. "
+        "Your exact GPS coordinates are not stored.",
+        parse_mode="HTML",reply_markup=location_request_keyboard()
     )
     return True
 
@@ -1095,6 +1177,11 @@ async def text_handler(update,ctx):
         await central.admin_catalog(update,ctx)
         return
     state=ctx.user_data.get("state")
+    if state=="shop_location":
+        await update.message.reply_text(
+            "Location sharing is required to register. Please tap 📍 Share my location below.",
+            reply_markup=location_request_keyboard())
+        return
     if state=="shop_name":
         name=(update.message.text or "").strip()
         if len(name)<2 or len(name)>80:
@@ -1721,6 +1808,7 @@ def main():
     app.add_handler(CallbackQueryHandler(v3.product_review,pattern=r"^product:(approve|reject):[0-9]+$"))
     app.add_handler(CallbackQueryHandler(v4.payment_review,pattern=r"^pay:(approve|reject):[0-9]+$"))
     app.add_handler(CallbackQueryHandler(withdrawal_review_callback,pattern=r"^wd:(paid|reject):[0-9]+$"))
+    app.add_handler(MessageHandler(filters.LOCATION,location_handler))
     app.add_handler(MessageHandler(filters.PHOTO,v4.payment_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,text_handler))
     print("SHOP IN INDIA V5 Telegram UI started.")

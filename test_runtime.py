@@ -1251,6 +1251,37 @@ def test_usdt_trc20_withdrawal_flow():
             "Rejected withdrawal did not release reserved amount")
     print("PASS: Merchant Withdraw Setup, saved TRC20 wallet, Admin wallet directory, first-withdrawal hourly reminders and Admin STOP")
 
+def test_existing_paid_withdrawal_enables_motivation_reminder():
+    from datetime import datetime, timezone
+    c=v4.db()
+    # Create an eligible shop with a paid withdrawal but an OFF reminder,
+    # simulating a merchant paid before this feature was deployed.
+    c.execute("UPDATE shops SET motivation_reminder_status='off',motivation_reminder_next_at=NULL WHERE owner_id=101")
+    c.execute("""INSERT INTO withdrawals(owner_id,shop_id,amount,currency,network,address,status,created_at)
+                 VALUES(101,1,1,'USDT','TRC20','TTEST','paid',?)""",(v4.now(),))
+    c.commit(); c.close()
+    class FakeApp:
+        bot=FakeBot()
+        def create_task(self,coro,name=None):
+            coro.close()
+    asyncio.run(v5.start_motivation_reminder_worker(FakeApp()))
+    c=v4.db()
+    row=c.execute("SELECT motivation_reminder_status,motivation_reminder_next_at FROM shops WHERE owner_id=101").fetchone()
+    c.close()
+    require(row["motivation_reminder_status"]=="on" and row["motivation_reminder_next_at"],
+            "Existing merchant with an already-paid withdrawal was not activated at startup")
+    # Admin-stopped reminders must never be re-enabled by startup backfill.
+    c=v4.db()
+    c.execute("UPDATE shops SET motivation_reminder_status='stopped',motivation_reminder_next_at=NULL WHERE owner_id=101")
+    c.commit(); c.close()
+    asyncio.run(v5.start_motivation_reminder_worker(FakeApp()))
+    c=v4.db()
+    row=c.execute("SELECT motivation_reminder_status,motivation_reminder_next_at FROM shops WHERE owner_id=101").fetchone()
+    c.close()
+    require(row["motivation_reminder_status"]=="stopped" and row["motivation_reminder_next_at"] is None,
+            "Startup backfill re-enabled a reminder that Admin had stopped")
+    print("PASS: Existing paid merchants are activated at startup; Admin-stopped reminders remain stopped")
+
 def test_usdt_balance_reconciliation():
     # Mirrors the reported figures: deposits 50, catalogue investment 138.7,
     # resale proceeds 169.3, recorded profit 55.6 and paid withdrawals 150.

@@ -127,11 +127,12 @@ async def reverse_geocode(latitude,longitude):
     return result
 
 async def location_handler(update,ctx):
-    if ctx.user_data.get("state")!="shop_location":
+    state=ctx.user_data.get("state")
+    if state not in ("shop_location","shop_location_update"):
         return
     location=getattr(update.message,"location",None)
     if not location:
-        await update.message.reply_text("Please use the Share my location button to continue registration.",
+        await update.message.reply_text("Please use the Share my location button.",
                                         reply_markup=location_request_keyboard())
         return
     try:
@@ -141,6 +142,24 @@ async def location_handler(update,ctx):
         await update.message.reply_text(
             "I could not identify your country/state/city right now. Please try sharing your location again.",
             reply_markup=location_request_keyboard())
+        return
+    if state=="shop_location_update":
+        c=v4.db()
+        try:
+            c.execute("""UPDATE shops SET location_country=?,location_state=?,location_city=?
+                         WHERE owner_id=?""",
+                      (place["country"],place["state"],place["city"],update.effective_user.id))
+            c.commit()
+        finally:
+            c.close()
+        ctx.user_data.pop("state",None)
+        await update.message.reply_text(
+            "<b>✅ SHOP LOCATION UPDATED</b>\n"
+            f"City: <b>{html.escape(place['city'])}</b>\n"
+            f"State/Province: <b>{html.escape(place['state'])}</b>\n"
+            f"Country: <b>{html.escape(place['country'])}</b>\n\n"
+            "Your exact GPS coordinates are not saved.",
+            parse_mode="HTML",reply_markup=ReplyKeyboardRemove())
         return
     ctx.user_data.update({"location_country":place["country"],"location_state":place["state"],
                           "location_city":place["city"]})
@@ -622,6 +641,18 @@ async def menu_callback(update,ctx):
             reply_markup=upgrade_level_kb(current_level),parse_mode="HTML")
         return
 
+    if action=="location":
+        if not s:
+            await q.message.reply_text("Shop account was not found.")
+            return
+        ctx.user_data["state"]="shop_location_update"
+        await q.message.reply_text(
+            "<b>📍 UPDATE SHOP LOCATION</b>\n"
+            "Share your current Telegram location using the button below. "
+            "Your country, state/province and city will be saved; exact GPS coordinates will not be stored.",
+            reply_markup=location_request_keyboard(),parse_mode="HTML")
+        return
+
     if action=="dashboard":
         if not s or s["status"]!="approved" or int(s["level"])<1:
             await q.message.reply_text("Approved shop aur active level zaroori hai.")
@@ -975,7 +1006,7 @@ async def menu_callback(update,ctx):
         body=(
             "<b>👤 MY ACCOUNT</b>\n━━━━━━━━━━━━━━━━━━\n"
             f"Shop: <b>{html.escape(str(s['shop_name']))}</b>\n"
-            f"Shop ID: <code>{s['id']}</code> • Level: <b>L{s['level']}</b>\n"
+            f"Shop ID: <code>{html.escape(str(s['shop_code'] or 'Pending'))}</code> • Level: <b>L{s['level']}</b>\n"
             f"📍 Location: <b>{html.escape(str(s['location_city'] or 'Not available'))}, {html.escape(str(s['location_state'] or 'Not available'))}, {html.escape(str(s['location_country'] or 'Not available'))}</b>\n"
             "Withdrawal network: <b>USDT TRC20 only</b>\n"
             "Enter your TRC20 address with each withdrawal request.\n\n"
@@ -984,7 +1015,11 @@ async def menu_callback(update,ctx):
             f"BEP20: <code>{html.escape(str(v4.PAY_BSC))}</code>\n\n"
             "<i>Withdrawal address is requested separately for every payout.</i>"
         )
-        await q.message.reply_text(body,reply_markup=back_dashboard_kb(),parse_mode="HTML")
+        profile_kb=InlineKeyboardMarkup([
+            [InlineKeyboardButton("📍 Update Location",callback_data="m:location")],
+            [InlineKeyboardButton("⬅️ Back to Dashboard",callback_data="m:dashboard")]
+        ])
+        await q.message.reply_text(body,reply_markup=profile_kb,parse_mode="HTML")
     elif action=="support":
         await q.message.reply_text(
             "<b>💬 SUPPORT</b>\n━━━━━━━━━━━━━━━━━━\n"
@@ -1079,12 +1114,22 @@ async def text_handler(update,ctx):
         if raw.lower()=="cancel":
             ctx.user_data.pop("admin_shop_search",None)
             await update.message.reply_text("Shop search cancelled."); return
-        match=re.fullmatch(r"(?:SHOP-)?0*(\d+)",raw,re.IGNORECASE)
+        match=re.fullmatch(r"(?:SHOP-)?(\d{1,6})",raw,re.IGNORECASE)
         if not match:
-            await update.message.reply_text("Invalid Shop ID. Enter SHOP-000123 or 123, or CANCEL."); return
-        sid=int(match.group(1))
+            await update.message.reply_text("Invalid Shop ID. Enter the six-digit Shop ID, or CANCEL."); return
+        public_id=match.group(1)
+        c=v4.db()
+        try:
+            found=c.execute("SELECT id FROM shops WHERE shop_code=?",(public_id,)).fetchone()
+            if not found and len(public_id)<6:
+                found=c.execute("SELECT id FROM shops WHERE id=?",(int(public_id),)).fetchone()
+        finally:
+            c.close()
         ctx.user_data.pop("admin_shop_search",None)
-        await show_admin_shop(update,ctx,sid)
+        if not found:
+            await update.message.reply_text("Shop ID not found.")
+            return
+        await show_admin_shop(update,ctx,int(found["id"]))
         return
     warning_sid=ctx.user_data.get("admin_shop_warning_id")
     if warning_sid is not None:
@@ -1482,7 +1527,13 @@ async def text_handler(update,ctx):
 
 
 def shop_number(shop_id):
-    return f"SHOP-{int(shop_id):06d}"
+    """Resolve the public random Shop ID while retaining the internal DB key."""
+    c=v4.db()
+    try:
+        row=c.execute("SELECT shop_code FROM shops WHERE id=?",(int(shop_id),)).fetchone()
+        return str(row["shop_code"]) if row and row["shop_code"] else "Pending"
+    finally:
+        c.close()
 
 async def show_admin_shop(update,ctx,shop_id,edit=False):
     c=v4.db()
@@ -1524,7 +1575,7 @@ async def admin_shop_callback(update,ctx):
     action=parts[1]
     if action=="search":
         ctx.user_data["admin_shop_search"]=True
-        await q.message.reply_text("🔎 Enter the unique Shop ID (example: SHOP-000123 or 123). Type CANCEL to stop.")
+        await q.message.reply_text("🔎 Enter the six-digit public Shop ID (example: 798546). Type CANCEL to stop.")
         return
     sid=int(parts[2])
     if action=="view":

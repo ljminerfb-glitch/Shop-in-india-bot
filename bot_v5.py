@@ -987,7 +987,31 @@ async def text_handler(update,ctx):
         elif kind=="withdrawal":
             await v4.reject_withdrawal_with_reason(update,ctx,reason)
         elif kind=="product_suggestion":
-            await v3.reject_product_suggestion_with_reason(update,ctx,reason)
+            sid=int(pending_rejection["id"])
+            c=v4.db()
+            try:
+                item=c.execute("SELECT * FROM product_suggestions WHERE id=?",(sid,)).fetchone()
+                if not item or item["status"]!="pending":
+                    ctx.user_data.pop("pending_admin_rejection",None)
+                    await update.message.reply_text("Product suggestion missing or already reviewed.")
+                    return
+                c.execute("UPDATE product_suggestions SET status='rejected',reviewed_at=? WHERE id=? AND status='pending'",
+                          (v4.now(),sid))
+                c.commit()
+            except Exception:
+                c.rollback()
+                await update.message.reply_text("Could not reject product suggestion. Try again.")
+                return
+            finally:
+                c.close()
+            ctx.user_data.pop("pending_admin_rejection",None)
+            try:
+                await ctx.bot.send_message(item["owner_id"],
+                    f"❌ <b>PRODUCT LISTING REJECTED</b>\\nSuggestion: <code>#{sid}</code>\\n"
+                    f"Reason: {html.escape(reason)}",parse_mode="HTML")
+            except Exception:
+                log.exception("Product rejection notification failed")
+            await update.message.reply_text(f"Product suggestion #{sid} rejected. Reason sent to merchant.")
         elif kind=="shop_application":
             sid=int(pending_rejection["id"])
             c=v4.db()

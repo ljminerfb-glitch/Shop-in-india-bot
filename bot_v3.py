@@ -216,6 +216,7 @@ async def save_shop_password(update, context):
         await update.message.reply_text("Please start registration again.")
         return
 
+    referrer_owner_id = context.user_data.get("referrer_owner_id")
     con = connect()
     cur = con.cursor()
 
@@ -231,9 +232,9 @@ async def save_shop_password(update, context):
 
         cur.execute("""
             INSERT INTO shops
-            (owner_id, shop_name, status, created_at, password_hash)
-            VALUES (?, ?, 'pending', ?, ?)
-        """, (user.id, name, now(), hash_password(password)))
+            (owner_id, shop_name, status, created_at, password_hash, referred_by_owner_id)
+            VALUES (?, ?, 'pending', ?, ?, ?)
+        """, (user.id, name, now(), hash_password(password), referrer_owner_id) )
 
         shop_id = cur.lastrowid
         con.commit()

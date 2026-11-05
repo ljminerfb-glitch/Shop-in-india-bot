@@ -1434,7 +1434,7 @@ def test_referral_registration_and_bonuses():
             "Two approved $10 payments did not award two 20% bonuses")
     require(abs(inviter_bonus_total-0.4)<1e-8 and rewards[0]==2 and abs(float(rewards[1])-0.4)<1e-8,
             "Inviter did not receive 2% on both verified deposit and level-payment transactions")
-    require(abs(central.balance(c,505)-14.0)<1e-8,
+    require(abs(cc.balance(c,505)-14.0)<1e-8,
             "Child wallet balance does not include its base deposit and both bonus credits")
     c.close()
 

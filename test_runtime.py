@@ -59,6 +59,9 @@ class FakeBot:
         self.sent.append({"args": args, "kwargs": kwargs, "photo": True})
         return SimpleNamespace(message_id=102, chat_id=args[0] if args else kwargs.get("chat_id", 0))
 
+    async def get_me(self):
+        return SimpleNamespace(username="test_shop_bot")
+
 
 class FakeQuery:
     def __init__(self, user_id, data, message):
@@ -177,6 +180,8 @@ def fixture():
     v4.v3.DB = DB_PATH
     v5.v3.DB = DB_PATH
     v5.ADMIN_ID = 999999
+    runtime_schema.ensure_schema(DB_PATH)
+    v5.ensure_all_referral_codes()
     cc.setup()
 
 
@@ -1182,9 +1187,12 @@ def test_runtime_schema_bootstrap():
             required = {"users", "shops", "products", "payment_requests", "withdrawals",
                         "payment_history", "level_settings", "platform_settings", "ledger",
                         "v4_orders", "central_catalog", "central_orders", "central_inventory",
-                        "resale_listings"}
+                        "resale_listings", "merchant_referrals", "referral_rewards"}
             require(required.issubset(names),
                     f"Fresh install missing tables: {sorted(required - names)}")
+            shop_cols = {r[1] for r in conn.execute("PRAGMA table_info(shops)")}
+            require("referred_by_owner_id" in shop_cols,
+                    "Fresh shops schema is missing referral attribution")
             cols = {r[1] for r in conn.execute("PRAGMA table_info(payment_requests)")}
             require({"transaction_hash", "tx_hash", "screenshot_file_id"}.issubset(cols),
                     "Fresh payment_requests schema is missing proof columns")
@@ -1302,9 +1310,153 @@ def test_admin_refund_safety():
     print("PASS: Refund revokes unused inventory, blocks sold-stock refunds, and protects resale orders")
 
 
+def test_referral_registration_and_bonuses():
+    # Existing merchants receive stable invitation codes.
+    c=v4.db()
+    invite_code=v5.ensure_referral_code(c,101)
+    c.commit()
+    require(bool(invite_code),"Existing approved merchant did not receive an invite code")
+    c.close()
+
+    signup_ctx=context()
+    signup_update,signup_message=message_update(505,"🏪 Register Shop")
+    signup_update.effective_user=SimpleNamespace(id=505,username="referral_child",first_name="Referral Child")
+    asyncio.run(v5.text_handler(signup_update,signup_ctx))
+    require("What would you like to name your shop?" in signup_message.replies[0]["text"],
+            "Register Shop did not ask for the shop name in English")
+    require(signup_ctx.user_data.get("state")=="shop_name",
+            "Registration did not enter the shop-name state")
+
+    name_update,name_message=message_update(505,"Referral Child Shop")
+    name_update.effective_user=signup_update.effective_user
+    asyncio.run(v5.text_handler(name_update,signup_ctx))
+    require(signup_ctx.user_data.get("state")=="referral_code",
+            "Registration did not require an invitation code after shop name")
+    require("invitation code" in name_message.replies[0]["text"].lower(),
+            "Registration did not explain the required invitation code")
+
+    bad_update,bad_message=message_update(505,"NOT-A-VALID-CODE")
+    bad_update.effective_user=signup_update.effective_user
+    asyncio.run(v5.text_handler(bad_update,signup_ctx))
+    require(signup_ctx.user_data.get("state")=="referral_code" and
+            "invalid" in bad_message.replies[0]["text"].lower(),
+            "Invalid referral code was not rejected")
+
+    code_update,code_message=message_update(505,invite_code)
+    code_update.effective_user=signup_update.effective_user
+    asyncio.run(v5.text_handler(code_update,signup_ctx))
+    require(signup_ctx.user_data.get("state")=="shop_password" and
+            signup_ctx.user_data.get("referrer_owner_id")==101,
+            "Valid merchant invitation code did not bind the new merchant to its inviter")
+
+    password_update,password_message=message_update(505,"StrongPassword123")
+    password_update.effective_user=signup_update.effective_user
+    asyncio.run(v5.text_handler(password_update,signup_ctx))
+    c=v4.db()
+    child=c.execute("SELECT id,status,level,referred_by_owner_id FROM shops WHERE owner_id=505").fetchone()
+    require(child is not None and child["referred_by_owner_id"]==101,
+            "New shop registration did not persist its inviter")
+    child_shop_id=int(child["id"])
+    c.execute("UPDATE shops SET status='approved',level=1 WHERE id=?",(child_shop_id,))
+    c.commit()
+    c.close()
+
+    # A $10 verified wallet deposit must add $10 deposit + $2 bonus to the child
+    # and $0.20 referral bonus to the inviter, only after Admin approval.
+    c=v4.db()
+    cur=c.execute("""INSERT INTO payment_requests
+        (owner_id,shop_id,payment_type,level,amount,currency,network,screenshot_file_id,status,created_at)
+        VALUES(505,?,'wallet_deposit',0,10,'USDT','USDT TRC20','deposit-proof','pending',?)""",
+        (child_shop_id,v4.now()))
+    deposit_rid=int(cur.lastrowid)
+    c.commit()
+    before_pending=c.execute(
+        "SELECT COUNT(*) FROM ledger WHERE owner_id=505 AND entry_type='deposit_bonus_credit'"
+    ).fetchone()[0]
+    c.close()
+    require(before_pending==0,"Deposit bonus was credited before Admin approval")
+
+    admin_update,admin_message,_=callback_update(999999,f"pay:approve:{deposit_rid}")
+    asyncio.run(v4.payment_review(admin_update,context()))
+    c=v4.db()
+    base_credit=c.execute(
+        "SELECT COALESCE(SUM(amount),0) FROM ledger WHERE owner_id=505 AND entry_type='deposit_credit'"
+    ).fetchone()[0]
+    child_bonus=c.execute(
+        "SELECT COALESCE(SUM(amount),0) FROM ledger WHERE owner_id=505 AND entry_type='deposit_bonus_credit'"
+    ).fetchone()[0]
+    inviter_bonus=c.execute(
+        "SELECT COALESCE(SUM(amount),0) FROM ledger WHERE owner_id=101 AND entry_type='referral_bonus_credit'"
+    ).fetchone()[0]
+    require(abs(float(base_credit)-10.0)<1e-8 and abs(float(child_bonus)-2.0)<1e-8,
+            "Approved $10 deposit did not credit the base amount plus 20% bonus")
+    require(abs(float(inviter_bonus)-0.2)<1e-8,
+            "Inviter did not receive 2% of the referred merchant's verified deposit")
+    c.close()
+
+    # Repeated clicks on the same reviewed request must not duplicate any reward.
+    duplicate_update,duplicate_message,_=callback_update(999999,f"pay:approve:{deposit_rid}")
+    asyncio.run(v4.payment_review(duplicate_update,context()))
+    c=v4.db()
+    require(c.execute(
+        "SELECT COUNT(*) FROM ledger WHERE owner_id=505 AND entry_type='deposit_bonus_credit'"
+    ).fetchone()[0]==1,"Duplicate approval credited the deposit bonus twice")
+    require(c.execute(
+        "SELECT COUNT(*) FROM referral_rewards WHERE payment_request_id=?",(deposit_rid,)
+    ).fetchone()[0]==1,"Duplicate approval created a duplicate referral reward")
+    c.close()
+
+    # A Level 2 activation payment is also eligible for the 20% bonus and the
+    # inviter's 2% payment reward.
+    c=v4.db()
+    cur=c.execute("""INSERT INTO payment_requests
+        (owner_id,shop_id,payment_type,level,amount,currency,network,screenshot_file_id,status,created_at)
+        VALUES(505,?,'level_activation',2,10,'USDT','USDT BEP20','upgrade-proof','pending',?)""",
+        (child_shop_id,v4.now()))
+    level_rid=int(cur.lastrowid)
+    c.commit()
+    c.close()
+    level_update,level_message,_=callback_update(999999,f"pay:approve:{level_rid}")
+    asyncio.run(v4.payment_review(level_update,context()))
+    c=v4.db()
+    child_bonus_total=float(c.execute(
+        "SELECT COALESCE(SUM(amount),0) FROM ledger WHERE owner_id=505 AND entry_type='deposit_bonus_credit'"
+    ).fetchone()[0])
+    inviter_bonus_total=float(c.execute(
+        "SELECT COALESCE(SUM(amount),0) FROM ledger WHERE owner_id=101 AND entry_type='referral_bonus_credit'"
+    ).fetchone()[0])
+    child_level=int(c.execute("SELECT level FROM shops WHERE id=?",(child_shop_id,)).fetchone()[0])
+    rewards=c.execute(
+        "SELECT COUNT(*),COALESCE(SUM(bonus_amount),0) FROM referral_rewards WHERE referrer_owner_id=101"
+    ).fetchone()
+    require(child_level==2,"Approved Level 2 activation payment did not unlock Level 2")
+    require(abs(child_bonus_total-4.0)<1e-8,
+            "Two approved $10 payments did not award two 20% bonuses")
+    require(abs(inviter_bonus_total-0.4)<1e-8 and rewards[0]==2 and abs(float(rewards[1])-0.4)<1e-8,
+            "Inviter did not receive 2% on both verified deposit and level-payment transactions")
+    require(abs(central.balance(c,505)-14.0)<1e-8,
+            "Child wallet balance does not include its base deposit and both bonus credits")
+    c.close()
+
+    # The inviter dashboard must list the new merchant and show accumulated rewards.
+    referral_update,referral_message,_=callback_update(101,"m:referrals")
+    asyncio.run(v5.menu_callback(referral_update,context()))
+    screen=referral_message.replies[0]["text"]
+    require("Referral Child Shop" in screen and invite_code in screen,
+            "Invited Merchants screen does not show the invited shop and its code")
+    require("0.400000 USDT" in screen and "2% of each invited merchant" in screen,
+            "Invited Merchants screen does not show the earned 2% rewards")
+    buttons=referral_message.replies[0]["kwargs"]["reply_markup"].inline_keyboard
+    require(any(getattr(button,"copy_text",None) and button.copy_text.text==invite_code
+                for row in buttons for button in row),
+            "Invited Merchants screen is missing the copy invite-code button")
+    print("PASS: Merchant referral registration, invite list, 20% verified payment bonuses and 2% upline rewards")
+
+
 def main():
     test_runtime_schema_bootstrap()
     fixture()
+    test_referral_registration_and_bonuses()
     test_level1_catalogue_quantity_buttons()
     test_admin_catalogue_pagination()
     pid, listing_id, inventory_id = test_central_purchase_and_auto_listing()

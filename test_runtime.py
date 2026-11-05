@@ -325,6 +325,7 @@ def test_central_purchase_and_auto_listing():
     require(any("Purchase successful" in x["text"] for x in replies), "Level 2 central purchase did not succeed")
     c = v4.db()
     c.execute("UPDATE shops SET level=1 WHERE owner_id=101")
+    c.commit()
     require(c.execute("SELECT stock FROM central_catalog WHERE id=?", (pid,)).fetchone()[0] == 3,
             "Central shared stock was not reduced")
     order = c.execute("SELECT id FROM central_orders WHERE buyer_owner_id=101 AND quantity=2").fetchone()

@@ -1377,17 +1377,45 @@ def test_referral_registration_and_bonuses():
     code_update,code_message=message_update(505,invite_code)
     code_update.effective_user=signup_update.effective_user
     asyncio.run(v5.text_handler(code_update,signup_ctx))
-    require(signup_ctx.user_data.get("state")=="shop_password" and
+    require(signup_ctx.user_data.get("state")=="shop_location" and
             signup_ctx.user_data.get("referrer_owner_id")==101,
-            "Valid merchant invitation code did not bind the new merchant to its inviter")
+            "Valid invitation code did not require location sharing before password creation")
+    require("LOCATION" in code_message.replies[0]["text"].upper() and
+            code_message.replies[0]["kwargs"]["reply_markup"].keyboard[0][0].request_location,
+            "Registration did not request Telegram's location-sharing permission")
+
+    async def fake_reverse_geocode(latitude,longitude):
+        require(latitude==33.6844 and longitude==73.0479,
+                "Shared Telegram coordinates were not forwarded for geocoding")
+        return {"country":"Pakistan","state":"Punjab","city":"Rawalpindi"}
+    old_geocoder=v5.reverse_geocode
+    v5.reverse_geocode=fake_reverse_geocode
+    try:
+        location_message=Message()
+        location_message.location=SimpleNamespace(latitude=33.6844,longitude=73.0479)
+        location_update=SimpleNamespace(message=location_message,effective_user=signup_update.effective_user)
+        asyncio.run(v5.location_handler(location_update,signup_ctx))
+    finally:
+        v5.reverse_geocode=old_geocoder
+    require(signup_ctx.user_data.get("state")=="shop_password" and
+            signup_ctx.user_data.get("location_country")=="Pakistan" and
+            signup_ctx.user_data.get("location_state")=="Punjab" and
+            signup_ctx.user_data.get("location_city")=="Rawalpindi",
+            "Shared location was not converted into country/state/city before password creation")
 
     password_update,password_message=message_update(505,"StrongPassword123")
     password_update.effective_user=signup_update.effective_user
     asyncio.run(v5.text_handler(password_update,signup_ctx))
     c=v4.db()
-    child=c.execute("SELECT id,status,level,referred_by_owner_id FROM shops WHERE owner_id=505").fetchone()
+    child=c.execute("SELECT id,status,level,referred_by_owner_id,location_country,location_state,location_city FROM shops WHERE owner_id=505").fetchone()
     require(child is not None and child["referred_by_owner_id"]==101,
             "New shop registration did not persist its inviter")
+    require((child["location_country"],child["location_state"],child["location_city"])==
+            ("Pakistan","Punjab","Rawalpindi"),
+            "New shop registration did not persist the detected merchant location")
+    require(any("Country: <b>Pakistan</b>" in x["args"][1] and "City: <b>Rawalpindi</b>" in x["args"][1]
+                for x in signup_ctx.bot.sent if x["args"] and x["args"][0]==999999),
+            "Admin shop application did not include merchant country/state/city")
     child_shop_id=int(child["id"])
     c.execute("UPDATE shops SET status='approved',level=1 WHERE id=?",(child_shop_id,))
     c.commit()

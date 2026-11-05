@@ -315,10 +315,18 @@ async def show_referrals(update,ctx,shop):
     )
 
 
+def shop_brand(shop):
+    """Country-aware merchant brand; fall back only when registration country is unavailable."""
+    country = shop["location_country"] if shop is not None and "location_country" in shop.keys() else None
+    return f"SHOP IN {str(country).strip().upper()}" if country else "SHOP MARKETPLACE"
+
+
 async def levels(bot,uid):
+    shop=v4.shop_for(uid)
+    brand=html.escape(shop_brand(shop))
     await bot.send_message(
         uid,
-        "<b>🔷 SHOP IN INDIA</b>\n━━━━━━━━━━━━━━━━━━\n"
+        f"<b>🔷 {brand}</b>\n━━━━━━━━━━━━━━━━━━\n"
         "<b>SELECT YOUR SHOP LEVEL</b>\n"
         "Choose a level to see its price and benefits. Payment is made in USDT.",
         reply_markup=level_kb(),parse_mode="HTML")
@@ -346,9 +354,9 @@ async def start(update,ctx):
         await levels(ctx.bot,update.effective_user.id)
     else:
         await update.message.reply_text(
-            f"<b>🔷 SHOP IN INDIA</b>\n━━━━━━━━━━━━━━━━━━\n"
+            f"<b>🔷 {html.escape(shop_brand(s))}</b>\n━━━━━━━━━━━━━━━━━━\n"
             f"🏪 <b>{html.escape(str(s['shop_name']))}</b> • <b>LEVEL {s['level']}</b>\n"
-            + (f"📍 <b>{html.escape(str(s['location_country']))}</b>\n" if s.get("location_country") else "")
+            + (f"📍 <b>{html.escape(str(s['location_country']))}</b>\n" if s["location_country"] else "")
             + "\n<b>MERCHANT COMMAND CENTER</b>\nWelcome back! Choose a section below.",
             reply_markup=owner_kb(),parse_mode="HTML")
 
@@ -612,8 +620,8 @@ async def menu_callback(update,ctx):
         ctx.user_data["screen_message_id"]=q.message.message_id
         ctx.user_data["screen_chat_id"]=q.message.chat_id
         await q.message.reply_text(
-            f"<b>🔷 SHOP IN INDIA</b>\n━━━━━━━━━━━━━━━━━━\n🏪 <b>{html.escape(str(s['shop_name']))}</b> • <b>LEVEL {s['level']}</b>\n"
-            + (f"📍 <b>{html.escape(str(s['location_country']))}</b>\n" if s.get("location_country") else "")
+            f"<b>🔷 {html.escape(shop_brand(s))}</b>\n━━━━━━━━━━━━━━━━━━\n🏪 <b>{html.escape(str(s['shop_name']))}</b> • <b>LEVEL {s['level']}</b>\n"
+            + (f"📍 <b>{html.escape(str(s['location_country']))}</b>\n" if s["location_country"] else "")
             + "\n<b>MERCHANT COMMAND CENTER</b>\nChoose a section below.",
             reply_markup=owner_kb(),parse_mode="HTML")
         return

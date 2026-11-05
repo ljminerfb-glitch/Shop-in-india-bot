@@ -1199,6 +1199,14 @@ def test_runtime_schema_bootstrap():
             v4.DB = fresh_db
             v4.v3.DB = fresh_db
             v4.v3.setup()
+            # Simulate shops that existed before the new permanent ID migration.
+            legacy_conn=sqlite3.connect(fresh_db)
+            legacy_conn.execute(
+                "INSERT INTO shops(owner_id,shop_name,status,created_at) VALUES(701,'Legacy Shop A','approved','2025-01-01')")
+            legacy_conn.execute(
+                "INSERT INTO shops(owner_id,shop_name,status,created_at) VALUES(702,'Legacy Shop B','approved','2025-01-02')")
+            legacy_conn.commit()
+            legacy_conn.close()
             require(runtime_schema.ensure_schema(fresh_db) == "ok",
                     "Fresh database schema bootstrap failed")
             v4.v3.ensure_catalog_schema()
@@ -1215,8 +1223,16 @@ def test_runtime_schema_bootstrap():
             require(required.issubset(names),
                     f"Fresh install missing tables: {sorted(required - names)}")
             shop_cols = {r[1] for r in conn.execute("PRAGMA table_info(shops)")}
-            require({"referred_by_owner_id","location_country","location_state","location_city"}.issubset(shop_cols),
-                    "Fresh shops schema is missing referral or merchant-location fields")
+            require({"referred_by_owner_id","location_country","location_state","location_city","shop_code"}.issubset(shop_cols),
+                    "Fresh shops schema is missing referral, merchant-location or unique shop-code fields")
+            legacy_codes=conn.execute("SELECT shop_code FROM shops WHERE owner_id IN (701,702) ORDER BY owner_id").fetchall()
+            require([r[0] for r in legacy_codes]==["SHOP-000001","SHOP-000002"],
+                    f"Existing shops were not backfilled with permanent unique IDs: {legacy_codes!r}")
+            conn.execute("INSERT INTO shops(owner_id,shop_name,status,created_at) VALUES(703,'New Shop','approved','2026-01-03')")
+            new_code=conn.execute("SELECT shop_code FROM shops WHERE owner_id=703").fetchone()[0]
+            require(new_code=="SHOP-000003","New shop did not receive an automatic permanent unique ID")
+            require(conn.execute("SELECT COUNT(DISTINCT shop_code) FROM shops").fetchone()[0]==3,
+                    "Shop IDs are not unique")
             require(not {"latitude","longitude","location_latitude","location_longitude"}.intersection(shop_cols),
                     "Exact merchant GPS coordinates must not be stored in the shops table")
             cols = {r[1] for r in conn.execute("PRAGMA table_info(payment_requests)")}

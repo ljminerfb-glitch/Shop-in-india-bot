@@ -351,7 +351,8 @@ def test_owner_wallet_and_inventory_design():
     asyncio.run(v5.menu_callback(update, context()))
     wallet = message.replies[0]
     require("<b>👛 USDT WALLET</b>" in wallet["text"], "Wallet heading is missing")
-    require("Available balance: <b>7.5" in wallet["text"], "Wallet balance is missing")
+    require("Available balance: <b>7.5 USDT</b>" in wallet["text"], "Wallet balance is missing or has unnecessary trailing zeros")
+    require("7.500000 USDT" not in wallet["text"], "Wallet display still shows unnecessary trailing zeros")
     require(wallet["kwargs"].get("parse_mode") == "HTML", "Wallet is not using Telegram HTML")
     require("💚 <b>Recorded profit:" in wallet["text"], "Green recorded profit label is missing")
 

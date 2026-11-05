@@ -1086,6 +1086,82 @@ def available_withdrawal_usdt(owner_id):
         c.close()
 
 
+
+MOTIVATION_MESSAGES = [
+    "🌟 Your first withdrawal is a milestone! Keep improving your shop, explore Level 2, and work towards more genuine sales, commissions and profit.",
+    "🚀 Great progress! Review your Level 2 catalogue and product opportunities. Consistent service and real sales can help grow your commissions.",
+    "💪 Keep building momentum: add quality listings, serve buyers well, and consider Level 2 when it suits your business. Every genuine sale is progress.",
+    "📈 Your shop journey is moving forward. Learn the Level 2 benefits, improve your product range, and focus on sustainable sales and profit.",
+    "🏆 One withdrawal completed—well done! Keep your shop active, support your customers, and work steadily towards stronger commissions.",
+    "✨ Think growth: compare Level 2 features, keep product information clear, and build trust with buyers for more opportunities to earn.",
+    "🔥 Keep learning and improving! Better listings and reliable customer service can support more sales, commissions and shop profit.",
+    "🎯 Set your next shop goal: explore Level 2, improve your catalogue, and focus on genuine customer demand. Small improvements add up.",
+    "🌱 Your first payout is a good start. Grow at a pace that works for you—quality products, honest service and consistent effort matter.",
+    "💼 Keep developing your business. Check the Level 2 options and look for practical ways to increase sales and commission opportunities."
+]
+
+def _motivation_now():
+    return datetime.now(timezone.utc)
+
+def _motivation_stamp(value):
+    return value.astimezone(timezone.utc).isoformat(timespec="seconds")
+
+def _next_motivation_message(last_index):
+    choices=[i for i in range(len(MOTIVATION_MESSAGES)) if i != last_index]
+    index=secrets.choice(choices)
+    return index,MOTIVATION_MESSAGES[index]
+
+async def send_due_motivation_reminders(bot, now_dt=None):
+    """Deliver due hourly reminders; persisted due times survive bot restarts."""
+    current=now_dt or _motivation_now()
+    current_stamp=_motivation_stamp(current)
+    c=v4.db()
+    try:
+        due=c.execute("""SELECT id,owner_id,shop_name,motivation_reminder_last_index
+                         FROM shops WHERE motivation_reminder_status='on'
+                           AND motivation_reminder_next_at IS NOT NULL
+                           AND motivation_reminder_next_at<=?
+                         ORDER BY id LIMIT 100""",(current_stamp,)).fetchall()
+    finally:
+        c.close()
+    sent=0
+    for shop in due:
+        last=int(shop["motivation_reminder_last_index"] if shop["motivation_reminder_last_index"] is not None else -1)
+        index,message=_next_motivation_message(last)
+        body=(f"<b>⏰ SHOP GROWTH REMINDER</b>\n━━━━━━━━━━━━━━━━━━\n"
+              f"🏪 <b>{html.escape(str(shop['shop_name']))}</b>\n\n{message}\n\n"
+              "<i>Hourly encouragement • Contact Admin if you need help.</i>")
+        try:
+            await bot.send_message(chat_id=int(shop["owner_id"]),text=body,parse_mode="HTML")
+        except Exception:
+            log.info("Motivation reminder delivery failed for shop %s",shop["id"],exc_info=True)
+        next_stamp=_motivation_stamp(current+timedelta(hours=1))
+        c=v4.db()
+        try:
+            cur=c.execute("""UPDATE shops SET motivation_reminder_next_at=?,
+                             motivation_reminder_last_index=?
+                             WHERE id=? AND motivation_reminder_status='on'
+                               AND motivation_reminder_next_at<=?""",
+                          (next_stamp,index,int(shop["id"]),current_stamp))
+            c.commit()
+            if cur.rowcount==1:
+                sent+=1
+        finally:
+            c.close()
+    return sent
+
+async def motivation_reminder_worker(app):
+    """Poll once per minute; each shop receives no more than one reminder per due hour."""
+    while True:
+        try:
+            await send_due_motivation_reminders(app.bot)
+        except Exception:
+            log.exception("Hourly motivation reminder worker failed")
+        await asyncio.sleep(60)
+
+async def start_motivation_reminder_worker(app):
+    app.create_task(motivation_reminder_worker(app),name="shop-motivation-reminders")
+
 async def withdrawal_review_callback(update,ctx):
     """Apply Admin review, then show the same post-payout figures to Admin and merchant."""
     q=update.callback_query
@@ -1105,6 +1181,35 @@ async def withdrawal_review_callback(update,ctx):
     await v4.withdrawal_review(update,ctx)
     if action!="paid" or not was_pending or owner_id is None:
         return
+
+    # Activate the reminder only after the first confirmed paid withdrawal.
+    c=v4.db()
+    try:
+        paid_count=int(c.execute(
+            "SELECT COUNT(*) FROM withdrawals WHERE owner_id=? AND status='paid'",(owner_id,)
+        ).fetchone()[0])
+        if paid_count==1:
+            shop=c.execute("SELECT id,shop_name,motivation_reminder_status FROM shops WHERE owner_id=? ORDER BY id DESC LIMIT 1",
+                           (owner_id,)).fetchone()
+            if shop and str(shop["motivation_reminder_status"] or "off")=="off":
+                next_at=_motivation_stamp(_motivation_now()+timedelta(hours=1))
+                c.execute("""UPDATE shops SET motivation_reminder_status='on',
+                             motivation_reminder_next_at=?,motivation_reminder_last_index=-1
+                             WHERE id=? AND motivation_reminder_status='off'""",
+                          (next_at,int(shop["id"])))
+                activated=c.execute("SELECT changes()").fetchone()[0]==1
+                c.commit()
+                if activated:
+                    try:
+                        await ctx.bot.send_message(owner_id,
+                            "<b>🎉 FIRST WITHDRAWAL COMPLETED!</b>\n━━━━━━━━━━━━━━━━━━\n"
+                            "Your hourly Shop Growth Reminder is now <b>ON</b>. You will receive fresh encouragement "
+                            "about Level 2, sales, commissions and profit every hour. Admin manages this reminder.",
+                            parse_mode="HTML")
+                    except Exception:
+                        log.exception("Could not notify merchant that motivation reminders started")
+    finally:
+        c.close()
     c=v4.db()
     try:
         summary=usdt_wallet_summary(c,owner_id)

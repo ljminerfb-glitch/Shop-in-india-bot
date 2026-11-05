@@ -343,6 +343,10 @@ async def start(update,ctx):
     if invite_payload:
         ctx.user_data["invite_code_prefill"]=invite_payload
     s=v4.shop_for(update.effective_user.id)
+    if s and str(s["control_status"] or "active").lower()!="active":
+        await update.message.reply_text(
+            f"⛔ Your shop {shop_number(s['id'])} is currently {str(s['control_status']).upper()} by Admin. New orders and purchases are unavailable. Please contact Support.")
+        return
     if not s:
         await update.message.reply_text(
             "<b>🔷 SHOP MARKETPLACE</b>\n━━━━━━━━━━━━━━━━━━\n"
@@ -1068,6 +1072,49 @@ async def withdrawal_review_callback(update,ctx):
 
 
 async def text_handler(update,ctx):
+    if ctx.user_data.get("admin_shop_search"):
+        if update.effective_user.id!=ADMIN_ID:
+            ctx.user_data.pop("admin_shop_search",None); return
+        raw=(update.message.text or "").strip()
+        if raw.lower()=="cancel":
+            ctx.user_data.pop("admin_shop_search",None)
+            await update.message.reply_text("Shop search cancelled."); return
+        match=re.fullmatch(r"(?:SHOP-)?0*(\\d+)",raw,re.IGNORECASE)
+        if not match:
+            await update.message.reply_text("Invalid Shop ID. Enter SHOP-000123 or 123, or CANCEL."); return
+        sid=int(match.group(1))
+        ctx.user_data.pop("admin_shop_search",None)
+        await show_admin_shop(update,ctx,sid)
+        return
+    warning_sid=ctx.user_data.get("admin_shop_warning_id")
+    if warning_sid is not None:
+        if update.effective_user.id!=ADMIN_ID:
+            ctx.user_data.pop("admin_shop_warning_id",None); return
+        reason=(update.message.text or "").strip()
+        if reason.lower()=="cancel":
+            ctx.user_data.pop("admin_shop_warning_id",None)
+            await update.message.reply_text("Next-order warning cancelled."); return
+        if not reason or len(reason)>1000:
+            await update.message.reply_text("Warning reason is mandatory (1–1000 characters). Enter it or CANCEL."); return
+        c=v4.db()
+        try:
+            row=c.execute("SELECT owner_id,shop_name FROM shops WHERE id=?",(int(warning_sid),)).fetchone()
+            if not row:
+                await update.message.reply_text("Shop ID not found."); return
+            c.execute("UPDATE shops SET next_order_warning=1,warning_reason=?,control_note=? WHERE id=?",
+                      (reason,f"Next-order warning: {reason}",int(warning_sid)))
+            c.execute("INSERT INTO admin_audit(admin_id,owner_id,action,details,created_at) VALUES(?,?,?,?,?)",
+                      (ADMIN_ID,row["owner_id"],"shop_next_order_warning",f"{shop_number(warning_sid)}: {reason}",v4.now()))
+            c.commit()
+        except Exception:
+            c.rollback(); log.exception("Saving next-order warning failed")
+            await update.message.reply_text("Warning could not be saved. Try again."); return
+        finally:
+            c.close()
+        ctx.user_data.pop("admin_shop_warning_id",None)
+        await update.message.reply_text(f"Warning saved for {shop_number(warning_sid)}. Reason will be shown on its next successful order.")
+        await show_admin_shop(update,ctx,int(warning_sid))
+        return
     pending_rejection=ctx.user_data.get("pending_admin_rejection")
     if pending_rejection:
         if update.effective_user.id!=ADMIN_ID:
@@ -1434,6 +1481,87 @@ async def text_handler(update,ctx):
             await levels(ctx.bot,update.effective_user.id)
 
 
+def shop_number(shop_id):
+    return f"SHOP-{int(shop_id):06d}"
+
+async def show_admin_shop(update,ctx,shop_id,edit=False):
+    c=v4.db()
+    try:
+        row=c.execute("SELECT * FROM shops WHERE id=?",(int(shop_id),)).fetchone()
+    finally:
+        c.close()
+    if not row:
+        await update.effective_message.reply_text("Shop ID not found.")
+        return
+    control=str(row["control_status"] or "active").lower()
+    body=(f"<b>🏪 SHOP MANAGEMENT — {shop_number(row['id'])}</b>\n━━━━━━━━━━━━━━━━━━\n"
+          f"Name: <b>{html.escape(str(row['shop_name']))}</b>\n"
+          f"Owner: <code>{row['owner_id']}</code>\n"
+          f"Application: <b>{html.escape(str(row['status']).upper())}</b> • Level {row['level']}\n"
+          f"Control: <b>{html.escape(control.upper())}</b>\n"
+          f"Location: {html.escape(str(row['location_city'] or 'N/A'))}, {html.escape(str(row['location_state'] or 'N/A'))}, {html.escape(str(row['location_country'] or 'N/A'))}\n"
+          f"Warning queued: <b>{'YES' if row['next_order_warning'] else 'NO'}</b>\n"
+          f"Control note: {html.escape(str(row['control_note'] or 'None'))}\n"
+          f"Warning reason: {html.escape(str(row['warning_reason'] or 'None'))}")
+    kb=InlineKeyboardMarkup([
+        [InlineKeyboardButton("❄️ Freeze",callback_data=f"admshop:freeze:{row['id']}"),
+         InlineKeyboardButton("⛔ Disable",callback_data=f"admshop:disable:{row['id']}")],
+        [InlineKeyboardButton("✅ Enable",callback_data=f"admshop:enable:{row['id']}"),
+         InlineKeyboardButton("🗑 Delete",callback_data=f"admshop:delete:{row['id']}")],
+        [InlineKeyboardButton("⚠️ Warn Next Order",callback_data=f"admshop:warn:{row['id']}")],
+        [InlineKeyboardButton("🔎 Search Shop ID",callback_data="admshop:search"),
+         InlineKeyboardButton("⬅️ All Shops",callback_data="adm:shops")],
+        [InlineKeyboardButton("🏠 Admin Panel",callback_data="adm:home")]
+    ])
+    await update.effective_message.reply_text(body,reply_markup=kb,parse_mode="HTML")
+
+async def admin_shop_callback(update,ctx):
+    q=update.callback_query
+    if q.from_user.id!=ADMIN_ID:
+        await q.answer("Admin only",show_alert=True); return
+    await q.answer()
+    parts=q.data.split(":")
+    action=parts[1]
+    if action=="search":
+        ctx.user_data["admin_shop_search"]=True
+        await q.message.reply_text("🔎 Enter the unique Shop ID (example: SHOP-000123 or 123). Type CANCEL to stop.")
+        return
+    sid=int(parts[2])
+    if action=="view":
+        await show_admin_shop(update,ctx,sid); return
+    if action=="warn":
+        ctx.user_data["admin_shop_warning_id"]=sid
+        await q.message.reply_text(f"⚠️ Enter the mandatory warning reason for {shop_number(sid)}. This will be shown to the buyer on that shop's next successful order. Type CANCEL to stop.")
+        return
+    control={"freeze":"frozen","disable":"disabled","enable":"active","delete":"deleted"}.get(action)
+    if not control:
+        await q.message.reply_text("Unknown shop action."); return
+    c=v4.db()
+    try:
+        row=c.execute("SELECT owner_id,shop_name,control_status FROM shops WHERE id=?",(sid,)).fetchone()
+        if not row:
+            await q.message.reply_text("Shop ID not found."); return
+        previous=str(row["control_status"] or "active")
+        note=f"Admin set shop control status to {control}"
+        c.execute("UPDATE shops SET control_status=?,control_note=? WHERE id=?",(control,note,sid))
+        c.execute("INSERT INTO admin_audit(admin_id,owner_id,action,details,created_at) VALUES(?,?,?,?,?)",
+                  (ADMIN_ID,row["owner_id"],f"shop_{control}",f"{shop_number(sid)} ({row['shop_name']}): {previous} -> {control}",v4.now()))
+        c.commit()
+    except Exception:
+        c.rollback(); log.exception("Shop control update failed")
+        await q.message.reply_text("Shop control could not be updated. Try again."); return
+    finally:
+        c.close()
+    try:
+        await ctx.bot.send_message(row["owner_id"],
+            f"🏪 <b>SHOP STATUS UPDATED</b>\nShop: <b>{html.escape(str(row['shop_name']))}</b> ({shop_number(sid)})\n"
+            f"New control status: <b>{control.upper()}</b>\nNew orders and purchases are {'blocked' if control!='active' else 'enabled'}.",
+            parse_mode="HTML")
+    except Exception:
+        log.exception("Shop control notification failed")
+    await q.message.reply_text(f"{shop_number(sid)} control status updated to {control.upper()}.")
+    await show_admin_shop(update,ctx,sid)
+
 async def admin_panel(update,ctx):
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("Admin only."); return
@@ -1511,15 +1639,15 @@ async def admin_panel_callback(update,ctx):
             await q.message.reply_text(owner_body[:4000],
               reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]),parse_mode="HTML")
         elif action=="shops":
-            rows=c.execute("SELECT id,shop_name,owner_id,status,level,location_country,location_state,location_city FROM shops ORDER BY id DESC LIMIT 40").fetchall()
-            shops_body="<b>🏪 ALL SHOPS</b>\n━━━━━━━━━━━━━━━━━━\n"
+            rows=c.execute("SELECT id,shop_name,owner_id,status,level,control_status FROM shops ORDER BY id DESC LIMIT 10").fetchall()
+            shops_body="<b>🏪 ALL SHOPS — MANAGEMENT</b>\n━━━━━━━━━━━━━━━━━━\nSearch by unique Shop ID or select a recent shop below.\n\n"
             shops_body+="\n".join(
-              f"#{r['id']} <b>{html.escape(str(r['shop_name']))}</b> • Owner <code>{r['owner_id']}</code>\n"
-              f"{'✅' if r['status']=='approved' else '❌' if r['status']=='rejected' else '🟡'} {html.escape(str(r['status']).upper())} • Level {r['level']}\n"
-              f"📍 {html.escape(str(r['location_city'] or 'Not available'))}, {html.escape(str(r['location_state'] or 'Not available'))}, {html.escape(str(r['location_country'] or 'Not available'))}"
+              f"<b>{shop_number(r['id'])}</b> • {html.escape(str(r['shop_name']))}\nOwner: <code>{r['owner_id']}</code> • {html.escape(str(r['status']).upper())} • {html.escape(str(r['control_status'] or 'active').upper())}"
               for r in rows) if rows else "No shops registered."
-            await q.message.reply_text(shops_body[:4000],
-              reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]),parse_mode="HTML")
+            buttons=[[InlineKeyboardButton(f"{shop_number(r['id'])} • {str(r['shop_name'])[:20]}",callback_data=f"admshop:view:{r['id']}")] for r in rows]
+            buttons.insert(0,[InlineKeyboardButton("🔎 SEARCH BY SHOP ID",callback_data="admshop:search")])
+            buttons.append([InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")])
+            await q.message.reply_text(shops_body[:3500],reply_markup=InlineKeyboardMarkup(buttons),parse_mode="HTML")
         elif action in ("payments","levelpayments"):
             payment_type="wallet_deposit" if action=="payments" else "level_activation"
             section_title="PENDING DEPOSITS" if action=="payments" else "PENDING LEVEL PAYMENTS"
@@ -1817,6 +1945,7 @@ def main():
     app.add_handler(CallbackQueryHandler(txid_callback,pattern=r"^txid:[0-9]+$"))
     app.add_handler(CallbackQueryHandler(menu_callback,pattern=r"^m:(market|level1|upgrade|sellermarket|deposit|depositstart|depositfund|deposit_fund|deposit-fund|depositdone|deposits|withdraw|withdrawsetup|withdrawsetupedit|wallet|products|orders|history|profile|referrals|dashboard|support)$"))
     app.add_handler(CallbackQueryHandler(admin_panel_callback,pattern=r"^adm:(home|owners|shops|payments|levelpayments|withdrawals|withdrawwallets|products|orders|levels|settings|central|resale|audit|back)$"))
+    app.add_handler(CallbackQueryHandler(admin_shop_callback,pattern=r"^admshop:(search|view:[0-9]+|freeze:[0-9]+|disable:[0-9]+|enable:[0-9]+|delete:[0-9]+|warn:[0-9]+)$"))
     app.add_handler(CallbackQueryHandler(central.resale_callback,pattern=r"^rs:(list:[0-9]+|listmenu|market|review:[0-9]+|reject:[0-9]+|buy:[0-9]+:[0-9]+)$"))
     app.add_handler(CallbackQueryHandler(audit_callback,pattern=r"^audit:(all|payments|levels|wallet|orders|products):[0-9]+$"))
     app.add_handler(CallbackQueryHandler(delivered_callback,pattern=r"^order:delivered:[0-9]+$"))

@@ -1234,6 +1234,16 @@ def test_runtime_schema_bootstrap():
             ).fetchone()
             require(tuple(level2_settings)==(50.0,50,2.0,6.5),
                     f"Level 2 defaults are wrong: {tuple(level2_settings)!r}")
+            level4_price=conn.execute(
+                "SELECT activation_usdt FROM level_settings WHERE level=4"
+            ).fetchone()
+            require(level4_price and float(level4_price[0])==250.0,
+                    f"Level 4 activation price must be 250 USDT: {level4_price!r}")
+            level1_price=conn.execute(
+                "SELECT activation_usdt FROM level_settings WHERE level=1"
+            ).fetchone()
+            require(level1_price and float(level1_price[0])==5.0,
+                    f"Level 1 price should remain unchanged: {level1_price!r}")
             level2_products=conn.execute(
                 "SELECT COUNT(*),MIN(stock),MAX(stock) FROM central_catalog WHERE level_required=2"
             ).fetchone()

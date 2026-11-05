@@ -38,6 +38,7 @@ def ensure_schema(db_path=None):
             _add_columns(conn, "shops", [
                 ("password_hash", "TEXT"),
                 ("level", "INTEGER NOT NULL DEFAULT 0"),
+                ("referred_by_owner_id", "INTEGER"),
             ])
         if "products" in {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}:
             _add_columns(conn, "products", [
@@ -118,6 +119,16 @@ def ensure_schema(db_path=None):
             currency TEXT NOT NULL DEFAULT 'USDT', status TEXT NOT NULL DEFAULT 'pending',
             reference TEXT, admin_note TEXT, actor_id INTEGER, created_at TEXT NOT NULL,
             reviewed_at TEXT)""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS merchant_referrals (
+            owner_id INTEGER PRIMARY KEY, shop_id INTEGER NOT NULL,
+            referral_code TEXT NOT NULL UNIQUE COLLATE NOCASE,
+            created_at TEXT NOT NULL)""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS referral_rewards (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            payment_request_id INTEGER NOT NULL UNIQUE,
+            referrer_owner_id INTEGER NOT NULL, referred_owner_id INTEGER NOT NULL,
+            payment_amount REAL NOT NULL, bonus_amount REAL NOT NULL,
+            currency TEXT NOT NULL DEFAULT 'USDT', created_at TEXT NOT NULL)""")
         conn.execute("""CREATE TABLE IF NOT EXISTS platform_settings (
             setting_key TEXT PRIMARY KEY, setting_value TEXT NOT NULL,
             updated_by INTEGER, updated_at TEXT)""")
@@ -156,6 +167,8 @@ def ensure_schema(db_path=None):
         conn.execute("CREATE INDEX IF NOT EXISTS idx_v4_orders_buyer ON v4_orders(buyer_shop_id,id DESC)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_v4_orders_seller ON v4_orders(seller_shop_id,id DESC)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_ledger_owner ON ledger(owner_id,id DESC)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_referrals_inviter ON shops(referred_by_owner_id,id DESC)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_referral_rewards_referrer ON referral_rewards(referrer_owner_id,id DESC)")
         conn.commit()
         check = conn.execute("PRAGMA integrity_check").fetchone()[0]
         if check != "ok":

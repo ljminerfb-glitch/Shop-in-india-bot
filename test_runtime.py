@@ -360,6 +360,16 @@ def test_owner_wallet_and_inventory_design():
     require(wallet["kwargs"].get("parse_mode") == "HTML", "Wallet is not using Telegram HTML")
     require("💚 <b>Recorded profit:" in wallet["text"], "Green recorded profit label is missing")
 
+    # Profile reports completed item-level buy/sell pairs without imposing a withdrawal lock.
+    profile_update, profile_message, _ = callback_update(101, "m:profile")
+    profile_ctx = context()
+    asyncio.run(v5.menu_callback(profile_update, profile_ctx))
+    profile_cards = [x for x in profile_ctx.bot.sent
+                     if x.get("kwargs", {}).get("photo") == "latest-profile-photo"]
+    require(bool(profile_cards), "My Account profile card was not rendered")
+    require("Completed buy/sell pairs: <b>0/50</b>" in profile_cards[0]["kwargs"].get("caption", ""),
+            "Profile did not show zero completed buy/sell pairs before any resale")
+
     # Inventory screen: sold/available stock and margin stay easy to scan.
     update, message, query = callback_update(101, "m:products")
     asyncio.run(v5.menu_callback(update, context()))
@@ -464,6 +474,15 @@ def test_resale_buyer_guards_and_sale(listing_id, inventory_id):
     require(c.execute("""SELECT COUNT(*) FROM central_orders
                          WHERE buyer_owner_id=202 AND quantity=1 AND total_usdt=3.3""").fetchone()[0] == 1,
             "Resale central order was not recorded")
+    # One sold unit from the seller's purchased inventory is exactly one completed pair.
+    profile_update, profile_message, _ = callback_update(101, "m:profile")
+    profile_ctx = context()
+    asyncio.run(v5.menu_callback(profile_update, profile_ctx))
+    profile_cards = [x for x in profile_ctx.bot.sent
+                     if x.get("kwargs", {}).get("photo") == "latest-profile-photo"]
+    require(bool(profile_cards) and "Completed buy/sell pairs: <b>1/50</b>" in
+            profile_cards[0]["kwargs"].get("caption", ""),
+            "Profile did not increment completed buy/sell pairs after a successful resale")
     # A suspended seller cannot sell even when the product level is otherwise eligible.
     c.execute("UPDATE shops SET status='suspended' WHERE id=1")
     c.commit()

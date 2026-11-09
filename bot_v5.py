@@ -1034,8 +1034,15 @@ async def menu_callback(update,ctx):
                 COALESCE(SUM(i.remaining_quantity*i.unit_cost_usdt),0) reserve_usdt,
                 COALESCE(SUM(i.remaining_quantity),0) reserve_items
                 FROM central_inventory i WHERE i.owner_id=?""",(q.from_user.id,)).fetchone()
-            bought_row=c.execute("""SELECT COALESCE(SUM(quantity),0) bought_items
-                FROM central_orders WHERE buyer_owner_id=? AND status IN ('paid','fulfilled')""",(q.from_user.id,)).fetchone()
+            bought_row=c.execute("""SELECT COALESCE(SUM(o.quantity),0) bought_items
+                FROM central_orders o
+                WHERE o.buyer_owner_id=? AND o.status IN ('paid','fulfilled')
+                  AND EXISTS (
+                    SELECT 1 FROM ledger l
+                    WHERE l.transaction_id=o.id AND l.owner_id=o.buyer_owner_id
+                      AND l.entry_type='central_purchase_debit'
+                      AND l.currency='USDT'
+                  )""",(q.from_user.id,)).fetchone()
             pair_row=c.execute("""SELECT
                 COALESCE(SUM(CASE WHEN status<>'refunded' THEN MAX(quantity-remaining_quantity,0) ELSE 0 END),0) completed_pairs
                 FROM central_inventory WHERE owner_id=?""",(q.from_user.id,)).fetchone()

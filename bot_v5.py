@@ -1163,7 +1163,7 @@ async def send_due_motivation_reminders(bot, now_dt=None):
               f"🏪 <b>{html.escape(str(shop['shop_name']))}</b>\n\n{message}\n\n"
               "<i>Hourly encouragement • Contact Admin if you need help.</i>")
         try:
-            await bot.send_message(chat_id=int(shop["owner_id"]),text=body,parse_mode="HTML")
+            await bot.send_message(chat_id=ADMIN_ID,text=body,parse_mode="HTML")
         except Exception:
             log.info("Motivation reminder delivery failed for shop %s",shop["id"],exc_info=True)
         next_stamp=_motivation_stamp(current+timedelta(hours=1))
@@ -1262,10 +1262,10 @@ async def withdrawal_review_callback(update,ctx):
                 c.commit()
                 if activated:
                     try:
-                        await ctx.bot.send_message(owner_id,
-                            "<b>🎉 FIRST WITHDRAWAL COMPLETED!</b>\n━━━━━━━━━━━━━━━━━━\n"
-                            "Your hourly Shop Growth Reminder is now <b>ON</b>. You will receive fresh encouragement "
-                            "about Level 2, sales, commissions and profit every hour. Admin manages this reminder.",
+                        await ctx.bot.send_message(ADMIN_ID,
+                            "<b>🎉 FIRST WITHDRAWAL COMPLETED — SHOP REMINDER ACTIVATED</b>\n━━━━━━━━━━━━━━━━━━\n"
+                            f"Shop: <b>{html.escape(str(shop['shop_name']))}</b>\n"
+                            "Hourly Shop Growth reminders are now <b>ON</b>. These reminders are delivered to Admin only.",
                             parse_mode="HTML")
                     except Exception:
                         log.exception("Could not notify merchant that motivation reminders started")

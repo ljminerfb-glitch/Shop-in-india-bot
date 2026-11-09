@@ -628,21 +628,36 @@ async def show_owner_level_products(update,ctx,shop,page=0,track_visit=True,leve
         c.commit()
     finally: c.close()
     total=len(rows)
-    last_page=max(0,(total-1)//CATALOGUE_PAGE_SIZE)
-    page=max(0,min(int(page),last_page))
-    start=page*CATALOGUE_PAGE_SIZE
-    page_rows=rows[start:start+CATALOGUE_PAGE_SIZE]
+    if level==2:
+        # Level 2 is a one-at-a-time unlock flow: show only the first product
+        # this shop has not bought yet. A successful purchase advances it.
+        purchased_count=sum(1 for row in rows if int(row["already_purchased"]))
+        page_rows=[next((row for row in rows if not int(row["already_purchased"])),None)]
+        page_rows=[row for row in page_rows if row is not None]
+        start=purchased_count
+        last_page=max(0,total-1)
+    else:
+        last_page=max(0,(total-1)//CATALOGUE_PAGE_SIZE)
+        page=max(0,min(int(page),last_page))
+        start=page*CATALOGUE_PAGE_SIZE
+        page_rows=rows[start:start+CATALOGUE_PAGE_SIZE]
     margin_text=(f"Resale margin is randomly set between {float(settings['profit_min']):g}% and {float(settings['profit_max']):g}% per merchant/product."
                  if level==2 and settings else "Resale margin is a reference, not guaranteed income.")
     await update.callback_query.message.reply_text(
         f"<b>🛍 LEVEL {level} CENTRAL CATALOGUE</b>\n━━━━━━━━━━━━━━━━━━\n"
-        f"Showing {start+1 if total else 0}–{min(start+CATALOGUE_PAGE_SIZE,total)} of {total} products\n"
-        f"{total_visitors} unique visitors\n"
+        +(f"Purchased: {purchased_count}/{total} • Next product unlocks after purchase\n" if level==2 else f"Showing {start+1 if total else 0}–{min(start+CATALOGUE_PAGE_SIZE,total)} of {total} products\n")
+        +f"{total_visitors} unique visitors\n"
         f"<i>{margin_text} Profit is credited after a completed sale.</i>",
         reply_markup=InlineKeyboardMarkup([[
             InlineKeyboardButton("⬅️ Back to My Products",callback_data="m:products"),
             InlineKeyboardButton("🏠 Dashboard",callback_data="m:dashboard")]]),
         parse_mode="HTML")
+    if level==2 and not page_rows:
+        await ctx.bot.send_message(
+            update.effective_chat.id,
+            "<b>🎉 LEVEL 2 CATALOGUE COMPLETED</b>\nYou have purchased all currently active Level 2 products.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ My Products",callback_data="m:products"),InlineKeyboardButton("🏠 Dashboard",callback_data="m:dashboard")]]),
+            parse_mode="HTML")
     for p in page_rows:
         price=float(p["price_usdt"] or 0); stock=int(p["stock"] or 0)
         caption=(f"<b>#{p['id']} {html.escape(str(p['title']))}</b>\n"
@@ -679,13 +694,14 @@ async def show_owner_level_products(update,ctx,shop,page=0,track_visit=True,leve
         except Exception:
             log.exception("Could not send catalogue item")
             await ctx.bot.send_message(update.effective_chat.id,caption,reply_markup=kb,parse_mode="HTML")
-    await ctx.bot.send_message(
-        update.effective_chat.id,
-        f"<b>PAGE {page+1}/{last_page+1}</b> • Products {start+1 if total else 0}–{min(start+CATALOGUE_PAGE_SIZE,total)} of {total}",
-        reply_markup=_catalogue_page_keyboard(
-            page,total,f"ccpage:{level}",
-            "⬅️ Back to My Products","m:products","m:dashboard"),
-        parse_mode="HTML")
+    if level==1:
+        await ctx.bot.send_message(
+            update.effective_chat.id,
+            f"<b>PAGE {page+1}/{last_page+1}</b> • Products {start+1 if total else 0}–{min(start+CATALOGUE_PAGE_SIZE,total)} of {total}",
+            reply_markup=_catalogue_page_keyboard(
+                page,total,f"ccpage:{level}",
+                "⬅️ Back to My Products","m:products","m:dashboard"),
+            parse_mode="HTML")
 
 
 async def owner_buy_callback(update,ctx):
@@ -693,8 +709,19 @@ async def owner_buy_callback(update,ctx):
     await q.answer()
     try:
         _,pid_s,qty_s=q.data.split(":")
+        c=v4.db()
+        try:
+            product=c.execute("SELECT level_required FROM central_catalog WHERE id=?",(int(pid_s),)).fetchone()
+        finally:
+            c.close()
         ctx.args=[pid_s,qty_s]
         await buy(update,ctx)
+        if product and int(product["level_required"])==2:
+            # Refresh the Level 2 screen; after a successful buy the next
+            # unpurchased product is shown, otherwise the same one remains.
+            shop=v4.shop_for(q.from_user.id)
+            if shop and shop["status"]=="approved" and int(shop["level"])>=2:
+                await show_owner_level_products(update,ctx,shop,level=2,track_visit=False)
     except Exception:
         log.exception("Catalogue button purchase failed")
         await q.message.reply_text("Purchase could not be completed. Please retry with /centralbuy PRODUCT_ID QUANTITY.")

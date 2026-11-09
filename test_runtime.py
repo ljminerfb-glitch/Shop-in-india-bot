@@ -622,8 +622,8 @@ def test_level2_catalogue_and_purchase_flow():
     owner_update,_,_=callback_update(303,"cclevel:2")
     owner_ctx=context()
     asyncio.run(cc.owner_level_callback(owner_update,owner_ctx))
-    require(product_card_ids(owner_ctx.bot.sent)==ids[:5],
-            "Level 2 merchant catalogue did not show the first five Level 2 products")
+    require(product_card_ids(owner_ctx.bot.sent)==ids[:1],
+            "Level 2 merchant catalogue should show only the first unpurchased Level 2 product")
     first_card=next(x for x in owner_ctx.bot.sent if product_card_ids([x]))
     require(any(cb.startswith(f"ccbuy:{first_pid}:") for cb in sent_callback_data(first_card)),
             "Level 2 product quantity purchase buttons are missing")

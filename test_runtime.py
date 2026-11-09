@@ -719,8 +719,8 @@ def test_level2_catalogue_and_purchase_flow():
     profile_ctx=context()
     asyncio.run(v5.menu_callback(profile_update,profile_ctx))
     profile_text="\\n".join([sent_text(x) or x["kwargs"].get("caption","") for x in profile_ctx.bot.sent])
-    require("Total funds (wallet + reserve): <b>" in profile_text
-            and "Reserve in unsold items: <b>" in profile_text
+    require("Total funds (available wallet only): <b>" in profile_text
+            and "Reserve in unsold items (not included above): <b>" in profile_text
             and "Items currently in reserve: <b>" in profile_text
             and "Recorded realized profit: <b>" in profile_text,
             f"Merchant profile is missing reserve/profit accounting: {profile_text!r}")

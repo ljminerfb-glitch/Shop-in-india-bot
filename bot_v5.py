@@ -1167,7 +1167,7 @@ async def send_due_motivation_reminders(bot, now_dt=None):
         index,message=_next_motivation_message(last)
         body=(f"<b>⏰ SHOP GROWTH REMINDER</b>\n━━━━━━━━━━━━━━━━━━\n"
               f"🏪 <b>{html.escape(str(shop['shop_name']))}</b>\n\n{message}\n\n"
-              "<i>Hourly encouragement • Contact Admin if you need help.</i>")
+              "<i>Contact Customer Services if you need help.</i>")
         try:
             await bot.send_message(chat_id=ADMIN_ID,text=body,parse_mode="HTML")
         except Exception:

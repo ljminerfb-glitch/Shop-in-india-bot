@@ -1063,7 +1063,7 @@ async def menu_callback(update,ctx):
             c.close()
         reserve=float(reserve_row["reserve_usdt"] or 0)
         reserve_items=int(reserve_row["reserve_items"] or 0)
-        total_funds=max(0.0,float(wallet_summary["ledger_balance"])-float(wallet_summary["pending"]))+reserve
+        total_funds=max(0.0,float(wallet_summary["ledger_balance"])-float(wallet_summary["pending"]))
         profit=float(profit_row["profit"] or 0)
         body=(
             "<b>👤 MY ACCOUNT</b>\n━━━━━━━━━━━━━━━━━━\n"
@@ -1071,9 +1071,8 @@ async def menu_callback(update,ctx):
             f"Shop ID: <code>{html.escape(str(s['shop_code'] or 'Pending'))}</code> • Level: <b>L{s['level']}</b>\n"
             f"📍 Location: <b>{html.escape(str(s['location_city'] or 'Not available'))}, {html.escape(str(s['location_state'] or 'Not available'))}, {html.escape(str(s['location_country'] or 'Not available'))}</b>\n\n"
             "<b>💼 MERCHANT FUNDS SUMMARY</b>\n"
-            f"Total funds (wallet + reserve): <b>{format_usdt(total_funds)} USDT</b>\n"
-            f"Available wallet: <b>{format_usdt(max(0.0,wallet_summary['ledger_balance']-wallet_summary['pending']))} USDT</b>\n"
-            f"🔒 Reserve in unsold items: <b>{format_usdt(reserve)} USDT</b>\n"
+            f"Total funds (available wallet only): <b>{format_usdt(total_funds)} USDT</b>\n"
+            f"🔒 Reserve in unsold items (not included above): <b>{format_usdt(reserve)} USDT</b>\n"
             f"Items currently in reserve: <b>{reserve_items}</b>\n"
             f"Total items purchased: <b>{int(bought_row['bought_items'] or 0)}</b>\n"
             f"💚 Recorded realized profit: <b>+{format_usdt(profit)} USDT</b>\n\n"
@@ -1082,7 +1081,7 @@ async def menu_callback(update,ctx):
             "<b>DEPOSIT NETWORKS</b>\n"
             f"TRC20: <code>{html.escape(str(v4.PAY_TRON))}</code>\n"
             f"BEP20: <code>{html.escape(str(v4.PAY_BSC))}</code>\n\n"
-            "<i>Reserve is the recorded purchase cost of unsold inventory; it is not available wallet cash. Profit is counted only when sale profit is recorded.</i>"
+            "<i>Reserve is the recorded purchase cost of unsold inventory and is kept separate from Total funds. It is not available wallet cash. Profit is counted only when sale profit is recorded.</i>"
         )
         profile_kb=InlineKeyboardMarkup([
             [InlineKeyboardButton("📍 Update Location",callback_data="m:location")],

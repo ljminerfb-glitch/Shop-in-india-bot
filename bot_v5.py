@@ -5,6 +5,7 @@ from urllib.request import Request, urlopen
 from urllib.parse import urlencode
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove, CopyTextButton, KeyboardButton
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters
+from telegram.request import HTTPXRequest
 import bot_v3 as v3
 import bot_v4 as v4
 import central_catalog as central
@@ -1196,7 +1197,15 @@ async def start_motivation_reminder_worker(app):
         c.commit()
     finally:
         c.close()
-    app.create_task(motivation_reminder_worker(app),name="shop-motivation-reminders")
+    task=app.create_task(motivation_reminder_worker(app),name="shop-motivation-reminders")
+    app.bot_data["motivation_reminder_task"]=task
+
+
+async def stop_motivation_reminder_worker(app):
+    task=app.bot_data.pop("motivation_reminder_task",None)
+    if task and not task.done():
+        task.cancel()
+        await asyncio.gather(task,return_exceptions=True)
 
 async def withdrawal_review_callback(update,ctx):
     """Apply Admin review, then show the same post-payout figures to Admin and merchant."""
@@ -2193,7 +2202,13 @@ def main():
     v3.ensure_catalog_schema()
     central.setup()
     central.resale_setup()
-    app=ApplicationBuilder().token(TOKEN).post_init(start_motivation_reminder_worker).build()
+    # Separate request pools: long-polling needs a longer read timeout than normal Bot API calls.
+    bot_request=HTTPXRequest(connect_timeout=20,read_timeout=30,write_timeout=30,pool_timeout=10)
+    updates_request=HTTPXRequest(connect_timeout=20,read_timeout=45,write_timeout=30,pool_timeout=10)
+    app=(ApplicationBuilder().token(TOKEN).request(bot_request)
+         .get_updates_request(updates_request)
+         .post_init(start_motivation_reminder_worker)
+         .post_shutdown(stop_motivation_reminder_worker).build())
     app.add_handler(CommandHandler("start",start)); app.add_handler(CommandHandler("dashboard",dashboard))
     for cmd,fn in [("help",help_command),("support",support_command),("admin",admin_panel),("verifywallet",v3.verify_wallet),
       ("buy",v4.buy),("addproduct",addproduct),("setproductlevel",v4.setproductlevel),("setlevel",v4.setlevel),("setfx",v4.setfx),("setfee",v4.setfee),
@@ -2231,6 +2246,6 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,text_handler))
     print("SHOP IN INDIA V5 Telegram UI started.")
     asyncio.set_event_loop(asyncio.new_event_loop())
-    app.run_polling()
+    app.run_polling(timeout=30,bootstrap_retries=-1)
 
 if __name__=="__main__": main()

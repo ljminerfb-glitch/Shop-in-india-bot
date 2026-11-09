@@ -1068,7 +1068,6 @@ async def menu_callback(update,ctx):
             "<b>DEPOSIT NETWORKS</b>\n"
             f"TRC20: <code>{html.escape(str(v4.PAY_TRON))}</code>\n"
             f"BEP20: <code>{html.escape(str(v4.PAY_BSC))}</code>\n\n"
-            "<i>Reserve is the recorded purchase cost of unsold inventory and is kept separate from Total funds. Completed pairs count each purchased item after it is resold. This is progress tracking only; it does not apply a 50-pair withdrawal lock.</i>"
         )
         profile_kb=InlineKeyboardMarkup([
             [InlineKeyboardButton("📍 Update Location",callback_data="m:location")],

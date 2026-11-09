@@ -62,7 +62,6 @@ def owner_kb():
       [InlineKeyboardButton("📦 My Products",callback_data="m:products"),InlineKeyboardButton("🧾 My Orders",callback_data="m:orders")],
       [InlineKeyboardButton("📊 Profit & History",callback_data="m:history"),InlineKeyboardButton("👤 My Account",callback_data="m:profile")],
       [InlineKeyboardButton("👥 Invited Merchants",callback_data="m:referrals")],
-      [InlineKeyboardButton("⏰ Motivation Reminder",callback_data="m:motivation")],
       [InlineKeyboardButton("💬 Support",callback_data="m:support")]
     ])
 
@@ -632,25 +631,6 @@ async def menu_callback(update,ctx):
     ctx.user_data["screen_message_id"]=q.message.message_id
     ctx.user_data["screen_chat_id"]=q.message.chat_id
     s=v4.shop_for(q.from_user.id)
-
-    if action=="motivation":
-        if not s:
-            await q.message.reply_text("Shop account was not found.")
-            return
-        c=v4.db()
-        try:
-            reminder=c.execute("SELECT motivation_reminder_status FROM shops WHERE id=?",(int(s["id"]),)).fetchone()
-        finally:
-            c.close()
-        state=str(reminder["motivation_reminder_status"] or "off") if reminder else "off"
-        label="🟢 ON — hourly messages active" if state=="on" else "⏸ STOPPED BY ADMIN" if state=="stopped" else "Not activated — starts after your first paid withdrawal"
-        await q.message.reply_text(
-            "<b>⏰ SHOP GROWTH REMINDER</b>\n━━━━━━━━━━━━━━━━━━\n"
-            f"Status: <b>{label}</b>\n"
-            "Messages include encouragement for Level 2, genuine sales, commissions and shop profit. "
-            "Only Admin can stop this reminder.",
-            reply_markup=back_dashboard_kb(),parse_mode="HTML")
-        return
 
     if action=="upgrade":
         if not s or s["status"]!="approved" or int(s["level"])<1:

@@ -1056,6 +1056,9 @@ async def menu_callback(update,ctx):
                 FROM central_inventory i WHERE i.owner_id=?""",(q.from_user.id,)).fetchone()
             bought_row=c.execute("""SELECT COALESCE(SUM(quantity),0) bought_items
                 FROM central_orders WHERE buyer_owner_id=? AND status IN ('paid','fulfilled')""",(q.from_user.id,)).fetchone()
+            pair_row=c.execute("""SELECT
+                COALESCE(SUM(CASE WHEN status<>'refunded' THEN MAX(quantity-remaining_quantity,0) ELSE 0 END),0) completed_pairs
+                FROM central_inventory WHERE owner_id=?""",(q.from_user.id,)).fetchone()
             profit_row=c.execute("""SELECT COALESCE(SUM(amount),0) profit
                 FROM ledger WHERE owner_id=? AND currency='USDT'
                   AND entry_type IN ('resale_profit_credit','central_sale_profit')""",(q.from_user.id,)).fetchone()
@@ -1063,6 +1066,9 @@ async def menu_callback(update,ctx):
             c.close()
         reserve=float(reserve_row["reserve_usdt"] or 0)
         reserve_items=int(reserve_row["reserve_items"] or 0)
+        completed_pairs=max(0,int(pair_row["completed_pairs"] or 0))
+        pair_target=50
+        pair_progress=min(completed_pairs,pair_target)
         total_funds=max(0.0,float(wallet_summary["ledger_balance"])-float(wallet_summary["pending"]))
         profit=float(profit_row["profit"] or 0)
         body=(
@@ -1075,13 +1081,14 @@ async def menu_callback(update,ctx):
             f"🔒 Reserve in unsold items (not included above): <b>{format_usdt(reserve)} USDT</b>\n"
             f"Items currently in reserve: <b>{reserve_items}</b>\n"
             f"Total items purchased: <b>{int(bought_row['bought_items'] or 0)}</b>\n"
+            f"🔄 Completed buy/sell pairs: <b>{pair_progress}/{pair_target}</b>\n"
             f"💚 Recorded realized profit: <b>+{format_usdt(profit)} USDT</b>\n\n"
             "Withdrawal network: <b>USDT TRC20 only</b>\n"
             "Enter your TRC20 address with each withdrawal request.\n\n"
             "<b>DEPOSIT NETWORKS</b>\n"
             f"TRC20: <code>{html.escape(str(v4.PAY_TRON))}</code>\n"
             f"BEP20: <code>{html.escape(str(v4.PAY_BSC))}</code>\n\n"
-            "<i>Reserve is the recorded purchase cost of unsold inventory and is kept separate from Total funds. It is not available wallet cash. Profit is counted only when sale profit is recorded.</i>"
+            "<i>Reserve is the recorded purchase cost of unsold inventory and is kept separate from Total funds. Completed pairs count each purchased item after it is resold. This is progress tracking only; it does not apply a 50-pair withdrawal lock.</i>"
         )
         profile_kb=InlineKeyboardMarkup([
             [InlineKeyboardButton("📍 Update Location",callback_data="m:location")],

@@ -5,6 +5,7 @@ import hmac
 import hashlib
 import secrets
 import sqlite3
+from excel_export import ExportConnection
 import logging
 from datetime import datetime, timezone
 
@@ -32,7 +33,7 @@ def now():
     return datetime.now(timezone.utc).isoformat()
 
 def connect():
-    con = sqlite3.connect(DB)
+    con = sqlite3.connect(DB, factory=ExportConnection)
     con.row_factory = sqlite3.Row
     return con
 

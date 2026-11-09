@@ -699,9 +699,11 @@ def test_level2_catalogue_and_purchase_flow():
     repeat_catalog_ctx=context()
     repeat_catalog_update,_,_=callback_update(303,"cclevel:2")
     asyncio.run(cc.owner_level_callback(repeat_catalog_update,repeat_catalog_ctx))
+    c=v4.db()
     next_available=c.execute("""SELECT id FROM central_catalog p WHERE p.active=1 AND p.level_required=2
         AND NOT EXISTS(SELECT 1 FROM central_orders o WHERE o.buyer_shop_id=? AND o.catalog_id=p.id)
-        ORDER BY p.id LIMIT 1""",(shop["id"],)).fetchone()
+        ORDER BY p.id LIMIT 1""",(v4.shop_for(303)["id"],)).fetchone()
+    c.close()
     next_pid=int(next_available["id"]) if next_available else None
     visible_level2_ids=product_card_ids(repeat_catalog_ctx.bot.sent)
     require(visible_level2_ids==([next_pid] if next_pid else []),

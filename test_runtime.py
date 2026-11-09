@@ -1973,8 +1973,8 @@ def test_automatic_excel_export():
 
 def main():
     test_runtime_schema_bootstrap()
-    test_automatic_excel_export()
     fixture()
+    test_automatic_excel_export()
     test_admin_shop_controls_and_search()
     # Each shop screen fetches the current profile image again rather than retaining an old photo ID.
     avatar_bot=FakeBot()

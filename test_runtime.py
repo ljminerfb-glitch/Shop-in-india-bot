@@ -1931,8 +1931,41 @@ def test_admin_shop_controls_and_search():
     print("PASS: Random public Shop IDs, Admin search, existing-shop location update, freeze/disable/enable/soft-delete controls and one-time warning")
 
 
+
+def test_automatic_excel_export():
+    import openpyxl
+    from excel_export import export_database
+    export_dir = Path(TMP.name) / "exports"
+    c = v4.db()
+    c.execute("INSERT INTO ledger(shop_id,owner_id,entry_type,amount,currency,note,created_at) VALUES(101,101,'excel_test',12.5,'USDT','export check',?)",(v4.now(),))
+    c.commit()
+    c.close()
+    workbook_path = export_dir / "shop_records.xlsx"
+    # Use an explicit export destination to validate the exporter independently of env paths.
+    require(export_database(DB_PATH, export_dir) == str(workbook_path),
+            "Excel snapshot was not created")
+    book = openpyxl.load_workbook(workbook_path, read_only=True, data_only=True)
+    try:
+        require("ledger" in book.sheetnames, "Ledger sheet is missing from Excel workbook")
+        sheet = book["ledger"]
+        headers = [cell.value for cell in next(sheet.iter_rows(min_row=1, max_row=1))]
+        require("entry_type" in headers and "amount" in headers,
+                "Ledger export is missing expected columns")
+        entry_col = headers.index("entry_type") + 1
+        require(any(sheet.cell(row, entry_col).value == "excel_test"
+                    for row in range(2, sheet.max_row + 1)),
+                "New committed ledger record was not exported")
+        require("shops" in book.sheetnames and "payment_requests" in book.sheetnames,
+                "Shop or deposit records sheet is missing")
+        require("password_hash" not in headers,
+                "Sensitive password hash column should not be exported")
+    finally:
+        book.close()
+    print("PASS: Automatic Excel export includes committed records and separate database sheets")
+
 def main():
     test_runtime_schema_bootstrap()
+    test_automatic_excel_export()
     fixture()
     test_admin_shop_controls_and_search()
     # Each shop screen fetches the current profile image again rather than retaining an old photo ID.

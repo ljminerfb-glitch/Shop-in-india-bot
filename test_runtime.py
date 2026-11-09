@@ -767,39 +767,40 @@ def test_level2_catalogue_and_purchase_flow():
             "Level 2 resale seller profit was not recorded")
     c.close()
 
-    admin_card=next(x for x in admin_ctx.bot.sent if product_card_ids([x]))
+    photo_pid=int(ids[1])
+    admin_card=next(x for x in admin_ctx.bot.sent if photo_pid in product_card_ids([x]))
     admin_data=sent_callback_data(admin_card)
     require(any(cb.startswith("cc:price:") for cb in admin_data)
             and any(cb.startswith("cc:stock:") for cb in admin_data)
             and any(cb.startswith("cc:toggle:") for cb in admin_data),
             "Level 2 admin product controls are incomplete")
-    require(any(cb.startswith(f"cc:photo:{first_pid}") for cb in admin_data),
+    require(any(cb.startswith(f"cc:photo:{photo_pid}") for cb in admin_data),
             "Admin catalogue card is missing the Change Picture action")
     photo_ctx=context()
-    photo_update,photo_message,photo_query=callback_update(999999,f"cc:photo:{first_pid}")
+    photo_update,photo_message,photo_query=callback_update(999999,f"cc:photo:{photo_pid}")
     asyncio.run(cc.admin_callback(photo_update,photo_ctx))
-    require(photo_ctx.user_data.get("central_admin_photo")=={"product_id":first_pid},
+    require(photo_ctx.user_data.get("central_admin_photo")=={"product_id":photo_pid},
             "Change Picture did not enter the photo-upload state")
     upload_update,upload_message=message_update(999999,None)
     upload_message.photo=[SimpleNamespace(file_id="replacement-product-photo")]
     asyncio.run(cc.admin_photo(upload_update,photo_ctx))
     c=v4.db()
-    saved_photo=c.execute("SELECT image_file_id FROM central_catalog WHERE id=?",(first_pid,)).fetchone()[0]
+    saved_photo=c.execute("SELECT image_file_id FROM central_catalog WHERE id=?",(photo_pid,)).fetchone()[0]
     audit_count=c.execute("SELECT COUNT(*) FROM admin_audit WHERE action='central_product_photo_changed' AND details LIKE ?",
-                          (f"Product #{first_pid}%",)).fetchone()[0]
+                          (f"Product #{photo_pid}%",)).fetchone()[0]
     c.close()
     require(saved_photo=="replacement-product-photo" and audit_count==1,
             "Admin product photo was not persisted or audited")
     owner_photo_ctx=context()
     owner_photo_update,_,_=callback_update(303,"cclevel:2")
     asyncio.run(cc.owner_level_callback(owner_photo_update,owner_photo_ctx))
-    owner_photo_card=next(x for x in owner_photo_ctx.bot.sent if product_card_ids([x]) and first_pid in product_card_ids([x]))
+    owner_photo_card=next(x for x in owner_photo_ctx.bot.sent if product_card_ids([x]) and photo_pid in product_card_ids([x]))
     require(owner_photo_card["kwargs"].get("photo")=="replacement-product-photo",
             "Merchant catalogue did not use the replacement product photo")
     admin_photo_ctx=context()
     admin_photo_page,_,_=callback_update(999999,"ccadminlevel:2")
     asyncio.run(cc.admin_level_callback(admin_photo_page,admin_photo_ctx))
-    admin_photo_card=next(x for x in admin_photo_ctx.bot.sent if product_card_ids([x]) and first_pid in product_card_ids([x]))
+    admin_photo_card=next(x for x in admin_photo_ctx.bot.sent if product_card_ids([x]) and photo_pid in product_card_ids([x]))
     require(admin_photo_card["kwargs"].get("photo")=="replacement-product-photo",
             "Admin catalogue did not use the replacement product photo")
     print("PASS: Admin can replace central catalogue product pictures; changes persist in Admin and merchant catalogues")

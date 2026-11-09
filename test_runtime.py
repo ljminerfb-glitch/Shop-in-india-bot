@@ -1244,6 +1244,9 @@ def test_usdt_trc20_withdrawal_flow():
     asyncio.run(v5.send_due_motivation_reminders(reminder_bot,fake_now))
     require(len(reminder_bot.sent)==1 and "SHOP GROWTH REMINDER" in reminder_bot.sent[0]["kwargs"]["text"],
             "Due hourly motivation reminder was not delivered")
+    require(reminder_bot.sent[0]["kwargs"].get("chat_id")==v5.ADMIN_ID and
+            reminder_bot.sent[0]["kwargs"].get("chat_id")!=101,
+            "Hourly motivation reminder was delivered to the merchant instead of Admin")
     first_text=reminder_bot.sent[0]["kwargs"]["text"]
     c=v4.db()
     c.execute("UPDATE shops SET motivation_reminder_next_at=? WHERE owner_id=101",
@@ -1288,7 +1291,7 @@ def test_usdt_trc20_withdrawal_flow():
     c.close()
     require(abs(v5.available_withdrawal_usdt(101)-4.3)<1e-8,
             "Rejected withdrawal did not release reserved amount")
-    print("PASS: Merchant Withdraw Setup, saved TRC20 wallet, Admin wallet directory, first-withdrawal hourly reminders and Admin STOP")
+    print("PASS: Merchant Withdraw Setup, saved TRC20 wallet, Admin wallet directory, Admin-only hourly reminders and Admin STOP")
 
 def test_existing_paid_withdrawal_enables_motivation_reminder():
     from datetime import datetime, timezone

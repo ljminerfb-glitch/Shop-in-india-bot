@@ -1263,7 +1263,12 @@ def test_usdt_trc20_withdrawal_flow():
     require(reminder_bot.sent[0]["kwargs"].get("chat_id")==v5.ADMIN_ID and
             reminder_bot.sent[0]["kwargs"].get("chat_id")!=101,
             "Hourly motivation reminder was delivered to the merchant instead of Admin")
-    first_text=reminder_bot.sent[0]["kwargs"]["text"]
+    reminder_text=reminder_bot.sent[0]["kwargs"]["text"]
+    require("Hourly encouragement" not in reminder_text and
+            "Contact Admin" not in reminder_text and
+            "Customer Services" in reminder_text,
+            "Reminder footer does not use the requested Customer Services wording")
+    first_text=reminder_text
     c=v4.db()
     c.execute("UPDATE shops SET motivation_reminder_next_at=? WHERE owner_id=101",
               ((fake_now+timedelta(hours=1)-timedelta(minutes=1)).isoformat(timespec="seconds"),))

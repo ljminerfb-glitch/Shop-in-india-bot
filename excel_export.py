@@ -99,6 +99,12 @@ def export_database(db_path=None, export_dir=None):
                 source.close()
             os.replace(temp, target)
             log.info("Excel snapshot updated: %s", target)
+            try:
+                from google_sheets_export import sync_workbook_to_google_sheets
+                sync_workbook_to_google_sheets(target)
+            except Exception:
+                # Cloud sync must never affect the local Excel backup or committed DB.
+                log.exception("Google Sheets sync could not be started")
             return str(target)
         except Exception:
             log.exception("Excel export failed; SQLite records remain safe")
@@ -114,4 +120,9 @@ class ExportConnection(sqlite3.Connection):
     """SQLite connection that refreshes the workbook after every successful commit."""
     def commit(self):
         super().commit()
-        export_database()
+        try:
+            database_rows = self.execute("PRAGMA database_list").fetchall()
+            db_path = next((row[2] for row in database_rows if row[1] == "main"), None)
+        except Exception:
+            db_path = None
+        export_database(db_path=db_path or None)

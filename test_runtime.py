@@ -1229,10 +1229,10 @@ def test_usdt_trc20_withdrawal_flow():
     c.close()
     require(reminder["motivation_reminder_status"]=="on" and reminder["motivation_reminder_next_at"],
             "First paid withdrawal did not activate the shop's hourly motivation reminder")
-    profile_update,profile_message,_=callback_update(101,"m:motivation")
-    asyncio.run(v5.menu_callback(profile_update,context()))
-    require("hourly messages active" in profile_message.replies[0]["text"],
-            "Merchant cannot see that motivation reminders are ON")
+    merchant_menu=v5.owner_kb()
+    merchant_callbacks=[button.callback_data for row in merchant_menu.inline_keyboard for button in row]
+    require("m:motivation" not in merchant_callbacks,
+            "Motivation reminder control must not appear in the merchant dashboard")
     # Deliver two hourly ticks and verify consecutive reminder content is different.
     from datetime import datetime, timedelta, timezone
     fake_now=datetime.now(timezone.utc)+timedelta(hours=2)

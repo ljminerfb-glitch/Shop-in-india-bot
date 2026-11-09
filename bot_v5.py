@@ -1047,17 +1047,42 @@ async def menu_callback(update,ctx):
             body+="No wallet or order activity has been recorded yet."
         await q.message.reply_text(body[:4000],reply_markup=back_dashboard_kb(),parse_mode="HTML")
     elif action=="profile":
+        c=v4.db()
+        try:
+            wallet_summary=usdt_wallet_summary(c,q.from_user.id)
+            reserve_row=c.execute("""SELECT
+                COALESCE(SUM(i.remaining_quantity*i.unit_cost_usdt),0) reserve_usdt,
+                COALESCE(SUM(i.remaining_quantity),0) reserve_items
+                FROM central_inventory i WHERE i.owner_id=?""",(q.from_user.id,)).fetchone()
+            bought_row=c.execute("""SELECT COALESCE(SUM(quantity),0) bought_items
+                FROM central_orders WHERE buyer_owner_id=? AND status IN ('paid','fulfilled')""",(q.from_user.id,)).fetchone()
+            profit_row=c.execute("""SELECT COALESCE(SUM(amount),0) profit
+                FROM ledger WHERE owner_id=? AND currency='USDT'
+                  AND entry_type IN ('resale_profit_credit','central_sale_profit')""",(q.from_user.id,)).fetchone()
+        finally:
+            c.close()
+        reserve=float(reserve_row["reserve_usdt"] or 0)
+        reserve_items=int(reserve_row["reserve_items"] or 0)
+        total_funds=max(0.0,float(wallet_summary["ledger_balance"])-float(wallet_summary["pending"]))+reserve
+        profit=float(profit_row["profit"] or 0)
         body=(
             "<b>👤 MY ACCOUNT</b>\n━━━━━━━━━━━━━━━━━━\n"
             f"Shop: <b>{html.escape(str(s['shop_name']))}</b>\n"
             f"Shop ID: <code>{html.escape(str(s['shop_code'] or 'Pending'))}</code> • Level: <b>L{s['level']}</b>\n"
-            f"📍 Location: <b>{html.escape(str(s['location_city'] or 'Not available'))}, {html.escape(str(s['location_state'] or 'Not available'))}, {html.escape(str(s['location_country'] or 'Not available'))}</b>\n"
+            f"📍 Location: <b>{html.escape(str(s['location_city'] or 'Not available'))}, {html.escape(str(s['location_state'] or 'Not available'))}, {html.escape(str(s['location_country'] or 'Not available'))}</b>\n\n"
+            "<b>💼 MERCHANT FUNDS SUMMARY</b>\n"
+            f"Total funds (wallet + reserve): <b>{format_usdt(total_funds)} USDT</b>\n"
+            f"Available wallet: <b>{format_usdt(max(0.0,wallet_summary['ledger_balance']-wallet_summary['pending']))} USDT</b>\n"
+            f"🔒 Reserve in unsold items: <b>{format_usdt(reserve)} USDT</b>\n"
+            f"Items currently in reserve: <b>{reserve_items}</b>\n"
+            f"Total items purchased: <b>{int(bought_row['bought_items'] or 0)}</b>\n"
+            f"💚 Recorded realized profit: <b>+{format_usdt(profit)} USDT</b>\n\n"
             "Withdrawal network: <b>USDT TRC20 only</b>\n"
             "Enter your TRC20 address with each withdrawal request.\n\n"
             "<b>DEPOSIT NETWORKS</b>\n"
             f"TRC20: <code>{html.escape(str(v4.PAY_TRON))}</code>\n"
             f"BEP20: <code>{html.escape(str(v4.PAY_BSC))}</code>\n\n"
-            "<i>Withdrawal address is requested separately for every payout.</i>"
+            "<i>Reserve is the recorded purchase cost of unsold inventory; it is not available wallet cash. Profit is counted only when sale profit is recorded.</i>"
         )
         profile_kb=InlineKeyboardMarkup([
             [InlineKeyboardButton("📍 Update Location",callback_data="m:location")],
@@ -1170,6 +1195,8 @@ async def send_due_motivation_reminders(bot, now_dt=None):
             c.close()
     return sent
 
+_motivation_reminder_task=None
+
 async def motivation_reminder_worker(app):
     """Poll once per minute; each shop receives no more than one reminder per due hour."""
     while True:
@@ -1180,6 +1207,7 @@ async def motivation_reminder_worker(app):
         await asyncio.sleep(60)
 
 async def start_motivation_reminder_worker(app):
+    global _motivation_reminder_task
     # Backfill merchants whose first withdrawal was already paid before this
     # feature was deployed. Preserve Admin-stopped shops permanently.
     c=v4.db()

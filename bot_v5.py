@@ -1225,12 +1225,14 @@ async def start_motivation_reminder_worker(app):
         c.commit()
     finally:
         c.close()
-    task=app.create_task(motivation_reminder_worker(app),name="shop-motivation-reminders")
-    app.bot_data["motivation_reminder_task"]=task
+    _motivation_reminder_task=app.create_task(
+        motivation_reminder_worker(app),name="shop-motivation-reminders")
 
 
 async def stop_motivation_reminder_worker(app):
-    task=app.bot_data.pop("motivation_reminder_task",None)
+    global _motivation_reminder_task
+    task=_motivation_reminder_task
+    _motivation_reminder_task=None
     if task and not task.done():
         task.cancel()
         await asyncio.gather(task,return_exceptions=True)

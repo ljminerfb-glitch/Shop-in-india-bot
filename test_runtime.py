@@ -699,12 +699,29 @@ def test_level2_catalogue_and_purchase_flow():
     repeat_catalog_ctx=context()
     repeat_catalog_update,_,_=callback_update(303,"cclevel:2")
     asyncio.run(cc.owner_level_callback(repeat_catalog_update,repeat_catalog_ctx))
-    bought_card=next(x for x in repeat_catalog_ctx.bot.sent if first_pid in product_card_ids([x]))
-    bought_caption=bought_card["kwargs"].get("caption") or sent_text(bought_card)
-    require("Already purchased" in bought_caption,
-            "Level 2 catalogue does not mark the previously purchased product")
-    require(not any(cb.startswith(f"ccbuy:{first_pid}:") for cb in sent_callback_data(bought_card)),
-            "Level 2 catalogue still offers buy buttons for an already purchased product")
+    next_available=c.execute("""SELECT id FROM central_catalog p WHERE p.active=1 AND p.level_required=2
+        AND NOT EXISTS(SELECT 1 FROM central_orders o WHERE o.buyer_shop_id=? AND o.catalog_id=p.id)
+        ORDER BY p.id LIMIT 1""",(shop["id"],)).fetchone()
+    next_pid=int(next_available["id"]) if next_available else None
+    visible_level2_ids=product_card_ids(repeat_catalog_ctx.bot.sent)
+    require(visible_level2_ids==([next_pid] if next_pid else []),
+            f"Level 2 should show only the next unpurchased product, got {visible_level2_ids!r}")
+    require(len(visible_level2_ids)<=1,
+            "Level 2 catalogue exposed multiple products before the previous one was purchased")
+    require(not any(cb.startswith(f"ccbuy:{first_pid}:") for x in repeat_catalog_ctx.bot.sent
+                    for cb in sent_callback_data(x)),
+            "Level 2 catalogue still offers a buy button for the already purchased product")
+
+    # Merchant profile separates liquid wallet funds from unsold inventory reserve.
+    profile_update,profile_message,_=callback_update(303,"m:profile")
+    profile_ctx=context()
+    asyncio.run(v5.menu_callback(profile_update,profile_ctx))
+    profile_text="\\n".join([sent_text(x) or x["kwargs"].get("caption","") for x in profile_ctx.bot.sent])
+    require("Total funds (wallet + reserve): <b>" in profile_text
+            and "Reserve in unsold items: <b>" in profile_text
+            and "Items currently in reserve: <b>" in profile_text
+            and "Recorded realized profit: <b>" in profile_text,
+            f"Merchant profile is missing reserve/profit accounting: {profile_text!r}")
 
     # My Products displays the actual random resale price and percentage for Level 2 stock.
     products_update,products_message,_=callback_update(303,"m:products")
@@ -784,7 +801,7 @@ def test_level2_catalogue_and_purchase_flow():
     require(admin_photo_card["kwargs"].get("photo")=="replacement-product-photo",
             "Admin catalogue did not use the replacement product photo")
     print("PASS: Admin can replace central catalogue product pictures; changes persist in Admin and merchant catalogues")
-    print("PASS: Level 2 50-product catalogue, 5-item pagination, images, stock, purchase and resale margin")
+    print("PASS: Level 2 50-product catalogue, one-at-a-time unlock, images, stock, purchase and resale margin")
     print("PASS: Level 2 resale stays within level; cross-level wallet/stock protection works")
 
 

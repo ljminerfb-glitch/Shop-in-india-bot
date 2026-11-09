@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
 import bot_v3 as v3
+from excel_export import ExportConnection
 
 TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
@@ -16,7 +17,7 @@ log = logging.getLogger("shop_v4")
 
 def now(): return datetime.now(timezone.utc).isoformat()
 def db():
-    c=sqlite3.connect(DB, timeout=20)
+    c=sqlite3.connect(DB, timeout=20, factory=ExportConnection)
     c.row_factory=sqlite3.Row
     c.execute("PRAGMA foreign_keys=ON")
     return c

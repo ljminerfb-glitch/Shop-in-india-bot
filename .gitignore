@@ -1,0 +1,3 @@
+data_exports/
+__pycache__/
+*.py[cod]

@@ -893,9 +893,25 @@ def test_failed_central_purchases(pid):
                  VALUES(1,101,'resale_purchase_debit',1000,'USDT','isolated test spend',?)""", (v4.now(),))
     c.commit()
     c.close()
+    c = v4.db()
+    purchased_before=int(c.execute("""SELECT COALESCE(SUM(o.quantity),0)
+        FROM central_orders o WHERE o.buyer_owner_id=101 AND o.status IN ('paid','fulfilled')
+        AND EXISTS (SELECT 1 FROM ledger l WHERE l.transaction_id=o.id
+          AND l.owner_id=o.buyer_owner_id AND l.entry_type='central_purchase_debit'
+          AND l.currency='USDT')""").fetchone()[0])
+    c.close()
     replies = run_central_buy(101, pid, 1)
     require(any("Insufficient USDT wallet balance" in x["text"] for x in replies),
             "Insufficient wallet purchase was not rejected")
+    c = v4.db()
+    purchased_after=int(c.execute("""SELECT COALESCE(SUM(o.quantity),0)
+        FROM central_orders o WHERE o.buyer_owner_id=101 AND o.status IN ('paid','fulfilled')
+        AND EXISTS (SELECT 1 FROM ledger l WHERE l.transaction_id=o.id
+          AND l.owner_id=o.buyer_owner_id AND l.entry_type='central_purchase_debit'
+          AND l.currency='USDT')""").fetchone()[0])
+    require(purchased_after==purchased_before,
+            "Rejected insufficient-balance attempt was counted as a successful purchase")
+    c.close()
     c = v4.db()
     require(c.execute("SELECT stock FROM central_catalog WHERE id=?", (pid,)).fetchone()[0] == stock_before,
             "Shared stock changed after rejected wallet purchase")

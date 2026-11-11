@@ -540,15 +540,20 @@ async def orders(update,ctx):
       (SELECT entry_type FROM ledger l WHERE l.transaction_id=o.id AND l.owner_id=o.buyer_owner_id
        AND l.entry_type IN ('central_purchase_debit','resale_purchase_debit') ORDER BY l.id LIMIT 1) purchase_type
       FROM central_orders o JOIN central_catalog p ON p.id=o.catalog_id ORDER BY o.id DESC LIMIT 50""").fetchall()
+    listings=c.execute("""SELECT l.id,l.owner_id,l.shop_id,l.remaining_quantity,l.ask_price_usdt,
+      p.title,s.shop_name FROM resale_listings l
+      JOIN central_catalog p ON p.id=l.catalog_id JOIN shops s ON s.id=l.shop_id
+      WHERE l.status='active' AND l.remaining_quantity>0
+      ORDER BY l.id DESC LIMIT 50""").fetchall()
     c.close()
-    orders_text="<b>📦 CENTRAL CATALOGUE ORDERS</b>\n━━━━━━━━━━━━━━━━━━\n"
-    orders_text+=("<i>Orders are charged in USDT. Fulfil after arranging delivery; refunds restore the wallet and shared stock.</i>\n\n"+
+    orders_text="<b>📦 MANAGE CENTRAL ORDERS</b>\n━━━━━━━━━━━━━━━━━━\n"
+    orders_text+=("<i>Original catalogue orders are shown below. Merchant-listed stock is available for direct System approval with an automatic 2% bonus on the listed amount.</i>\n\n"+
       "\n\n".join(
         f"<b>#{r['id']} {html.escape(str(r['title']))} ×{r['quantity']}</b>\n"
         f"Owner: <code>{r['buyer_owner_id']}</code> • Shop: #{r['buyer_shop_id']}\n"
         f"Amount: <b>{r['total_usdt']:g} USDT</b> • {'🟢' if r['status']=='fulfilled' else '🔴' if r['status']=='refunded' else '🟡'} {html.escape(str(r['status']).upper())}\n"
         f"<code>{html.escape(str(r['created_at']))}</code>" for r in rows)
-      if rows else "No central orders yet.")
+      if rows else "No original catalogue orders.")
     await update.effective_message.reply_text(orders_text[:3900],parse_mode="HTML")
     for r in rows:
         buttons=[]
@@ -557,10 +562,32 @@ async def orders(update,ctx):
             if r["purchase_type"]=="central_purchase_debit":
                 buttons[0].append(InlineKeyboardButton("↩️ Refund + Restock",callback_data=f"cc:refund:{r['id']}"))
         buttons.append([InlineKeyboardButton("⬅️ Central Catalogue",callback_data="adm:central"),
-                        InlineKeyboardButton("🏠 Admin Panel",callback_data="adm:home")])
+                        InlineKeyboardButton("🏠 System Control Center",callback_data="adm:home")])
         await update.effective_message.reply_text(
             f"Central order #{r['id']} — {r['status'].upper()}",
             reply_markup=InlineKeyboardMarkup(buttons))
+    await update.effective_message.reply_text(
+        "<b>🏷️ MERCHANT-LISTED ORDERS</b>\nListed amount + 2% automatic bonus. Approve to purchase all available quantity.",
+        parse_mode="HTML")
+    for r in listings:
+        listed=float(r["ask_price_usdt"])
+        payout=round(listed*1.02,6)
+        qty=int(r["remaining_quantity"])
+        await update.effective_message.reply_text(
+            f"<b>Listing #{r['id']} — {html.escape(str(r['title']))}</b>\n"
+            f"Merchant: {html.escape(str(r['shop_name']))} • Shop #{r['shop_id']}\n"
+            f"Available: <b>{qty}</b> item(s)\n"
+            f"Merchant listed amount: <b>{listed:g} USDT / item</b>\n"
+            f"Automatic 2% bonus: <b>+{listed*0.02:.6f} USDT / item</b>\n"
+            f"Merchant receives: <b>{payout:g} USDT / item</b>\n"
+            f"Total System payment: <b>{payout*qty:.6f} USDT</b>",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ APPROVE + BUY (2% BONUS)",callback_data=f"cc:approve_listing:{r['id']}")],
+                [InlineKeyboardButton("❌ Reject Listing",callback_data=f"rs:reject:{r['id']}")],
+                [InlineKeyboardButton("⬅️ Refresh Orders",callback_data="cc:orders")]]),
+            parse_mode="HTML")
+    if not listings:
+        await update.effective_message.reply_text("No active merchant-listed orders right now.")
 
 async def admin_photo(update,ctx):
     """Persist an Admin-uploaded Telegram photo as the central catalogue image."""
@@ -645,6 +672,76 @@ async def admin_callback(update,ctx):
         await q.message.reply_text(
           f"<b>{html.escape(str(row['title']))}</b> — {'🟢 ACTIVE' if row['active'] else '🔴 OFF'}",
           reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Product",callback_data=f"cc:view:{pid}"),InlineKeyboardButton("⬅️ Catalogue",callback_data="adm:central")]]),parse_mode="HTML"); return
+    if action=="approve_listing":
+        lid=int(parts[2]); c=v4.db()
+        try:
+            c.execute("BEGIN IMMEDIATE")
+            listing=c.execute("""SELECT l.*,p.title,s.shop_name,s.status shop_status,
+                s.control_status FROM resale_listings l
+                JOIN central_catalog p ON p.id=l.catalog_id
+                JOIN shops s ON s.id=l.shop_id WHERE l.id=?""",(lid,)).fetchone()
+            if (not listing or listing["status"]!="active"
+                or int(listing["remaining_quantity"])<1
+                or listing["shop_status"]!="approved"
+                or str(listing["control_status"] or "active").lower()!="active"):
+                c.rollback()
+                await q.message.reply_text("Merchant listing is no longer available or the shop is not active. No payment was made.")
+                return
+            qty=int(listing["remaining_quantity"])
+            listed_price=float(listing["ask_price_usdt"])
+            unit_price=round(listed_price*1.02,6)
+            total=round(unit_price*qty,6)
+            profit=round((unit_price-float(listing["unit_cost_usdt"]))*qty,6)
+            changed=c.execute("""UPDATE resale_listings SET remaining_quantity=0,status='sold'
+                WHERE id=? AND status='active' AND remaining_quantity=?""",(lid,qty))
+            if changed.rowcount!=1: raise RuntimeError("Merchant listing changed during System approval")
+            cur=c.execute("""INSERT INTO admin_resale_orders
+                (listing_id,seller_owner_id,seller_shop_id,catalog_id,quantity,unit_price_usdt,total_usdt,status,created_at)
+                VALUES(?,?,?,?,?,?,?,'purchased',?)""",
+                (lid,listing["owner_id"],listing["shop_id"],listing["catalog_id"],qty,unit_price,total,v4.now()))
+            oid=cur.lastrowid
+            changed=c.execute("""UPDATE central_inventory SET remaining_quantity=remaining_quantity-?
+                WHERE id=? AND owner_id=? AND remaining_quantity>=?""",
+                (qty,listing["inventory_id"],listing["owner_id"],qty))
+            if changed.rowcount!=1: raise RuntimeError("Merchant inventory changed; System approval rolled back")
+            c.execute("""INSERT INTO admin_resale_inventory
+                (admin_id,catalog_id,order_id,quantity,remaining_quantity,unit_cost_usdt,created_at)
+                VALUES(?,?,?,?,?,?,?)""",
+                (v4.ADMIN_ID,listing["catalog_id"],oid,qty,qty,unit_price,v4.now()))
+            c.execute("""INSERT INTO ledger(transaction_id,shop_id,owner_id,entry_type,amount,currency,note,created_at)
+                VALUES(?,?,?,'resale_sale_credit',?,'USDT',?,?)""",
+                (oid,listing["shop_id"],listing["owner_id"],total,
+                 f"System purchase listing #{lid} including 2% bonus",v4.now()))
+            if profit>0:
+                c.execute("""INSERT INTO ledger(transaction_id,shop_id,owner_id,entry_type,amount,currency,note,created_at)
+                    VALUES(?,?,?,'resale_profit_credit',?,'USDT',?,?)""",
+                    (oid,listing["shop_id"],listing["owner_id"],profit,
+                     f"Profit on System purchase #{oid}",v4.now()))
+            record_completed_pairs(c,listing["shop_id"],listing["owner_id"],qty,"system_resale",oid)
+            c.execute("""INSERT INTO admin_audit(admin_id,owner_id,action,details,created_at)
+                VALUES(?,?,?,?,?)""",
+                (q.from_user.id,listing["owner_id"],"system_resale_approved",
+                 f"Order #{oid}; listing #{lid}; qty {qty}; listed {listed_price:g}; unit payout {unit_price:g}; total {total:g} USDT; margin {profit:g}",v4.now()))
+            c.commit()
+        except Exception:
+            c.rollback(); log.exception("System merchant listing approval failed")
+            await q.message.reply_text("System approval failed safely. No wallet or inventory changes were committed.")
+            return
+        finally:
+            c.close()
+        await q.message.reply_text(
+            f"<b>✅ MERCHANT LISTING APPROVED</b>\nOrder #{oid} • Listing #{lid}\n"
+            f"Quantity: {qty}\nListed amount: {listed_price:g} USDT / item\n"
+            f"2% bonus: +{listed_price*0.02:.6f} USDT / item\n"
+            f"Total credited: <b>{total:.6f} USDT</b>",parse_mode="HTML")
+        try:
+            await ctx.bot.send_message(listing["owner_id"],
+                f"<b>✅ YOUR LISTING WAS APPROVED BY SYSTEM</b>\nListing #{lid} • Order #{oid}\n"
+                f"Quantity: {qty}\nListed amount: {listed_price:g} USDT / item\n"
+                f"2% bonus: +{listed_price*0.02:.6f} USDT / item\n"
+                f"Total credited: <b>{total:.6f} USDT</b>",parse_mode="HTML")
+        except Exception: log.exception("System resale approval merchant notification failed")
+        return
     if action in ("fulfill","refund"):
         oid=int(parts[2]); c=v4.db()
         try:

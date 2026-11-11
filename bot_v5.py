@@ -15,6 +15,32 @@ import runtime_schema
 
 TOKEN=os.getenv("BOT_TOKEN")
 ADMIN_ID=int(os.getenv("ADMIN_ID","0"))
+def _configured_admin_ids():
+    """Return the primary admin plus any comma-separated additional admin IDs."""
+    ids={ADMIN_ID} if ADMIN_ID else set()
+    for raw_id in os.getenv("ADMIN_IDS","").split(","):
+        raw_id=raw_id.strip()
+        if raw_id.isdigit() and int(raw_id)>0:
+            ids.add(int(raw_id))
+    return ids
+
+ADMIN_IDS=_configured_admin_ids()
+
+def is_admin(user_id):
+    try:
+        return int(user_id) in ADMIN_IDS
+    except (TypeError,ValueError):
+        return False
+
+async def notify_admins(bot,*args,**kwargs):
+    """Send the same operational notification to every configured admin."""
+    results=[]
+    for admin_id in sorted(ADMIN_IDS):
+        try:
+            results.append(await bot.send_message(chat_id=admin_id,*args,**kwargs))
+        except Exception:
+            log.exception("Could not notify configured admin %s",admin_id)
+    return results
 ROOT_REFERRAL_CODE=os.getenv("ROOT_REFERRAL_CODE","SHOPINDIA").strip().upper() or "SHOPINDIA"
 logging.basicConfig(level=logging.INFO)
 log=logging.getLogger("shop_v5")
@@ -427,7 +453,7 @@ async def start(update,ctx):
 
 async def approved_callback(update,ctx):
     q=update.callback_query
-    if q.from_user.id!=ADMIN_ID: await q.answer("Admin only",show_alert=True); return
+    if not is_admin(q.from_user.id): await q.answer("Admin only",show_alert=True); return
     action,sid=q.data.split(":")
     if action=="reject":
         c=v4.db()
@@ -645,7 +671,7 @@ async def txid_callback(update,ctx):
 
 async def merchant_password_callback(update,ctx):
     q=update.callback_query
-    if q.from_user.id==ADMIN_ID:
+    if is_admin(q.from_user.id):
         await q.answer("Merchant account only",show_alert=True); return
     shop=v4.shop_for(q.from_user.id)
     if not shop:
@@ -1470,7 +1496,7 @@ async def withdrawal_review_callback(update,ctx):
 async def text_handler(update,ctx):
     password_stage=ctx.user_data.get("merchant_password_stage")
     if password_stage:
-        if update.effective_user.id==ADMIN_ID:
+        if is_admin(update.effective_user.id):
             ctx.user_data.pop("merchant_password_stage",None); return
         supplied=(update.message.text or "").strip()
         try: await update.message.delete()
@@ -1504,7 +1530,7 @@ async def text_handler(update,ctx):
 
     pending_photo=ctx.user_data.get("central_admin_photo")
     if pending_photo:
-        if update.effective_user.id!=ADMIN_ID:
+        if not is_admin(update.effective_user.id):
             ctx.user_data.pop("central_admin_photo",None); return
         if (update.message.text or "").strip().lower()=="cancel":
             ctx.user_data.pop("central_admin_photo",None)
@@ -1513,7 +1539,7 @@ async def text_handler(update,ctx):
             await update.message.reply_text("Please send a photo, or type CANCEL to keep the existing image.")
         return
     if ctx.user_data.get("admin_shop_search"):
-        if update.effective_user.id!=ADMIN_ID:
+        if not is_admin(update.effective_user.id):
             ctx.user_data.pop("admin_shop_search",None); return
         raw=(update.message.text or "").strip()
         if raw.lower()=="cancel":
@@ -1538,7 +1564,7 @@ async def text_handler(update,ctx):
         return
     rename_sid=ctx.user_data.get("admin_shop_rename_id")
     if rename_sid is not None:
-        if update.effective_user.id!=ADMIN_ID:
+        if not is_admin(update.effective_user.id):
             ctx.user_data.pop("admin_shop_rename_id",None); return
         new_name=(update.message.text or "").strip()
         if new_name.lower()=="cancel":
@@ -1569,7 +1595,7 @@ async def text_handler(update,ctx):
 
     reset_sid=ctx.user_data.get("admin_shop_password_id")
     if reset_sid is not None:
-        if update.effective_user.id!=ADMIN_ID:
+        if not is_admin(update.effective_user.id):
             ctx.user_data.pop("admin_shop_password_id",None); return
         new_password=(update.message.text or "").strip()
         try: await update.message.delete()
@@ -1598,7 +1624,7 @@ async def text_handler(update,ctx):
 
     limit_request=ctx.user_data.get("admin_shop_item_limit")
     if limit_request:
-        if update.effective_user.id!=ADMIN_ID:
+        if not is_admin(update.effective_user.id):
             ctx.user_data.pop("admin_shop_item_limit",None); return
         raw=(update.message.text or "").strip()
         if raw.lower()=="cancel":
@@ -1627,7 +1653,7 @@ async def text_handler(update,ctx):
 
     warning_sid=ctx.user_data.get("admin_shop_warning_id")
     if warning_sid is not None:
-        if update.effective_user.id!=ADMIN_ID:
+        if not is_admin(update.effective_user.id):
             ctx.user_data.pop("admin_shop_warning_id",None); return
         reason=(update.message.text or "").strip()
         if reason.lower()=="cancel":
@@ -1656,7 +1682,7 @@ async def text_handler(update,ctx):
         return
     pending_rejection=ctx.user_data.get("pending_admin_rejection")
     if pending_rejection:
-        if update.effective_user.id!=ADMIN_ID:
+        if not is_admin(update.effective_user.id):
             ctx.user_data.pop("pending_admin_rejection",None)
             return
         reason=(update.message.text or "").strip()
@@ -1759,7 +1785,7 @@ async def text_handler(update,ctx):
     if await central.admin_resale_text(update,ctx): return
     edit=ctx.user_data.get("central_admin_edit")
     if edit:
-        if update.effective_user.id!=ADMIN_ID:
+        if not is_admin(update.effective_user.id):
             ctx.user_data.pop("central_admin_edit",None); return
         raw=(update.message.text or "").strip()
         if raw.lower()=="cancel":
@@ -2093,7 +2119,7 @@ async def show_admin_shop(update,ctx,shop_id,edit=False):
 
 async def admin_shop_callback(update,ctx):
     q=update.callback_query
-    if q.from_user.id!=ADMIN_ID:
+    if not is_admin(q.from_user.id):
         await q.answer("Admin only",show_alert=True); return
     await q.answer()
     parts=q.data.split(":")
@@ -2275,7 +2301,7 @@ async def admin_shop_callback(update,ctx):
     await show_admin_shop(update,ctx,sid)
 
 async def admin_panel(update,ctx):
-    if update.effective_user.id != ADMIN_ID:
+    if not is_admin(update.effective_user.id):
         await update.message.reply_text("Admin only."); return
     await send_admin_panel(ctx.bot, update.effective_chat.id)
 
@@ -2318,7 +2344,7 @@ async def send_admin_panel(bot, chat_id):
 
 async def admin_panel_callback(update,ctx):
     q=update.callback_query
-    if q.from_user.id != ADMIN_ID:
+    if not is_admin(q.from_user.id):
         await q.answer("Admin only",show_alert=True); return
     await q.answer()
     action=q.data.split(":",1)[1]
@@ -2463,7 +2489,7 @@ async def admin_panel_callback(update,ctx):
 
 async def audit_callback(update,ctx):
     q=update.callback_query
-    if q.from_user.id!=ADMIN_ID:
+    if not is_admin(q.from_user.id):
         await q.answer("Admin only",show_alert=True); return
     await q.answer()
     try:
@@ -2474,7 +2500,7 @@ async def audit_callback(update,ctx):
         await q.message.reply_text("Audit log could not be loaded.")
 
 async def admin_orders(update,ctx):
-    if update.effective_user.id != ADMIN_ID:
+    if not is_admin(update.effective_user.id):
         await update.message.reply_text("Admin only.")
         return
     c=v4.db()
@@ -2503,7 +2529,7 @@ async def admin_orders(update,ctx):
 
 async def delivered_callback(update,ctx):
     q=update.callback_query
-    if q.from_user.id != ADMIN_ID:
+    if not is_admin(q.from_user.id):
         await q.answer("Admin only",show_alert=True)
         return
     await q.answer()
@@ -2554,7 +2580,7 @@ async def delivered_callback(update,ctx):
             log.exception("Delivered notification failed")
 
 async def addproduct(update,ctx):
-    if update.effective_user.id!=ADMIN_ID:
+    if not is_admin(update.effective_user.id):
         await update.message.reply_text("Admin only."); return
     raw=" ".join(ctx.args)
     # Syntax: /addproduct SHOP_ID PRICE STOCK LEVEL Title | Description
@@ -2597,7 +2623,7 @@ async def support_command(update,ctx):
     )
 
 async def help_command(update,ctx):
-    if update.effective_user.id == ADMIN_ID:
+    if is_admin(update.effective_user.id):
         body = (
             "🛠 ADMIN COMMANDS\n"
             "/admin — Admin control panel\n"
@@ -2626,7 +2652,7 @@ async def help_command(update,ctx):
     await update.message.reply_text(body)
 
 async def dashboard(update,ctx):
-    if update.effective_user.id==ADMIN_ID:
+    if is_admin(update.effective_user.id):
         await send_admin_panel(ctx.bot,update.effective_chat.id); return
     s=v4.shop_for(update.effective_user.id)
     if not s: await start(update,ctx)

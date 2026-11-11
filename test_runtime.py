@@ -428,7 +428,7 @@ def test_seller_market_screen(listing_id):
                 and "Merchant Telegram profile photo" in x.get("kwargs",{}).get("caption","")
                 for x in market_ctx.bot.sent),
             "Seller Marketplace did not show the seller's latest Telegram profile photo")
-    require(len(message.replies) >= 2, "Seller Marketplace did not render both resale and legacy screens")
+    require(len(message.replies) >= 1, "Seller Marketplace did not render the USDT resale screen")
     first = message.replies[0]
     require("OTHER ELIGIBLE MERCHANT LISTINGS (LEVEL 1–1)" in first["text"], "Other Level 1 resale section missing")
     require("Price: <b>3.3 USDT / item</b>" in first["text"], "Seller Marketplace price is wrong")
@@ -446,9 +446,8 @@ def test_seller_market_screen(listing_id):
     require("#%d Oxidised Jhumka Earrings" % listing_id in own_screen, "Seller cannot see their own listed product")
     require("Your available stock: <b>2</b>" in own_screen, "Seller's own remaining listing quantity missing")
     require("Asking price: <b>3.3 USDT / item</b>" in own_screen, "Seller's own asking price missing")
-    legacy_screen = own_message.replies[1]["text"]
-    require("Your USDT listings appear above" in legacy_screen,
-            "Legacy INR section does not explain where USDT stock appears")
+    require(all("INR" not in reply["text"] and "₹" not in reply["text"] for reply in own_message.replies),
+            "Seller Marketplace still exposes legacy INR content")
     print("PASS: Seller sees own active USDT listing, quantity and asking price")
 
 

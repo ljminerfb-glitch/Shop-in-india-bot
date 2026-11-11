@@ -1902,7 +1902,10 @@ def test_level2_workflow_reminder_goes_to_merchant():
     c.close()
 
     bot=FakeBot()
-    due_at=v5._motivation_now()+v5.timedelta(hours=2)
+    start_at=v5._motivation_now()
+    scheduled=asyncio.run(v5.send_due_level2_workflow_reminders(bot,start_at))
+    require(scheduled==0 and len(bot.sent)==0,"Level 2 reminder should wait for its first scheduled interval")
+    due_at=start_at+v5.timedelta(hours=2)
     sent=asyncio.run(v5.send_due_level2_workflow_reminders(bot,due_at))
     require(sent==1 and len(bot.sent)==1,"Level 2 merchant did not receive the pending-order reminder")
     msg=bot.sent[0]["kwargs"]["text"]

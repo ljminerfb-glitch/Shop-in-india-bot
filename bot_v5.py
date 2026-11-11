@@ -2313,9 +2313,16 @@ async def send_admin_panel(bot, chat_id):
 
 async def admin_panel_callback(update,ctx):
     q=update.callback_query
-    if not is_admin(q.from_user.id):
-        await q.answer("System only",show_alert=True); return
-    await q.answer()
+    try:
+        if not is_admin(q.from_user.id):
+            await q.answer("System only",show_alert=True); return
+        await q.answer()
+    except Exception as exc:
+        message=str(exc).lower()
+        if "query is too old" in message or "query id is invalid" in message:
+            log.info("Ignoring expired admin-panel callback query")
+            return
+        raise
     action=q.data.split(":",1)[1]
     if action=="audit":
         await audit.show(update,"all",0); return

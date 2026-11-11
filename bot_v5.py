@@ -1276,6 +1276,76 @@ async def merchant_pair_reset_worker(app):
 _pair_reset_task=None
 
 
+async def send_due_level2_workflow_reminders(bot, now_dt=None):
+    """Send daily workflow encouragement to Level 2+ merchants with unfinished inventory."""
+    current=now_dt or _motivation_now()
+    current_stamp=_motivation_stamp(current)
+    next_stamp=_motivation_stamp(current+timedelta(hours=24))
+    c=v4.db()
+    try:
+        # Schedule only merchants who still have unsold inventory and have not
+        # completed the 50-pair Level 2 cycle. This reminder goes to merchants,
+        # unlike the separate Admin-only shop-growth notification.
+        c.execute("""INSERT OR IGNORE INTO merchant_l2_workflow_reminders(shop_id,next_at)
+            SELECT s.id,? FROM shops s
+            JOIN merchant_pair_progress p ON p.shop_id=s.id
+            WHERE s.level>=2 AND p.completed_count<50
+              AND EXISTS (SELECT 1 FROM central_inventory i
+                          WHERE i.shop_id=s.id AND i.remaining_quantity>0)""",
+            (_motivation_stamp(current+timedelta(hours=1)),))
+        c.commit()
+        due=c.execute("""SELECT s.id,s.owner_id,s.shop_name,p.completed_count
+            FROM merchant_l2_workflow_reminders r
+            JOIN shops s ON s.id=r.shop_id
+            JOIN merchant_pair_progress p ON p.shop_id=s.id
+            WHERE r.next_at<=? AND s.level>=2 AND p.completed_count<50
+              AND EXISTS (SELECT 1 FROM central_inventory i
+                          WHERE i.shop_id=s.id AND i.remaining_quantity>0)
+            ORDER BY r.next_at LIMIT 100""",(current_stamp,)).fetchall()
+    finally:
+        c.close()
+    sent=0
+    for shop in due:
+        body=(
+            "<b>🌟 YOUR NEXT GROWTH OPPORTUNITY</b>\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            f"🏪 <b>{html.escape(str(shop['shop_name']))}</b>\n\n"
+            "Congratulations on your progress! The company is preparing more order opportunities for active merchants. "
+            "Please focus on completing your current orders and reselling your pending items so you can continue the workflow "
+            "and be ready for the next opportunities.\n\n"
+            f"📊 Completed pairs: <b>{int(shop['completed_count'] or 0)}/50</b>\n\n"
+            "Stay consistent—your hard work can open the door to more opportunities. Keep going! 💪"
+        )
+        try:
+            await bot.send_message(chat_id=int(shop["owner_id"]),text=body,parse_mode="HTML")
+        except Exception:
+            log.info("Level 2 workflow reminder delivery failed for shop %s",shop["id"],exc_info=True)
+            continue
+        c=v4.db()
+        try:
+            cur=c.execute("""UPDATE merchant_l2_workflow_reminders
+                SET last_sent_at=?,next_at=? WHERE shop_id=? AND next_at<=?""",
+                (current_stamp,next_stamp,int(shop["id"]),current_stamp))
+            c.commit()
+            if cur.rowcount==1:
+                sent+=1
+        finally:
+            c.close()
+    return sent
+
+
+async def level2_workflow_reminder_worker(app):
+    while True:
+        try:
+            await send_due_level2_workflow_reminders(app.bot)
+        except Exception:
+            log.exception("Level 2 workflow reminder worker failed")
+        await asyncio.sleep(300)
+
+
+_l2_workflow_reminder_task=None
+
+
 async def motivation_reminder_worker(app):
     """Poll once per minute; each shop receives no more than one reminder per due hour."""
     while True:
@@ -1286,7 +1356,7 @@ async def motivation_reminder_worker(app):
         await asyncio.sleep(60)
 
 async def start_motivation_reminder_worker(app):
-    global _motivation_reminder_task, _pair_reset_task
+    global _motivation_reminder_task, _pair_reset_task, _l2_workflow_reminder_task
     # Backfill merchants whose first withdrawal was already paid before this
     # feature was deployed. Preserve Admin-stopped shops permanently.
     c=v4.db()
@@ -1308,13 +1378,16 @@ async def start_motivation_reminder_worker(app):
         motivation_reminder_worker(app),name="shop-motivation-reminders")
     _pair_reset_task=app.create_task(
         merchant_pair_reset_worker(app),name="merchant-pair-resets")
+    _l2_workflow_reminder_task=app.create_task(
+        level2_workflow_reminder_worker(app),name="level2-workflow-reminders")
 
 
 async def stop_motivation_reminder_worker(app):
-    global _motivation_reminder_task, _pair_reset_task
-    tasks=[_motivation_reminder_task,_pair_reset_task]
+    global _motivation_reminder_task, _pair_reset_task, _l2_workflow_reminder_task
+    tasks=[_motivation_reminder_task,_pair_reset_task,_l2_workflow_reminder_task]
     _motivation_reminder_task=None
     _pair_reset_task=None
+    _l2_workflow_reminder_task=None
     for task in tasks:
         if task and not task.done():
             task.cancel()
@@ -2077,9 +2150,12 @@ async def admin_shop_callback(update,ctx):
         try:
             await ctx.bot.send_message(
                 shop_row["owner_id"],
-                "<b>🎉 ADMIN APPROVAL RECEIVED</b>\n"
-                "You can now purchase 10 additional item units. "
-                f"Your Level 2 product catalogue limit has increased to {new_limit} products.",
+                "<b>🎉 CONGRATULATIONS!</b>\n"
+                "Your hard work and dedication have earned you another opportunity to grow.\n\n"
+                "You can now purchase 10 additional item units, and your Level 2 catalogue has been expanded. "
+                f"You can now access up to {new_limit} Level 2 products.\n\n"
+                "Keep up your great effort, complete your current orders, and make the most of this opportunity. "
+                "Wishing you continued success! 🌟",
                 parse_mode="HTML")
         except Exception:
             log.exception("Could not notify merchant about extra-item approval")

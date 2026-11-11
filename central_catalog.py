@@ -1,5 +1,7 @@
 """Shared Level-1 central catalogue paid from owners' USDT wallet."""
 from pathlib import Path
+from datetime import datetime, timedelta, timezone, time as datetime_time
+from zoneinfo import ZoneInfo
 import logging
 import html
 import random
@@ -93,6 +95,62 @@ def _resale_ask_price(conn, unit_cost, level):
     if high < low:
         low,high=2.0,6.5
     return round(cost*(1.0+random.uniform(low,high)/100.0),6)
+
+
+def _pair_utc_now():
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _pair_reset_timestamp(reached_at, timezone_name):
+    """Return 07:00 local on the calendar day after the 50th sale, in UTC."""
+    zone=ZoneInfo(str(timezone_name))
+    reached=datetime.fromisoformat(str(reached_at))
+    if reached.tzinfo is None:
+        reached=reached.replace(tzinfo=timezone.utc)
+    local_reached=reached.astimezone(zone)
+    next_day=local_reached.date()+timedelta(days=1)
+    local_reset=datetime.combine(next_day,datetime_time(7,0),tzinfo=zone)
+    return local_reset.astimezone(timezone.utc).isoformat(timespec="seconds")
+
+
+def record_completed_pairs(c, shop_id, owner_id, quantity, source_type, source_order_id):
+    """Record successfully settled resale units once, inside the sale transaction."""
+    qty=max(0,int(quantity))
+    if qty<1:
+        return
+    now=_pair_utc_now()
+    event=c.execute("""INSERT OR IGNORE INTO merchant_pair_events
+        (source_type,source_order_id,shop_id,owner_id,quantity,created_at)
+        VALUES(?,?,?,?,?,?)""",
+        (str(source_type),int(source_order_id),int(shop_id),int(owner_id),qty,now))
+    if event.rowcount!=1:
+        return
+    shop=c.execute("SELECT location_timezone FROM shops WHERE id=? AND owner_id=?",
+                    (int(shop_id),int(owner_id))).fetchone()
+    timezone_name=shop["location_timezone"] if shop else None
+    row=c.execute("SELECT completed_count,reached_at FROM merchant_pair_progress WHERE shop_id=?",
+                  (int(shop_id),)).fetchone()
+    if row and int(row["completed_count"] or 0)>=50:
+        return
+    current=int(row["completed_count"] or 0) if row else 0
+    new_count=min(50,current+qty)
+    reached_at=now if new_count>=50 else None
+    reset_at=None
+    if reached_at and timezone_name:
+        try:
+            reset_at=_pair_reset_timestamp(reached_at,timezone_name)
+        except Exception:
+            log.exception("Could not calculate merchant pair reset time for shop %s",shop_id)
+    if row:
+        c.execute("""UPDATE merchant_pair_progress
+            SET completed_count=?,reached_at=CASE WHEN ?=50 THEN ? ELSE reached_at END,
+                reset_at=CASE WHEN ?=50 THEN ? ELSE reset_at END,updated_at=?
+            WHERE shop_id=?""",(new_count,new_count,reached_at,new_count,reset_at,now,int(shop_id)))
+    else:
+        c.execute("""INSERT INTO merchant_pair_progress
+            (shop_id,owner_id,completed_count,reached_at,reset_at,cycle_started_at,updated_at)
+            VALUES(?,?,?,?,?,?,?)""",
+            (int(shop_id),int(owner_id),new_count,reached_at,reset_at,now,now))
 
 
 def balance(c, owner_id):
@@ -1029,6 +1087,7 @@ async def resale_callback(update,ctx):
             profit=round((float(l["ask_price_usdt"])-float(l["unit_cost_usdt"]))*qty,6)
             c.execute("""INSERT INTO ledger(transaction_id,shop_id,owner_id,entry_type,amount,currency,note,created_at) VALUES(?,?,?,'resale_sale_credit',?,'USDT',?,?)""",(oid,l["shop_id"],l["owner_id"],total,f"Resale sale listing #{lid}",v4.now()))
             if profit!=0: c.execute("""INSERT INTO ledger(transaction_id,shop_id,owner_id,entry_type,amount,currency,note,created_at) VALUES(?,?,?,'resale_profit_credit',?,'USDT',?,?)""",(oid,l["shop_id"],l["owner_id"],profit,f"Profit on resale listing #{lid}",v4.now()))
+            record_completed_pairs(c,l["shop_id"],l["owner_id"],qty,"merchant_resale",oid)
             c.execute("INSERT INTO admin_audit(admin_id,owner_id,action,details,created_at) VALUES(?,?,?,?,?)",(v4.ADMIN_ID,q.from_user.id,"resale_bought",f"Listing #{lid}; qty {qty}; total {total} USDT",v4.now()))
             c.commit()
         except Exception:
@@ -1071,6 +1130,7 @@ async def admin_resale_text(update,ctx):
         c.execute("""INSERT INTO admin_resale_inventory(admin_id,catalog_id,order_id,quantity,remaining_quantity,unit_cost_usdt,created_at) VALUES(?,?,?,?,?,?,?)""",(v4.ADMIN_ID,l["catalog_id"],oid,qty,qty,price,v4.now()))
         c.execute("""INSERT INTO ledger(transaction_id,shop_id,owner_id,entry_type,amount,currency,note,created_at) VALUES(?,?,?,'resale_sale_credit',?,'USDT',?,?)""",(oid,l["shop_id"],l["owner_id"],total,f"Admin purchase listing #{lid}",v4.now()))
         if profit>0: c.execute("""INSERT INTO ledger(transaction_id,shop_id,owner_id,entry_type,amount,currency,note,created_at) VALUES(?,?,?,'resale_profit_credit',?,'USDT',?,?)""",(oid,l["shop_id"],l["owner_id"],profit,f"Profit on Admin purchase #{oid}",v4.now()))
+        record_completed_pairs(c,l["shop_id"],l["owner_id"],qty,"admin_resale",oid)
         c.execute("INSERT INTO admin_audit(admin_id,owner_id,action,details,created_at) VALUES(?,?,?,?,?)",(v4.ADMIN_ID,l["owner_id"],"admin_resale_purchased",f"Order #{oid}; listing #{lid}; qty {qty}; offer {price:g}; total {total:g} USDT; seller margin {profit:g}",v4.now()))
         c.commit()
     except Exception:

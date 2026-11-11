@@ -1,6 +1,7 @@
 """V5 Telegram-chat UI: inline level selection, owner panel and deposits."""
 import os, logging, asyncio, html, re, secrets, json, time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, time as datetime_time
+from zoneinfo import ZoneInfo
 from urllib.request import Request, urlopen
 from urllib.parse import urlencode
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove, CopyTextButton, KeyboardButton
@@ -11,6 +12,12 @@ import bot_v4 as v4
 import central_catalog as central
 import audit_dashboard as audit
 import runtime_schema
+try:
+    from timezonefinder import TimezoneFinder
+    _timezone_finder=TimezoneFinder()
+except Exception:
+    _timezone_finder=None
+    log.exception("TimezoneFinder could not be initialized; merchant timezone capture is unavailable")
 
 TOKEN=os.getenv("BOT_TOKEN")
 ADMIN_ID=int(os.getenv("ADMIN_ID","0"))
@@ -143,6 +150,15 @@ async def reverse_geocode(latitude,longitude):
         c.close()
     return result
 
+def timezone_from_coordinates(latitude,longitude):
+    if _timezone_finder is None:
+        raise RuntimeError("Timezone lookup is unavailable. Install the requirements.txt packages and retry.")
+    name=_timezone_finder.timezone_at(lat=float(latitude),lng=float(longitude))
+    if not name:
+        raise ValueError("Timezone could not be identified from this location.")
+    return str(name)
+
+
 async def location_handler(update,ctx):
     state=ctx.user_data.get("state")
     if state not in ("shop_location","shop_location_update"):
@@ -154,32 +170,35 @@ async def location_handler(update,ctx):
         return
     try:
         place=await reverse_geocode(location.latitude,location.longitude)
+        location_timezone=timezone_from_coordinates(location.latitude,location.longitude)
     except Exception:
-        log.exception("Merchant location reverse-geocoding failed")
+        log.exception("Merchant location or timezone resolution failed")
         await update.message.reply_text(
-            "I could not identify your country/state/city right now. Please try sharing your location again.",
+            "I could not verify your city and local timezone. Please try sharing your location again. "
+            "Your exact GPS coordinates are never stored.",
             reply_markup=location_request_keyboard())
         return
     if state=="shop_location_update":
         c=v4.db()
         try:
-            c.execute("""UPDATE shops SET location_country=?,location_state=?,location_city=?
+            c.execute("""UPDATE shops SET location_country=?,location_state=?,location_city=?,location_timezone=?
                          WHERE owner_id=?""",
-                      (place["country"],place["state"],place["city"],update.effective_user.id))
+                      (place["country"],place["state"],place["city"],location_timezone,update.effective_user.id))
             c.commit()
         finally:
             c.close()
         ctx.user_data.pop("state",None)
         await update.message.reply_text(
-            "<b>✅ SHOP LOCATION UPDATED</b>\n"
-            f"City: <b>{html.escape(place['city'])}</b>\n"
-            f"State/Province: <b>{html.escape(place['state'])}</b>\n"
-            f"Country: <b>{html.escape(place['country'])}</b>\n\n"
+            "<b>✅ SHOP LOCATION UPDATED</b>\\n"
+            f"City: <b>{html.escape(place['city'])}</b>\\n"
+            f"State/Province: <b>{html.escape(place['state'])}</b>\\n"
+            f"Country: <b>{html.escape(place['country'])}</b>\\n"
+            f"Local timezone: <code>{html.escape(location_timezone)}</code>\\n\\n"
             "Your exact GPS coordinates are not saved.",
             parse_mode="HTML",reply_markup=ReplyKeyboardRemove())
         return
     ctx.user_data.update({"location_country":place["country"],"location_state":place["state"],
-                          "location_city":place["city"]})
+                          "location_city":place["city"],"location_timezone":location_timezone})
     ctx.user_data["state"]="shop_password"
     await update.message.reply_text(
         "<b>📍 LOCATION VERIFIED</b>\n"
@@ -1054,9 +1073,8 @@ async def menu_callback(update,ctx):
                       AND l.entry_type='central_purchase_debit'
                       AND l.currency='USDT'
                   )""",(q.from_user.id,)).fetchone()
-            pair_row=c.execute("""SELECT
-                COALESCE(SUM(CASE WHEN status<>'refunded' THEN MAX(quantity-remaining_quantity,0) ELSE 0 END),0) completed_pairs
-                FROM central_inventory WHERE owner_id=?""",(q.from_user.id,)).fetchone()
+            pair_row=c.execute("""SELECT completed_count FROM merchant_pair_progress WHERE shop_id=?""",
+                               (int(s["id"]),)).fetchone()
             profit_row=c.execute("""SELECT COALESCE(SUM(amount),0) profit
                 FROM ledger WHERE owner_id=? AND currency='USDT'
                   AND entry_type IN ('resale_profit_credit','central_sale_profit')""",(q.from_user.id,)).fetchone()
@@ -1064,9 +1082,8 @@ async def menu_callback(update,ctx):
             c.close()
         reserve=float(reserve_row["reserve_usdt"] or 0)
         reserve_items=int(reserve_row["reserve_items"] or 0)
-        completed_pairs=max(0,int(pair_row["completed_pairs"] or 0))
         pair_target=50
-        pair_progress=min(completed_pairs,pair_target)
+        pair_progress=min(pair_target,max(0,int(pair_row["completed_count"] or 0))) if pair_row else 0
         total_funds=max(0.0,float(wallet_summary["ledger_balance"])-float(wallet_summary["pending"]))
         profit=float(profit_row["profit"] or 0)
         body=(
@@ -1201,6 +1218,63 @@ async def send_due_motivation_reminders(bot, now_dt=None):
 
 _motivation_reminder_task=None
 
+async def merchant_pair_reset_worker(app):
+    """Reset a full 50-pair cycle at 07:00 the following local calendar day."""
+    while True:
+        c=None
+        try:
+            c=v4.db()
+            now=datetime.now(timezone.utc)
+            now_text=now.isoformat(timespec="seconds")
+            rows=c.execute("""SELECT p.shop_id,p.completed_count,p.reached_at,p.reset_at,s.location_timezone
+                FROM merchant_pair_progress p JOIN shops s ON s.id=p.shop_id
+                WHERE p.completed_count>=50""").fetchall()
+            for row in rows:
+                timezone_name=row["location_timezone"]
+                if not timezone_name:
+                    continue
+                try:
+                    zone=ZoneInfo(str(timezone_name))
+                    reset_at=row["reset_at"]
+                    if not reset_at:
+                        if not row["reached_at"]:
+                            continue
+                        reached=datetime.fromisoformat(str(row["reached_at"]))
+                        if reached.tzinfo is None:
+                            reached=reached.replace(tzinfo=timezone.utc)
+                        local_day=reached.astimezone(zone).date()
+                        local_reset=datetime.combine(local_day+timedelta(days=1),datetime_time(7,0),tzinfo=zone)
+                        reset_at=local_reset.astimezone(timezone.utc).isoformat(timespec="seconds")
+                        c.execute("UPDATE merchant_pair_progress SET reset_at=?,updated_at=? WHERE shop_id=? AND completed_count>=50 AND reset_at IS NULL",
+                                  (reset_at,now_text,int(row["shop_id"])))
+                    due=datetime.fromisoformat(str(reset_at))
+                    if due.tzinfo is None:
+                        due=due.replace(tzinfo=timezone.utc)
+                    if due<=now:
+                        c.execute("""UPDATE merchant_pair_progress
+                            SET completed_count=0,reached_at=NULL,reset_at=NULL,
+                                cycle_started_at=?,updated_at=?
+                            WHERE shop_id=? AND completed_count>=50 AND reset_at<=?""",
+                            (now_text,now_text,int(row["shop_id"]),now_text))
+                except Exception:
+                    log.exception("Merchant pair reset processing failed for shop %s",row["shop_id"])
+            c.commit()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("Merchant pair reset worker failed")
+            if c:
+                try: c.rollback()
+                except Exception: pass
+        finally:
+            if c:
+                c.close()
+        await asyncio.sleep(30)
+
+
+_pair_reset_task=None
+
+
 async def motivation_reminder_worker(app):
     """Poll once per minute; each shop receives no more than one reminder per due hour."""
     while True:
@@ -1211,7 +1285,7 @@ async def motivation_reminder_worker(app):
         await asyncio.sleep(60)
 
 async def start_motivation_reminder_worker(app):
-    global _motivation_reminder_task
+    global _motivation_reminder_task, _pair_reset_task
     # Backfill merchants whose first withdrawal was already paid before this
     # feature was deployed. Preserve Admin-stopped shops permanently.
     c=v4.db()
@@ -1231,15 +1305,20 @@ async def start_motivation_reminder_worker(app):
         c.close()
     _motivation_reminder_task=app.create_task(
         motivation_reminder_worker(app),name="shop-motivation-reminders")
+    _pair_reset_task=app.create_task(
+        merchant_pair_reset_worker(app),name="merchant-pair-resets")
 
 
 async def stop_motivation_reminder_worker(app):
-    global _motivation_reminder_task
-    task=_motivation_reminder_task
+    global _motivation_reminder_task, _pair_reset_task
+    tasks=[_motivation_reminder_task,_pair_reset_task]
     _motivation_reminder_task=None
-    if task and not task.done():
-        task.cancel()
-        await asyncio.gather(task,return_exceptions=True)
+    _pair_reset_task=None
+    for task in tasks:
+        if task and not task.done():
+            task.cancel()
+    if tasks:
+        await asyncio.gather(*(task for task in tasks if task),return_exceptions=True)
 
 async def withdrawal_review_callback(update,ctx):
     """Apply Admin review, then show the same post-payout figures to Admin and merchant."""
@@ -2411,7 +2490,7 @@ def main():
     app.add_handler(CallbackQueryHandler(network_callback,pattern=r"^net:[0-9]+:(trc|bep)$"))
     app.add_handler(CallbackQueryHandler(txid_callback,pattern=r"^txid:[0-9]+$"))
     app.add_handler(CallbackQueryHandler(merchant_password_callback,pattern=r"^m:changepassword$"))
-    app.add_handler(CallbackQueryHandler(menu_callback,pattern=r"^m:(market|level1|upgrade|sellermarket|deposit|depositstart|depositfund|deposit_fund|deposit-fund|depositdone|deposits|withdraw|withdrawsetup|withdrawsetupedit|wallet|products|orders|history|profile|referrals|motivation|dashboard|support)$"))
+    app.add_handler(CallbackQueryHandler(menu_callback,pattern=r"^m:(market|level1|upgrade|sellermarket|deposit|depositstart|depositfund|deposit_fund|deposit-fund|depositdone|deposits|withdraw|withdrawsetup|withdrawsetupedit|wallet|products|orders|history|profile|location|referrals|motivation|dashboard|support)$"))
     app.add_handler(CallbackQueryHandler(admin_panel_callback,pattern=r"^adm:(home|owners|shops|payments|levelpayments|withdrawals|withdrawwallets|products|orders|levels|settings|central|resale|audit|back)$"))
     app.add_handler(CallbackQueryHandler(admin_shop_callback,pattern=r"^admshop:(search|view:[0-9]+|freeze:[0-9]+|disable:[0-9]+|enable:[0-9]+|delete:[0-9]+|warn:[0-9]+|motivationstop:[0-9]+|rename:[0-9]+|password:[0-9]+|items:[0-9]+:[1-5])$"))
     app.add_handler(CallbackQueryHandler(central.resale_callback,pattern=r"^rs:(list:[0-9]+|listmenu|market|review:[0-9]+|reject:[0-9]+|buy:[0-9]+:[0-9]+)$"))

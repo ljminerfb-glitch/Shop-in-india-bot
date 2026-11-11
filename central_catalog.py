@@ -105,6 +105,18 @@ def setup(c=None):
               VALUES(?,?,?,?,?,?,1,2,?,?)""",
               (product_key,title,item["description"],float(item["price_usdt"]),50,
                image_path,v4.now(),v4.now()))
+        # Independent Level 3 and 4 copies of the original Level 2 product set.
+        for target_level in (3,4):
+            conn.execute("""INSERT OR IGNORE INTO central_catalog
+              (product_key,title,description,price_usdt,stock,image_path,active,level_required,created_at,updated_at)
+              SELECT 'level' || ? || '_' || product_key,title,description,price_usdt,stock,image_path,active,?, ?, ?
+              FROM central_catalog WHERE level_required=2 AND product_key LIKE 'level2_%'""",
+              (target_level,target_level,v4.now(),v4.now()))
+        # Level 5 gets separate rows from Level 1 and 2, with free product selection.
+        conn.execute("""INSERT OR IGNORE INTO central_catalog
+          (product_key,title,description,price_usdt,stock,image_path,active,level_required,created_at,updated_at)
+          SELECT 'level5_' || product_key,title,description,price_usdt,stock,image_path,active,5,?,?
+          FROM central_catalog WHERE level_required IN (1,2)""",(v4.now(),v4.now()))
         conn.commit()
     finally:
         if own: conn.close()
@@ -231,6 +243,9 @@ async def admin_catalog(update,ctx):
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🟦 LEVEL 1",callback_data="ccadminlevel:1")],
             [InlineKeyboardButton("🟩 LEVEL 2 — 50 PRODUCTS",callback_data="ccadminlevel:2")],
+            [InlineKeyboardButton("🟨 LEVEL 3 — Minimum 12",callback_data="ccadminlevel:3")],
+            [InlineKeyboardButton("🟧 LEVEL 4 — Minimum 24",callback_data="ccadminlevel:4")],
+            [InlineKeyboardButton("🟥 LEVEL 5 — Minimum 36",callback_data="ccadminlevel:5")],
             [InlineKeyboardButton("📦 Manage Central Orders",callback_data="cc:orders")],
             [InlineKeyboardButton("✅ Filled Orders History",callback_data="cc:filled")],
             [InlineKeyboardButton("⬅️ System Panel",callback_data="adm:home")]]),
@@ -257,7 +272,7 @@ def _catalogue_page_keyboard(page,total,prefix,back_label,back_callback,dashboar
 async def _send_admin_level_page(update,ctx,level=1,page=0):
     from telegram import InlineKeyboardMarkup, InlineKeyboardButton
     level=int(level)
-    if level not in (1,2):
+    if level not in (1,2,3,4,5):
         await update.callback_query.message.reply_text("Invalid catalogue level.")
         return
     setup(); c=v4.db()
@@ -302,7 +317,7 @@ async def _send_admin_level_page(update,ctx,level=1,page=0):
         q.message.chat_id,
         f"<b>PAGE {page+1}/{last_page+1}</b> • Products {start+1 if total else 0}–{min(start+CATALOGUE_PAGE_SIZE,total)} of {total}",
         reply_markup=_catalogue_page_keyboard(
-            page,total,("ccadminpage" if level==1 else "ccadminpage:2"),
+            page,total,("ccadminpage" if level==1 else f"ccadminpage:{level}"),
             "⬅️ Back to Levels","adm:central","adm:home"),
         parse_mode="HTML")
 
@@ -313,7 +328,7 @@ async def admin_level_callback(update,ctx):
         await safe_callback_answer(q,"System only",show_alert=True); return
     try:
         level=int(q.data.split(":")[1])
-        if level not in (1,2): raise ValueError()
+        if level not in (1,2,3,4,5): raise ValueError()
     except (ValueError,IndexError):
         await safe_callback_answer(q,"Invalid catalogue level",show_alert=True); return
     await safe_callback_answer(q)
@@ -332,7 +347,7 @@ async def admin_catalog_page_callback(update,ctx):
             level,page=int(parts[1]),int(parts[2])
         else:
             raise ValueError()
-        if level not in (1,2) or page<0: raise ValueError()
+        if level not in (1,2,3,4,5) or page<0: raise ValueError()
     except (ValueError,IndexError):
         await safe_callback_answer(q,"Invalid page",show_alert=True); return
     await safe_callback_answer(q)
@@ -392,15 +407,19 @@ async def buy(update,ctx):
     if len(ctx.args)!=2:
         await update.effective_message.reply_text("Usage: /centralbuy PRODUCT_ID QUANTITY"); return
     shop=v4.shop_for(update.effective_user.id)
-    if not shop or shop["status"]!="approved" or int(shop["level"]) not in (1,2):
+    if not shop or shop["status"]!="approved" or int(shop["level"]) not in (1,2,3,4,5):
         await update.effective_message.reply_text("Approved Level 1 or Level 2 shop required for this catalogue."); return
     try:
         pid=int(ctx.args[0]); qty=int(ctx.args[1])
         if pid<1 or qty<1 or qty>1000: raise ValueError()
+        minimum_quantity={1:1,2:1,3:12,4:24,5:36}[int(shop["level"])]
+        if qty<minimum_quantity:
+            await update.effective_message.reply_text(
+                f"🔒 Level {int(shop['level'])} minimum purchase is {minimum_quantity} units for each product.")
+            return
         if int(shop["level"])==1 and qty>1:
             await update.effective_message.reply_text(
-                "🔒 Level 1 purchase limit: you can buy only 1 item per order. "
-                "Upgrade to Level 2 to purchase multiple items.")
+                "🔒 Level 1 purchase limit: only 1 item per order.")
             return
     except ValueError:
         await update.effective_message.reply_text("Invalid product ID or quantity."); return
@@ -852,9 +871,9 @@ async def admin_callback(update,ctx):
 
 async def owner_market(update,ctx,shop):
     from telegram import InlineKeyboardMarkup, InlineKeyboardButton
-    if not shop or shop["status"] != "approved" or int(shop["level"]) not in (1,2):
+    if not shop or shop["status"] != "approved" or int(shop["level"]) not in (1,2,3,4,5):
         await update.callback_query.message.reply_text(
-            "This catalogue is available only to approved Level 1 or Level 2 shops.",
+            "This catalogue is available only to approved Level 1–5 shops.",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back",callback_data="m:dashboard")]]))
         return
     level=int(shop["level"])
@@ -878,7 +897,7 @@ async def owner_level_callback(update,ctx):
     shop=v4.shop_for(q.from_user.id)
     try: level=int(q.data.split(":")[1])
     except (ValueError,IndexError): level=0
-    if not shop or shop["status"]!="approved" or int(shop["level"]) not in (1,2) or level!=int(shop["level"]):
+    if not shop or shop["status"]!="approved" or int(shop["level"]) not in (1,2,3,4,5) or level!=int(shop["level"]):
         await safe_callback_answer(q,"Your approved shop level does not match this catalogue",show_alert=True); return
     await safe_callback_answer(q)
     await show_owner_level_products(update,ctx,shop,level=level)
@@ -887,7 +906,7 @@ async def owner_level_callback(update,ctx):
 async def owner_catalog_page_callback(update,ctx):
     q=update.callback_query
     shop=v4.shop_for(q.from_user.id)
-    if not shop or shop["status"]!="approved" or int(shop["level"]) not in (1,2):
+    if not shop or shop["status"]!="approved" or int(shop["level"]) not in (1,2,3,4,5):
         await safe_callback_answer(q,"Approved Level 1 or Level 2 shop required",show_alert=True); return
     try:
         parts=q.data.split(":")
@@ -907,7 +926,7 @@ async def owner_catalog_page_callback(update,ctx):
 async def show_owner_level_products(update,ctx,shop,page=0,track_visit=True,level=None):
     from telegram import InlineKeyboardMarkup, InlineKeyboardButton
     level=int(level if level is not None else (shop["level"] if shop else 0))
-    if not shop or shop["status"] != "approved" or level!=int(shop["level"]) or level not in (1,2):
+    if not shop or shop["status"] != "approved" or level!=int(shop["level"]) or level not in (1,2,3,4,5):
         await update.callback_query.message.reply_text(
             "This catalogue is available only to an approved shop at the matching level.",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back",callback_data="m:dashboard")]]))
@@ -984,9 +1003,10 @@ async def show_owner_level_products(update,ctx,shop,page=0,track_visit=True,leve
                   if level==2 and int(p["already_purchased"]) else
                   ("Select a quantity below to buy." if price>0 and stock>0 else "🔴 Unavailable — System must set price and stock.")))
         # Level 1 merchants may purchase only one unit per order.
-        max_quantity=1 if int(shop["level"])==1 else 10
+        minimum_quantity={1:1,2:1,3:12,4:24,5:36}[level]
+        max_quantity=1 if level==1 else minimum_quantity+4
         already_purchased=level==2 and bool(int(p["already_purchased"]))
-        quantities=list(range(1,min(max_quantity,stock)+1)) if stock>0 and not already_purchased else []
+        quantities=list(range(minimum_quantity,min(max_quantity,stock)+1)) if stock>=minimum_quantity and not already_purchased else []
         buttons=[
             [InlineKeyboardButton(str(n),callback_data=f"ccbuy:{p['id']}:{n}")
              for n in quantities[pos:pos+2]]
@@ -1008,7 +1028,7 @@ async def show_owner_level_products(update,ctx,shop,page=0,track_visit=True,leve
         except Exception:
             log.exception("Could not send catalogue item")
             await ctx.bot.send_message(update.effective_chat.id,caption,reply_markup=kb,parse_mode="HTML")
-    if level==1:
+    if level!=2:
         await ctx.bot.send_message(
             update.effective_chat.id,
             f"<b>PAGE {page+1}/{last_page+1}</b> • Products {start+1 if total else 0}–{min(start+CATALOGUE_PAGE_SIZE,total)} of {total}",            reply_markup=_catalogue_page_keyboard(
@@ -1083,7 +1103,7 @@ async def list_inventory(update,ctx):
     from telegram import InlineKeyboardMarkup, InlineKeyboardButton
     if v4.admin(update.effective_user.id): return
     shop=v4.shop_for(update.effective_user.id)
-    if not shop or shop["status"]!="approved" or int(shop["level"]) not in (1,2):
+    if not shop or shop["status"]!="approved" or int(shop["level"]) not in (1,2,3,4,5):
         await update.effective_message.reply_text("<b>🔒 APPROVED LEVEL REQUIRED</b>\nYour shop must be approved and active at Level 1 or Level 2.",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Dashboard",callback_data="m:dashboard")]]),parse_mode="HTML"); return
     resale_setup(); c=v4.db()
     rows=c.execute("""SELECT i.id,i.catalog_id,i.remaining_quantity,i.unit_cost_usdt,p.title,p.level_required,
@@ -1095,7 +1115,7 @@ async def list_inventory(update,ctx):
        WHERE ci.shop_id=i.shop_id AND ci.catalog_id=i.catalog_id) shop_units_sold
       FROM central_inventory i JOIN central_catalog p ON p.id=i.catalog_id
       LEFT JOIN level_settings cfg ON cfg.level=p.level_required
-      WHERE i.owner_id=? AND p.level_required<=? AND i.remaining_quantity>0 ORDER BY i.id DESC""",
+      WHERE i.owner_id=? AND p.level_required=? AND i.remaining_quantity>0 ORDER BY i.id DESC""",
       (update.effective_user.id,int(shop["level"]))).fetchall()
     c.close()
     if not rows:
@@ -1238,7 +1258,7 @@ async def resale_callback(update,ctx):
         return
     if action=="market":
         shop=v4.shop_for(q.from_user.id)
-        if not shop or shop["status"]!="approved" or int(shop["level"]) not in (1,2):
+        if not shop or shop["status"]!="approved" or int(shop["level"]) not in (1,2,3,4,5):
             await safe_callback_answer(q, "Approved Level 1 or Level 2 shop required",show_alert=True); return
         level=int(shop["level"])
         c=v4.db()
@@ -1246,7 +1266,7 @@ async def resale_callback(update,ctx):
             FROM resale_listings l JOIN central_catalog p ON p.id=l.catalog_id
             JOIN shops s ON s.id=l.shop_id
             WHERE l.status='active' AND l.remaining_quantity>0 AND l.owner_id<>?
-              AND s.status='approved' AND s.level>=p.level_required AND p.level_required<=?
+              AND s.status='approved' AND s.level=p.level_required AND p.level_required=?
             ORDER BY l.id DESC LIMIT 30""",(q.from_user.id,level)).fetchall()
         c.close()
         await safe_callback_answer(q)
@@ -1265,10 +1285,14 @@ async def resale_callback(update,ctx):
         return
     if action=="buy":
         shop=v4.shop_for(q.from_user.id)
-        if not shop or shop["status"]!="approved" or int(shop["level"]) not in (1,2):
+        if not shop or shop["status"]!="approved" or int(shop["level"]) not in (1,2,3,4,5):
             await safe_callback_answer(q, "Approved Level 1 or Level 2 shop required",show_alert=True); return
         buyer_level=int(shop["level"])
         lid,qty=int(parts[2]),int(parts[3])
+        minimum_quantity={1:1,2:1,3:12,4:24,5:36}[buyer_level]
+        if qty<minimum_quantity:
+            await safe_callback_answer(q,f"Level {buyer_level} requires at least {minimum_quantity} units per product.",show_alert=True)
+            return
         if buyer_level==1 and qty>1:
             await safe_callback_answer(q,"Level 1 purchase limit: only 1 item per order.",show_alert=True)
             return
@@ -1281,7 +1305,7 @@ async def resale_callback(update,ctx):
             if not l or int(l["owner_id"])==q.from_user.id or qty<1 or qty>int(l["remaining_quantity"]):
                 c.rollback(); await safe_callback_answer(q, "Listing/quantity unavailable",show_alert=True); return
             listing_level=int(l["level_required"])
-            if listing_level<1 or listing_level>buyer_level:
+            if listing_level!=buyer_level:
                 c.rollback(); await safe_callback_answer(q, "This listing requires a higher shop level",show_alert=True); return
             allowed,buyer_warning=v4.shop_order_gate(c,shop["id"])
             if not allowed:

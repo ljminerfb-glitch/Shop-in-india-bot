@@ -12,18 +12,18 @@ import bot_v4 as v4
 import central_catalog as central
 import audit_dashboard as audit
 import runtime_schema
-try:
-    from timezonefinder import TimezoneFinder
-    _timezone_finder=TimezoneFinder()
-except Exception:
-    _timezone_finder=None
-    log.exception("TimezoneFinder could not be initialized; merchant timezone capture is unavailable")
 
 TOKEN=os.getenv("BOT_TOKEN")
 ADMIN_ID=int(os.getenv("ADMIN_ID","0"))
 ROOT_REFERRAL_CODE=os.getenv("ROOT_REFERRAL_CODE","SHOPINDIA").strip().upper() or "SHOPINDIA"
 logging.basicConfig(level=logging.INFO)
 log=logging.getLogger("shop_v5")
+try:
+    from timezonefinder import TimezoneFinder
+    _timezone_finder=TimezoneFinder()
+except Exception:
+    _timezone_finder=None
+    log.exception("TimezoneFinder could not be initialized; merchant timezone capture is unavailable")
 _geocode_lock=asyncio.Lock()
 _geocode_last_request=0.0
 v3.main_keyboard=lambda: ReplyKeyboardRemove()
@@ -1073,6 +1073,7 @@ async def menu_callback(update,ctx):
                       AND l.entry_type='central_purchase_debit'
                       AND l.currency='USDT'
                   )""",(q.from_user.id,)).fetchone()
+            central.ensure_pair_progress(c,int(s["id"]),int(q.from_user.id),s["location_timezone"] if "location_timezone" in s.keys() else None)
             pair_row=c.execute("""SELECT completed_count FROM merchant_pair_progress WHERE shop_id=?""",
                                (int(s["id"]),)).fetchone()
             profit_row=c.execute("""SELECT COALESCE(SUM(amount),0) profit

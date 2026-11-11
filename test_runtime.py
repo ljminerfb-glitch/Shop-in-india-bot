@@ -1818,9 +1818,11 @@ def test_50_pair_purchase_gate_and_admin_approval():
                  VALUES(505,'Allowance Test Shop','approved',?,2)""",(v4.now(),))
     sid=int(c.execute("SELECT id FROM shops WHERE owner_id=505 ORDER BY id DESC LIMIT 1").fetchone()[0])
     product=c.execute(
-        "SELECT id FROM central_catalog WHERE active=1 AND level_required=2 ORDER BY id LIMIT 1"
+        "SELECT id,price_usdt,stock FROM central_catalog WHERE active=1 AND level_required=2 ORDER BY id LIMIT 1"
     ).fetchone()
     pid=int(product["id"])
+    original_price=float(product["price_usdt"])
+    original_stock=int(product["stock"])
     c.execute("UPDATE central_catalog SET price_usdt=1,stock=20 WHERE id=?",(pid,))
     c.execute("""INSERT INTO merchant_pair_progress
         (shop_id,owner_id,completed_count,cycle_started_at,updated_at)
@@ -1876,6 +1878,12 @@ def test_50_pair_purchase_gate_and_admin_approval():
     c.close()
     require(remaining==19,"Successful post-limit purchase did not consume exactly one approved unit")
     require(audit_count==2,"Admin approvals were not written to the audit log")
+    # Restore shared catalogue stock and price so later tests see the pristine 50-unit fixture.
+    c=v4.db()
+    c.execute("UPDATE central_catalog SET price_usdt=?,stock=? WHERE id=?",
+              (original_price,original_stock,pid))
+    c.commit()
+    c.close()
     print("PASS: 50-pair purchase lock, repeated Admin +10 approvals, Level 2 slot expansion and allowance consumption")
 
 

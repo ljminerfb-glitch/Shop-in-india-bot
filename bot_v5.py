@@ -905,7 +905,7 @@ async def menu_callback(update,ctx):
         c=v4.db()
         try:
             rows=[]  # Legacy non-USDT products are intentionally excluded from the V5 marketplace.
-            own_resale=c.execute("""SELECT l.id,l.remaining_quantity,l.ask_price_usdt,p.title
+            own_resale=c.execute("""SELECT l.id,l.owner_id,l.remaining_quantity,l.ask_price_usdt,p.title,sh.shop_name
               FROM resale_listings l JOIN central_catalog p ON p.id=l.catalog_id
               JOIN shops sh ON sh.id=l.shop_id
               WHERE l.status='active' AND l.remaining_quantity>0 AND l.owner_id=?

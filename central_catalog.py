@@ -767,7 +767,7 @@ async def owner_catalog_page_callback(update,ctx):
 async def show_owner_level_products(update,ctx,shop,page=0,track_visit=True,level=None):
     from telegram import InlineKeyboardMarkup, InlineKeyboardButton
     level=int(level if level is not None else (shop["level"] if shop else 0))
-    if not shop or shop["status"] != "approved" or level>int(shop["level"]) or level not in (1,2):
+    if not shop or shop["status"] != "approved" or level!=int(shop["level"]) or level not in (1,2):
         await update.callback_query.message.reply_text(
             "This catalogue is available only to an approved shop at the matching level.",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back",callback_data="m:dashboard")]]))

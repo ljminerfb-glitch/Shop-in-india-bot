@@ -2561,6 +2561,20 @@ async def audit_callback(update,ctx):
         log.exception("Audit screen failed")
         await q.message.reply_text("Audit log could not be loaded.")
 
+async def my_account_callback(update,ctx):
+    """Dedicated, logged route for the merchant My Account screen."""
+    q=update.callback_query
+    try:
+        await menu_callback(update,ctx)
+    except Exception:
+        log.exception("My Account callback failed for merchant %s",q.from_user.id if q else "unknown")
+        if q and q.message:
+            await q.message.reply_text(
+                "My Account could not load due to an account-data issue. Please try again; Support can help if it continues.",
+                reply_markup=back_dashboard_kb()
+            )
+
+
 async def support_command(update,ctx):
     from telegram import InlineKeyboardMarkup, InlineKeyboardButton
     await update.message.reply_text(
@@ -2667,7 +2681,8 @@ def main():
     app.add_handler(CallbackQueryHandler(network_callback,pattern=r"^net:[0-9]+:(trc|bep)$"))
     app.add_handler(CallbackQueryHandler(txid_callback,pattern=r"^txid:[0-9]+$"))
     app.add_handler(CallbackQueryHandler(merchant_password_callback,pattern=r"^m:changepassword$"))
-    app.add_handler(CallbackQueryHandler(menu_callback,pattern=r"^m:(market|level1|upgrade|sellermarket|deposit|depositstart|depositfund|deposit_fund|deposit-fund|depositdone|deposits|withdraw|withdrawsetup|withdrawsetupedit|wallet|products|orders|history|profile|location|referrals|motivation|dashboard|support|logout)$"))
+    app.add_handler(CallbackQueryHandler(my_account_callback,pattern=r"^m:profile$"))
+    app.add_handler(CallbackQueryHandler(menu_callback,pattern=r"^m:(market|level1|upgrade|sellermarket|deposit|depositstart|depositfund|deposit_fund|deposit-fund|depositdone|deposits|withdraw|withdrawsetup|withdrawsetupedit|wallet|products|orders|history|location|referrals|motivation|dashboard|support|logout)$"))
     app.add_handler(CallbackQueryHandler(admin_panel_callback,pattern=r"^adm:(home|owners|shops|payments|levelpayments|withdrawals|withdrawwallets|products|orders|levels|settings|central|resale|audit|back)$"))
     app.add_handler(CallbackQueryHandler(admin_shop_callback,pattern=r"^admshop:(search|view:[0-9]+|freeze:[0-9]+|disable:[0-9]+|enable:[0-9]+|delete:[0-9]+|warn:[0-9]+|motivationstop:[0-9]+|rename:[0-9]+|password:[0-9]+|approve10:[0-9]+|items:[0-9]+:[1-5])$"))
     app.add_handler(CallbackQueryHandler(central.resale_callback,pattern=r"^rs:(list:[0-9]+|listmenu|market|review:[0-9]+|reject:[0-9]+|buy:[0-9]+:[0-9]+)$"))

@@ -49,7 +49,7 @@ def shop_for(uid):
     c=db(); r=c.execute("SELECT * FROM shops WHERE owner_id=? ORDER BY id DESC LIMIT 1",(uid,)).fetchone(); c.close(); return r
 
 def shop_order_gate(c, shop_id):
-    """Check Admin controls and consume a one-time next-order warning transactionally."""
+    """Check System controls and consume a one-time next-order warning transactionally."""
     row=c.execute("SELECT control_status,next_order_warning,warning_reason FROM shops WHERE id=?",
                   (int(shop_id),)).fetchone()
     if not row:
@@ -57,14 +57,14 @@ def shop_order_gate(c, shop_id):
     status=str(row["control_status"] or "active").lower()
     if status != "active":
         labels={"frozen":"frozen","disabled":"disabled","deleted":"deleted"}
-        return False, f"This shop is {labels.get(status, status)} by Admin. New orders are unavailable."
+        return False, f"This shop is {labels.get(status, status)} by System. New orders are unavailable."
     if int(row["next_order_warning"] or 0):
         warning=str(row["warning_reason"] or "Please follow marketplace rules.")
         c.execute("UPDATE shops SET next_order_warning=0,warning_reason=NULL WHERE id=?",
                   (int(shop_id),))
         # Commit only the warning acknowledgement; the attempted order is not placed.
         c.commit()
-        return False, ("⚠️ ADMIN WARNING — " + warning +
+        return False, ("⚠️ SYSTEM WARNING — " + warning +
                        "\nYour order was NOT placed. Please review this notice, then submit the order again if you wish to continue.")
     return True, None
 
@@ -85,12 +85,12 @@ async def dashboard(update,ctx):
         counts={t:c.execute(f"SELECT COUNT(*) n FROM {t}").fetchone()["n"] for t in ["shops","products","v4_orders","payment_history","withdrawals"]}
         c.close()
         await update.message.reply_text(
-          "🛡️ ADMIN V4 DASHBOARD\n"
+          "🛡️ SYSTEM V4 DASHBOARD\n"
           f"Shops: {counts['shops']} | Products: {counts['products']}\n"
           f"Orders: {counts['v4_orders']} | Payments: {counts['payment_history']} | Withdrawals: {counts['withdrawals']}\n"
           f"USDT conversion rate: 1 USDT = INR {usdt_inr_rate():,.2f}\n\n"
           "Commands:\n/levels — edit level settings\n/setlevel LEVEL ACTIVATION_USDT PRODUCT_TARGET PROFIT_MIN PROFIT_MAX\n"
-          "/setfx INR_PER_USDT — change deposit/withdrawal conversion rate from Admin dashboard\n"
+          "/setfx INR_PER_USDT — change deposit/withdrawal conversion rate from System dashboard\n"
           "/products — latest products\n/setprice PRODUCT_ID INR_PRICE\n/setstock PRODUCT_ID QTY\n/setproductlevel PRODUCT_ID LEVEL\n"
           "/orders — pending orders\n/orderdone ORDER_ID — mark delivered/completed\n/orderreject ORDER_ID REASON\n"
           "/audit PRODUCT_ID — product audit\n/shopaudit SHOP_ID — shop audit\n/owner OWNER_ID — owner audit summary")
@@ -246,7 +246,7 @@ async def buy(update,ctx):
                 c.rollback()
                 await update.message.reply_text(
                     "🔒 Your 50/50 completed-pair limit has been reached. "
-                    f"Admin approval is required for more purchases. Approved units remaining: {remaining}.")
+                    f"System approval is required for more purchases. Approved units remaining: {remaining}.")
                 return
             changed=c.execute(
                 "UPDATE merchant_extra_item_allowances SET remaining_units=remaining_units-?,updated_at=? "
@@ -280,10 +280,10 @@ async def buy(update,ctx):
         c.rollback(); log.exception("Buy failed"); await update.message.reply_text("Order could not be created; no payment has been taken.")
         return
     finally: c.close()
-    await update.message.reply_text(f"Order #{oid} created. Amount ₹{total:.2f}. Payment and fulfilment require Admin review; stock is reserved." +
-        (f"\\n⚠️ ADMIN WARNING: {buyer_warning}" if buyer_warning else ""))
+    await update.message.reply_text(f"Order #{oid} created. Amount ₹{total:.2f}. Payment and fulfilment require System review; stock is reserved." +
+        (f"\\n⚠️ SYSTEM WARNING: {buyer_warning}" if buyer_warning else ""))
     try: await ctx.bot.send_message(ADMIN_ID,f"🛒 ORDER #{oid}\nProduct #{pid} {p['title']}\nBuyer shop #{buyer['id']}\nSeller shop #{p['shop_id']}\nQty {qty} | Total ₹{total:.2f}\nFee ₹{fee:.2f} | Seller allocation ₹{seller:.2f}\nUse /orderdone {oid} after real delivery and payment verification, or /orderreject {oid} REASON.")
-    except Exception: log.exception("Admin order alert failed")
+    except Exception: log.exception("System order alert failed")
 
 async def orders(update,ctx):
     if not admin(update.effective_user.id): return
@@ -306,7 +306,7 @@ async def orderdone(update,ctx):
     finally: c.close()
     await update.message.reply_text(f"✅ ORDER #{oid} COMPLETED. Seller credit recorded as INR {r['seller_amount']:.2f}.")
     for target in [r["buyer_owner_id"],r["seller_owner_id"]]:
-        try: await ctx.bot.send_message(target,f"Order #{oid} marked completed by Admin.")
+        try: await ctx.bot.send_message(target,f"Order #{oid} marked completed by System.")
         except Exception: pass
 
 async def orderreject(update,ctx):
@@ -395,7 +395,7 @@ async def payment_photo(update,ctx):
     ctx.user_data.clear()
     kb=InlineKeyboardMarkup([
         [InlineKeyboardButton("Approve",callback_data=f"pay:approve:{rid}"),InlineKeyboardButton("Reject",callback_data=f"pay:reject:{rid}")],
-        [InlineKeyboardButton("⬅️ Pending Deposits",callback_data="adm:payments"),InlineKeyboardButton("🏠 Admin Panel",callback_data="adm:home")]
+        [InlineKeyboardButton("⬅️ Pending Deposits",callback_data="adm:payments"),InlineKeyboardButton("🏠 System Panel",callback_data="adm:home")]
     ])
     try:
         rate=usdt_inr_rate()
@@ -404,14 +404,14 @@ async def payment_photo(update,ctx):
         await ctx.bot.send_photo(ADMIN_ID,photo=photo,caption=f"PAYMENT PROOF #{rid}\nOwner: {row['owner_id']}\nShop: {row['shop_id']}\nType: {row['payment_type']} L{row['level']}\nAmount: {row['amount']} {row['currency']}{conversion}\nNetwork: {row['network']}\nTransaction Hash: {saved_hash or 'Not provided'}\nVerify transaction independently before approving.",reply_markup=kb)
     except Exception:
         log.exception("Payment proof admin delivery failed")
-        await update.message.reply_text("Proof save ho gaya, lekin Admin ko Telegram notification nahi ja saki. Admin se contact karein.")
+        await update.message.reply_text("Proof save ho gaya, lekin System ko Telegram notification nahi ja saki. System se contact karein.")
         return
-    await update.message.reply_text(f"Payment proof request #{rid} Admin review ke liye bhej di gayi hai.",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back to Dashboard",callback_data="m:dashboard")]]))
+    await update.message.reply_text(f"Payment proof request #{rid} System review ke liye bhej di gayi hai.",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back to Dashboard",callback_data="m:dashboard")]]))
 
 async def payment_review(update,ctx):
     q=update.callback_query
     if not admin(q.from_user.id):
-        await q.answer("Admin only",show_alert=True)
+        await q.answer("System only",show_alert=True)
         return
     await q.answer()
     try:
@@ -438,7 +438,7 @@ async def payment_review(update,ctx):
             c.rollback()
             await q.message.reply_text("Request missing or already reviewed.")
             return
-        # A proof is mandatory for approval, but Admin must be able to reject
+        # A proof is mandatory for approval, but System must be able to reject
         # an incomplete/invalid request that has no screenshot.
         if action=="approve" and not r["screenshot_file_id"]:
             c.rollback()
@@ -451,7 +451,7 @@ async def payment_review(update,ctx):
             "UPDATE payment_requests SET status=?,reviewed_at=?,admin_note=? "
             "WHERE id=? AND status='pending'",
             (status,reviewed_at,
-             "Admin verified manually" if action=="approve" else ("This is fake screenshot" if r["payment_type"]=="wallet_deposit" else "Admin rejected proof"),
+             "System verified manually" if action=="approve" else ("This is fake screenshot" if r["payment_type"]=="wallet_deposit" else "System rejected proof"),
              rid))
         if cur.rowcount != 1:
             c.rollback()
@@ -481,7 +481,7 @@ async def payment_review(update,ctx):
                     c.execute("""INSERT INTO ledger(transaction_id,shop_id,owner_id,entry_type,amount,currency,note,created_at)
                                  VALUES(NULL,?,?, 'deposit_credit',?,'USDT',?,?)""",
                               (r["shop_id"],r["owner_id"],payment_amount,
-                               f"Admin-approved deposit #{rid}",reviewed_at))
+                               f"System-approved deposit #{rid}",reviewed_at))
                 # Every manually verified USDT payment earns an additional 20% wallet bonus.
                 cashback_amount=round(payment_amount*0.20,6)
                 if cashback_amount>0:
@@ -554,7 +554,7 @@ async def payment_review(update,ctx):
             await q.message.edit_caption(caption=clean_caption+result_line,
                                          reply_markup=InlineKeyboardMarkup([
                                              [InlineKeyboardButton("⬅️ Back to Payment Queue",callback_data=f"adm:{queue_action}")],
-                                             [InlineKeyboardButton("🏠 Admin Panel",callback_data="adm:home")]
+                                             [InlineKeyboardButton("🏠 System Panel",callback_data="adm:home")]
                                          ]))
         else:
             old_text=q.message.text or ""
@@ -562,14 +562,14 @@ async def payment_review(update,ctx):
             await q.message.edit_text(text=clean_text+result_line,
                                       reply_markup=InlineKeyboardMarkup([
                                           [InlineKeyboardButton("⬅️ Back to Payment Queue",callback_data=f"adm:{queue_action}")],
-                                          [InlineKeyboardButton("🏠 Admin Panel",callback_data="adm:home")]
+                                          [InlineKeyboardButton("🏠 System Panel",callback_data="adm:home")]
                                       ]))
     except Exception:
         log.exception("Could not update reviewed payment Telegram card")
         await q.message.reply_text(f"Payment request #{rid}: {status.upper()}. Database status saved.",
                                    reply_markup=InlineKeyboardMarkup([
                                        [InlineKeyboardButton("⬅️ Back to Payment Queue",callback_data=f"adm:{queue_action}")],
-                                       [InlineKeyboardButton("🏠 Admin Panel",callback_data="adm:home")]
+                                       [InlineKeyboardButton("🏠 System Panel",callback_data="adm:home")]
                                    ]))
 
     try:
@@ -596,7 +596,7 @@ async def setshoplevel(update,ctx):
     if not admin(update.effective_user.id): return
     if len(ctx.args)<2 or not all(x.isdigit() for x in ctx.args[:2]):
         await update.message.reply_text("Usage: /setshoplevel SHOP_ID LEVEL [reason]"); return
-    sid,lv=map(int,ctx.args[:2]); reason=" ".join(ctx.args[2:]) or "Admin adjustment"
+    sid,lv=map(int,ctx.args[:2]); reason=" ".join(ctx.args[2:]) or "System adjustment"
     if lv not in range(0,6): await update.message.reply_text("Level 0–5 only."); return
     c=db(); r=c.execute("SELECT owner_id,level FROM shops WHERE id=?",(sid,)).fetchone()
     if not r: c.close(); await update.message.reply_text("Shop not found."); return
@@ -651,7 +651,7 @@ async def withdraw(update,ctx):
     kb=InlineKeyboardMarkup([[InlineKeyboardButton("✅ MARK PAID",callback_data=f"wd:paid:{wid}"),
                               InlineKeyboardButton("❌ REJECT",callback_data=f"wd:reject:{wid}")]])
     await update.message.reply_text(
-        f"Withdrawal request #{wid} submitted. Amount: {amount:.6f} USDT. Network: USDT TRC20. Status: pending Admin review.")
+        f"Withdrawal request #{wid} submitted. Amount: {amount:.6f} USDT. Network: USDT TRC20. Status: pending System review.")
     try:
         await ctx.bot.send_message(ADMIN_ID,
             f"USDT WITHDRAWAL #{wid}\nOwner: {update.effective_user.id}\nAmount: {amount:.6f} USDT\n"
@@ -664,7 +664,7 @@ async def withdraw(update,ctx):
 async def withdrawal_review(update,ctx):
     q=update.callback_query
     if not admin(q.from_user.id):
-        await q.answer("Admin only",show_alert=True); return
+        await q.answer("System only",show_alert=True); return
     await q.answer()
     try:
         _,action,wid_text=q.data.split(":")

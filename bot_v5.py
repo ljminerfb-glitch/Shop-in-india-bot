@@ -331,7 +331,7 @@ async def continue_registration_with_code(update,ctx,code):
     await update.message.reply_text(
         "<b>📍 SHARE YOUR LOCATION — REQUIRED</b>\n"
         "To complete merchant registration, share your current location using the button below. "
-        "We use it to identify your country, state/province and city for the Admin application. "
+        "We use it to identify your country, state/province and city for the System application. "
         "Your exact GPS coordinates are not stored.",
         parse_mode="HTML",reply_markup=location_request_keyboard()
     )
@@ -426,7 +426,7 @@ async def start(update,ctx):
     s=v4.shop_for(update.effective_user.id)
     if s and str(s["control_status"] or "active").lower()!="active":
         await update.message.reply_text(
-            f"⛔ Your shop {shop_number(s['id'])} is currently {str(s['control_status']).upper()} by Admin. New orders and purchases are unavailable. Please contact Support.")
+            f"⛔ Your shop {shop_number(s['id'])} is currently {str(s['control_status']).upper()} by System. New orders and purchases are unavailable. Please contact Support.")
         return
     if not s:
         await update.message.reply_text(
@@ -439,7 +439,7 @@ async def start(update,ctx):
     elif s["status"]!="approved":
         await update.message.reply_text(
             "<b>🟡 APPLICATION PENDING</b>\n━━━━━━━━━━━━━━━━━━\n"
-            "Your shop is waiting for Admin review. You will receive a message when a decision is made.",
+            "Your shop is waiting for System review. You will receive a message when a decision is made.",
             parse_mode="HTML")
     elif int(s["level"])<1:
         await levels(ctx.bot,update.effective_user.id)
@@ -453,7 +453,7 @@ async def start(update,ctx):
 
 async def approved_callback(update,ctx):
     q=update.callback_query
-    if not is_admin(q.from_user.id): await q.answer("Admin only",show_alert=True); return
+    if not is_admin(q.from_user.id): await q.answer("System only",show_alert=True); return
     action,sid=q.data.split(":")
     if action=="reject":
         c=v4.db()
@@ -500,7 +500,7 @@ async def level_callback(update,ctx):
     finally:
         c.close()
     if not cfg:
-        await q.message.reply_text("This level is not configured. Please contact Admin.")
+        await q.message.reply_text("This level is not configured. Please contact System.")
         return
 
     target="Unlimited product access" if not cfg["product_target"] else f"Access to up to {cfg['product_target']} products"
@@ -517,9 +517,8 @@ async def level_callback(update,ctx):
     await q.message.reply_text(
         f"<b>🔷 SHOP LEVEL {lv}</b>\n━━━━━━━━━━━━━━━━━━\n"
         f"Activation price: <b>{float(cfg['activation_usdt']):g} USDT</b>\n"
-        f"INR reference: ₹{float(cfg['activation_usdt'])*v4.usdt_inr_rate():,.2f}\n\n"
         f"<b>LEVEL BENEFITS</b>\n{html.escape(benefits)}\n\n"
-        "<i>Profit figures are references, not guaranteed earnings. Level activates after Admin verifies payment.</i>",
+        "<i>Profit figures are references, not guaranteed earnings. Level activates after System verifies payment.</i>",
         reply_markup=kb,parse_mode="HTML")
 
 async def level_pay_callback(update,ctx):
@@ -543,7 +542,7 @@ async def level_pay_callback(update,ctx):
     try:
         cfg=c.execute("SELECT activation_usdt FROM level_settings WHERE level=?",(lv,)).fetchone()
         if not cfg:
-            await q.message.reply_text("This level is not configured. Please contact Admin.")
+            await q.message.reply_text("This level is not configured. Please contact System.")
             return
         pending=c.execute(
             "SELECT id,amount FROM payment_requests WHERE owner_id=? "
@@ -558,7 +557,6 @@ async def level_pay_callback(update,ctx):
               VALUES(?,?,'level_activation',?,?,'USDT','not_selected','pending',?)""",
               (q.from_user.id,s["id"],lv,amount,v4.now()))
             rid=cur.lastrowid
-        rate=v4.usdt_inr_rate(c)
         c.commit()
     finally:
         c.close()
@@ -573,7 +571,6 @@ async def level_pay_callback(update,ctx):
         f"<b>💳 LEVEL {lv} PAYMENT</b>\n━━━━━━━━━━━━━━━━━━\n"
         f"Request: <code>#{rid}</code>\n"
         f"Amount: <b>{amount:g} USDT</b>\n"
-        f"INR reference: ₹{amount*rate:,.2f} (rate ₹{rate:,.2f}/USDT)\n\n"
         "<b>Choose your payment network:</b>",
         reply_markup=kb,parse_mode="HTML")
 
@@ -617,7 +614,6 @@ async def network_callback(update,ctx):
             await q.message.reply_text("Payment request not found.",reply_markup=back_dashboard_kb())
             return
         c.execute("UPDATE payment_requests SET network=? WHERE id=? AND owner_id=? AND status='pending'",(network,rid,q.from_user.id))
-        rate=v4.usdt_inr_rate(c)
         c.commit()
     finally:
         c.close()
@@ -634,10 +630,9 @@ async def network_callback(update,ctx):
         f"💳 <b>{network} {address_title}</b>\n━━━━━━━━━━━━━━━━━━\n\n"
         f"<b><i>Address:</i></b>\n\n<code>{address}</code>\n\n"
         f"<b>Amount:</b> {float(r['amount']):g} USDT\n"
-        f"<b>Rate:</b> 1 USDT = INR {rate:,.2f}\n\n"
         "<i>Send USDT only on the selected network. After payment, tap I HAVE DEPOSITED below. "
         "You may add the TXID first (optional), then upload your transaction screenshot. "
-        "Admin will verify the payment manually before crediting your wallet or activating your level.</i>",
+        "System will verify the payment manually before crediting your wallet or activating your level.</i>",
         reply_markup=kb,parse_mode="HTML")
 
 
@@ -710,7 +705,7 @@ async def menu_callback(update,ctx):
         await q.message.reply_text(
             f"<b>🚀 UPGRADE YOUR SHOP</b>\n━━━━━━━━━━━━━━━━━━\n"
             f"Current active level: <b>LEVEL {current_level}</b>\n"
-            "Select the next level you want to activate. Admin verifies the payment before the upgrade takes effect.",
+            "Select the next level you want to activate. System verifies the payment before the upgrade takes effect.",
             reply_markup=upgrade_level_kb(current_level),parse_mode="HTML")
         return
 
@@ -774,7 +769,7 @@ async def menu_callback(update,ctx):
                 if status=="rejected": body+=f"\n  Reason: {html.escape(str(r['admin_note'] or 'No reason provided'))}"
                 body+="\n"
         await q.message.reply_text(body,reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back to Dashboard",callback_data="m:dashboard")]]),parse_mode="HTML")
-    # Merchant confirms the transfer before the screenshot is accepted for Admin review.
+    # Merchant confirms the transfer before the screenshot is accepted for System review.
     elif action=="depositdone":
         rid=ctx.user_data.get("payment_request_id")
         if not rid or ctx.user_data.get("state")!="await_deposit_done":
@@ -795,8 +790,8 @@ async def menu_callback(update,ctx):
         await q.message.reply_text(
             "<b>📸 UPLOAD YOUR PAYMENT SCREENSHOT</b>\n━━━━━━━━━━━━━━━━━━\n"
             "Send a clear screenshot of your completed USDT transfer. "
-            "Your proof will be sent to Admin for manual verification. "
-            "Wallet deposits are credited and level upgrades are activated only after Admin approves the payment.",
+            "Your proof will be sent to System for manual verification. "
+            "Wallet deposits are credited and level upgrades are activated only after System approves the payment.",
             reply_markup=back_dashboard_kb(),parse_mode="HTML")
     elif action=="depositstart" or action in ("depositfund","deposit_fund","deposit-fund"):
         ctx.user_data["state"]="deposit_amount"
@@ -958,13 +953,7 @@ async def menu_callback(update,ctx):
               [InlineKeyboardButton(f"Buy #{r['id']} ×1",callback_data=f"rs:buy:{r['id']}:1")])
              for r in resale]+
             [[InlineKeyboardButton("⬅️ Dashboard",callback_data="m:dashboard")]]),parse_mode="HTML")
-        legacy_body="<b>LEGACY INR MARKETPLACE</b>\n<i>Separate from USDT resale listings</i>"
-        legacy_body+="\n\n".join(
-            f"#{r['id']} {html.escape(str(r['title']))}\nShop: {html.escape(str(r['shop_name']))}\n"
-            f"{html.escape(str(r['currency']))} {float(r['price']):g} | Stock: {r['stock']}\n"
-            f"<code>/buy {r['id']} QUANTITY</code>"
-            for r in rows) if rows else "\nNo INR products are published. Your USDT listings appear above."
-        await q.message.reply_text(legacy_body[:4000],reply_markup=back_dashboard_kb(),parse_mode="HTML")
+
     elif action=="products":
         central.resale_setup()
         c=v4.db()
@@ -979,7 +968,6 @@ async def menu_callback(update,ctx):
             level2_margin=c.execute(
                 "SELECT profit_min,profit_max FROM level_settings WHERE level=2"
             ).fetchone()
-            legacy=c.execute("SELECT id,title,price,currency,stock,active FROM products WHERE shop_id=? ORDER BY id DESC LIMIT 20",(s["id"],)).fetchall()
         finally: c.close()
         body="<b>📦 MY PRODUCTS & INVENTORY</b>\n━━━━━━━━━━━━━━━━━━\n"
         if rows:
@@ -1015,10 +1003,6 @@ async def menu_callback(update,ctx):
                 )
         else:
             body+="No central catalogue purchases recorded yet."
-        if legacy:
-            body+="\n<b>LEGACY INR PRODUCTS</b>\n"+"\n".join(
-                f"#{r['id']} {html.escape(str(r['title']))} — {html.escape(str(r['currency']))} {r['price']} | Stock {r['stock']}"
-                for r in legacy)
         await q.message.reply_text(body[:4000],reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🛍 MY LEVEL PRODUCTS / CATALOGUE",callback_data="m:level1")],
             [InlineKeyboardButton("⬅️ Back",callback_data="m:dashboard"),
@@ -1033,26 +1017,16 @@ async def menu_callback(update,ctx):
             parse_mode="HTML")
     elif action=="orders":
         c=v4.db()
-        rows=c.execute("SELECT id,product_id,quantity,total_amount,status FROM v4_orders WHERE buyer_shop_id=? OR seller_shop_id=? ORDER BY id DESC LIMIT 20",(s["id"],s["id"])).fetchall()
         central_rows=c.execute("""SELECT o.id,o.quantity,o.total_usdt,o.status,p.title FROM central_orders o
           JOIN central_catalog p ON p.id=o.catalog_id WHERE o.buyer_shop_id=? ORDER BY o.id DESC LIMIT 20""",(s["id"],)).fetchall()
         c.close()
-        seller_body="\n────────────────────\n".join(
-            f"<b>#{r['id']}  Product #{r['product_id']}</b>\n"
-            f"     Qty: <b>{r['quantity']}</b>    Total: <b>INR {r['total_amount']:.2f}</b>\n"
-            f"     Status: {'🟢' if r['status'] in ('delivered','completed') else '🔴' if r['status']=='rejected' else '🟡'} "
-            f"<b>{html.escape(str(r['status']).upper())}</b>"
-            for r in rows)
-        central_body="\n────────────────────\n".join(
-            f"<b>#{r['id']}  {html.escape(str(r['title']))}</b>\n"
-            f"     Qty: <b>{r['quantity']}</b>    Total: <b>{r['total_usdt']:g} USDT</b>\n"
-            f"     Status: {'🟢' if r['status'] in ('paid','completed','delivered') else '🔴' if r['status']=='rejected' else '🟡'} "
+        central_body="\\n────────────────────\\n".join(
+            f"<b>#{r['id']}  {html.escape(str(r['title']))}</b>\\n"
+            f"     Qty: <b>{r['quantity']}</b>    Total: <b>{r['total_usdt']:g} USDT</b>\\n"
+            f"     Status: {'🟢' if r['status'] in ('paid','completed','delivered','fulfilled') else '🔴' if r['status']=='rejected' else '🟡'} "
             f"<b>{html.escape(str(r['status']).upper())}</b>"
             for r in central_rows)
-        body=("<b>🧾 MY ORDERS</b>\n━━━━━━━━━━━━━━━━━━\n\n"
-              "<b>INR SELLER MARKETPLACE</b>\n\n"+(seller_body or "No INR orders.")+
-              "\n\n━━━━━━━━━━━━━━━━━━\n\n<b>USDT CATALOGUE / RESALE</b>\n\n"+
-              (central_body or "No USDT orders."))
+        body="<b>🧾 MY USDT ORDERS</b>\\n━━━━━━━━━━━━━━━━━━\\n"+(central_body or "No USDT orders.")
         await q.message.reply_text(body[:4000],reply_markup=back_dashboard_kb(),parse_mode="HTML")
     elif action=="history":
         c=v4.db()
@@ -1140,7 +1114,7 @@ async def menu_callback(update,ctx):
     elif action=="support":
         await q.message.reply_text(
             "<b>💬 SUPPORT</b>\n━━━━━━━━━━━━━━━━━━\n"
-            "For help with registration, payments, shop approval or account issues, contact the Shop in India administrator.",
+            "For help with registration, payments, shop approval or account issues, contact the Shop in India System.",
             reply_markup=back_dashboard_kb(),parse_mode="HTML")
 
 
@@ -1311,7 +1285,7 @@ async def send_due_level2_workflow_reminders(bot, now_dt=None):
     try:
         # Schedule only merchants who still have unsold inventory and have not
         # completed the 50-pair Level 2 cycle. This reminder goes to merchants,
-        # unlike the separate Admin-only shop-growth notification.
+        # unlike the separate System-only shop-growth notification.
         c.execute("""INSERT OR IGNORE INTO merchant_l2_workflow_reminders(shop_id,next_at)
             SELECT s.id,? FROM shops s
             LEFT JOIN merchant_pair_progress p ON p.shop_id=s.id
@@ -1384,7 +1358,7 @@ async def motivation_reminder_worker(app):
 async def start_motivation_reminder_worker(app):
     global _motivation_reminder_task, _pair_reset_task, _l2_workflow_reminder_task
     # Backfill merchants whose first withdrawal was already paid before this
-    # feature was deployed. Preserve Admin-stopped shops permanently.
+    # feature was deployed. Preserve System-stopped shops permanently.
     c=v4.db()
     try:
         due_at=_motivation_stamp(_motivation_now()+timedelta(hours=1))
@@ -1421,7 +1395,7 @@ async def stop_motivation_reminder_worker(app):
         await asyncio.gather(*(task for task in tasks if task),return_exceptions=True)
 
 async def withdrawal_review_callback(update,ctx):
-    """Apply Admin review, then show the same post-payout figures to Admin and merchant."""
+    """Apply System review, then show the same post-payout figures to System and merchant."""
     q=update.callback_query
     try:
         _,action,wid_text=q.data.split(":")
@@ -1462,7 +1436,7 @@ async def withdrawal_review_callback(update,ctx):
                         await ctx.bot.send_message(ADMIN_ID,
                             "<b>🎉 FIRST WITHDRAWAL COMPLETED — SHOP REMINDER ACTIVATED</b>\n━━━━━━━━━━━━━━━━━━\n"
                             f"Shop: <b>{html.escape(str(shop['shop_name']))}</b>\n"
-                            "Hourly Shop Growth reminders are now <b>ON</b>. These reminders are delivered to Admin only.",
+                            "Hourly Shop Growth reminders are now <b>ON</b>. These reminders are delivered to System only.",
                             parse_mode="HTML")
                     except Exception:
                         log.exception("Could not notify merchant that motivation reminders started")
@@ -1586,7 +1560,7 @@ async def text_handler(update,ctx):
                       (ADMIN_ID,row["owner_id"],"admin_shop_name_changed",f"{shop_number(rename_sid)}: {old_name} -> {new_name}",v4.now()))
             c.commit()
         except Exception:
-            c.rollback(); log.exception("Admin shop rename failed")
+            c.rollback(); log.exception("System shop rename failed")
             await update.message.reply_text("Shop name could not be changed. Please retry."); return
         finally: c.close()
         ctx.user_data.pop("admin_shop_rename_id",None)
@@ -1615,7 +1589,7 @@ async def text_handler(update,ctx):
                       (ADMIN_ID,row["owner_id"],"admin_shop_password_reset",f"{shop_number(reset_sid)}: password reset by admin",v4.now()))
             c.commit()
         except Exception:
-            c.rollback(); log.exception("Admin password reset failed")
+            c.rollback(); log.exception("System password reset failed")
             await update.message.reply_text("Password could not be reset. Please retry."); return
         finally: c.close()
         ctx.user_data.pop("admin_shop_password_id",None)
@@ -1899,7 +1873,7 @@ async def text_handler(update,ctx):
                     [InlineKeyboardButton("🔐 All Merchant Wallets",callback_data="adm:withdrawwallets")]]),
                 parse_mode="HTML")
         except Exception:
-            log.exception("Admin merchant withdrawal wallet notification failed")
+            log.exception("System merchant withdrawal wallet notification failed")
         return
     if state=="deposit_tx_hash":
         tx_hash=(update.message.text or "").strip()
@@ -1942,7 +1916,6 @@ async def text_handler(update,ctx):
         cur=c.execute("""INSERT INTO payment_requests(owner_id,shop_id,payment_type,level,amount,currency,network,status,created_at)
           VALUES(?,?,'wallet_deposit',0,?,'USDT','not_selected','pending',?)""",(update.effective_user.id,s["id"],amount,v4.now()))
         rid=cur.lastrowid
-        rate=v4.usdt_inr_rate(c)
         c.commit()
         c.close()
         ctx.user_data.update({"state":"await_deposit_done","payment_request_id":rid})
@@ -2012,14 +1985,14 @@ async def text_handler(update,ctx):
             f"Request: <code>#{wid}</code>\nAmount: <b>{amount:.6f} USDT</b>\n"
             "Network: <b>USDT TRC20</b>\n"
             f"Payout address: <code>{html.escape(address)}</code>\n"
-            "Status: <b>PENDING ADMIN REVIEW</b>",
+            "Status: <b>PENDING SYSTEM REVIEW</b>",
             reply_markup=back_dashboard_kb())
         wd_kb=InlineKeyboardMarkup([
             [InlineKeyboardButton("📋 COPY TRC20 ADDRESS",copy_text=CopyTextButton(text=address))],
             [InlineKeyboardButton("✅ MARK PAID",callback_data=f"wd:paid:{wid}"),
              InlineKeyboardButton("❌ REJECT",callback_data=f"wd:reject:{wid}")],
             [InlineKeyboardButton("💸 All Pending Withdrawals",callback_data="adm:withdrawals"),
-             InlineKeyboardButton("🏠 Admin Panel",callback_data="adm:home")]
+             InlineKeyboardButton("🏠 System Panel",callback_data="adm:home")]
         ])
         await ctx.bot.send_message(ADMIN_ID,
             f"<b>💸 USDT WITHDRAWAL REQUEST #{wid}</b>\n━━━━━━━━━━━━━━━━━━\n"
@@ -2112,7 +2085,7 @@ async def show_admin_shop(update,ctx,shop_id,edit=False):
     kb_rows.extend([
         [InlineKeyboardButton("🔎 Search Shop ID",callback_data="admshop:search"),
          InlineKeyboardButton("⬅️ All Shops",callback_data="adm:shops")],
-        [InlineKeyboardButton("🏠 Admin Panel",callback_data="adm:home")]
+        [InlineKeyboardButton("🏠 System Panel",callback_data="adm:home")]
     ])
     kb=InlineKeyboardMarkup(kb_rows)
     await update.effective_message.reply_text(body,reply_markup=kb,parse_mode="HTML")
@@ -2120,7 +2093,7 @@ async def show_admin_shop(update,ctx,shop_id,edit=False):
 async def admin_shop_callback(update,ctx):
     q=update.callback_query
     if not is_admin(q.from_user.id):
-        await q.answer("Admin only",show_alert=True); return
+        await q.answer("System only",show_alert=True); return
     await q.answer()
     parts=q.data.split(":")
     action=parts[1]
@@ -2196,7 +2169,7 @@ async def admin_shop_callback(update,ctx):
             c.commit()
         except Exception:
             c.rollback()
-            log.exception("Admin extra-item approval failed")
+            log.exception("System extra-item approval failed")
             await q.message.reply_text("Approval failed safely. No extra units or product slots were added.")
             return
         finally:
@@ -2251,7 +2224,7 @@ async def admin_shop_callback(update,ctx):
                          motivation_reminder_next_at=NULL WHERE id=? AND motivation_reminder_status='on'""",(sid,))
             c.execute("INSERT INTO admin_audit(admin_id,owner_id,action,details,created_at) VALUES(?,?,?,?,?)",
                       (ADMIN_ID,row["owner_id"],"motivation_reminder_stopped",
-                       f"{shop_number(sid)} ({row['shop_name']}): Admin stopped hourly motivation reminders",v4.now()))
+                       f"{shop_number(sid)} ({row['shop_name']}): System stopped hourly motivation reminders",v4.now()))
             c.commit()
         except Exception:
             c.rollback(); log.exception("Could not stop motivation reminders")
@@ -2280,7 +2253,7 @@ async def admin_shop_callback(update,ctx):
         if not row:
             await q.message.reply_text("Shop ID not found."); return
         previous=str(row["control_status"] or "active")
-        note=f"Admin set shop control status to {control}"
+        note=f"System set shop control status to {control}"
         c.execute("UPDATE shops SET control_status=?,control_note=? WHERE id=?",(control,note,sid))
         c.execute("INSERT INTO admin_audit(admin_id,owner_id,action,details,created_at) VALUES(?,?,?,?,?)",
                   (ADMIN_ID,row["owner_id"],f"shop_{control}",f"{shop_number(sid)} ({row['shop_name']}): {previous} -> {control}",v4.now()))
@@ -2302,7 +2275,7 @@ async def admin_shop_callback(update,ctx):
 
 async def admin_panel(update,ctx):
     if not is_admin(update.effective_user.id):
-        await update.message.reply_text("Admin only."); return
+        await update.message.reply_text("System only."); return
     await send_admin_panel(ctx.bot, update.effective_chat.id)
 
 async def send_admin_panel(bot, chat_id):
@@ -2345,7 +2318,7 @@ async def send_admin_panel(bot, chat_id):
 async def admin_panel_callback(update,ctx):
     q=update.callback_query
     if not is_admin(q.from_user.id):
-        await q.answer("Admin only",show_alert=True); return
+        await q.answer("System only",show_alert=True); return
     await q.answer()
     action=q.data.split(":",1)[1]
     if action=="audit":
@@ -2375,7 +2348,7 @@ async def admin_panel_callback(update,ctx):
               f"<code>/owner {r['owner_id']}</code>"
               for r in rows) if rows else "No owner shops found."
             await q.message.reply_text(owner_body[:4000],
-              reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]),parse_mode="HTML")
+              reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ System Panel",callback_data="adm:home")]]),parse_mode="HTML")
         elif action=="shops":
             rows=c.execute("SELECT id,shop_name,owner_id,status,level,control_status FROM shops ORDER BY id DESC LIMIT 10").fetchall()
             shops_body="<b>🏪 ALL SHOPS — MANAGEMENT</b>\n━━━━━━━━━━━━━━━━━━\nSearch by unique Shop ID or select a recent shop below.\n\n"
@@ -2384,17 +2357,17 @@ async def admin_panel_callback(update,ctx):
               for r in rows) if rows else "No shops registered."
             buttons=[[InlineKeyboardButton(f"{shop_number(r['id'])} • {str(r['shop_name'])[:20]}",callback_data=f"admshop:view:{r['id']}")] for r in rows]
             buttons.insert(0,[InlineKeyboardButton("🔎 SEARCH BY SHOP ID",callback_data="admshop:search")])
-            buttons.append([InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")])
+            buttons.append([InlineKeyboardButton("⬅️ System Panel",callback_data="adm:home")])
             await q.message.reply_text(shops_body[:3500],reply_markup=InlineKeyboardMarkup(buttons),parse_mode="HTML")
         elif action in ("payments","levelpayments"):
             payment_type="wallet_deposit" if action=="payments" else "level_activation"
             section_title="PENDING DEPOSITS" if action=="payments" else "PENDING LEVEL PAYMENTS"
             rows=c.execute("SELECT id,owner_id,payment_type,amount,currency,network,status,screenshot_file_id,shop_id,transaction_hash FROM payment_requests WHERE status='pending' AND payment_type=? ORDER BY id DESC LIMIT 25",(payment_type,)).fetchall()
             await q.message.reply_text(f"<b>💳 {section_title}</b>\n━━━━━━━━━━━━━━━━━━\nReview every request separately. Verify the transaction before approving.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]),parse_mode="HTML")
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ System Panel",callback_data="adm:home")]]),parse_mode="HTML")
             if not rows:
                 await q.message.reply_text(f"No pending { 'deposits' if action=='payments' else 'level payments' }.",
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]))
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ System Panel",callback_data="adm:home")]]))
             for r in rows:
                 caption=(f"<b>💳 PAYMENT REQUEST #{r['id']}</b>\n━━━━━━━━━━━━━━━━━━\n"
                          f"Owner: <code>{r['owner_id']}</code> • Shop: <code>{r['shop_id']}</code>\n"
@@ -2402,12 +2375,12 @@ async def admin_panel_callback(update,ctx):
                          f"Amount: <b>{float(r['amount']):g} {html.escape(str(r['currency']))}</b>\n"
                          f"Network: {html.escape(str(r['network'] or 'Not selected'))}\nTransaction Hash: <code>{html.escape(str(r['transaction_hash'] or 'Not provided'))}</code>\n🟡 <b>STATUS: PENDING</b>")
                 back_label="⬅️ Deposits" if action=="payments" else "⬅️ Level Payments"
-                kb=InlineKeyboardMarkup([[InlineKeyboardButton("✅ APPROVE",callback_data=f"pay:approve:{r['id']}"),InlineKeyboardButton("❌ REJECT",callback_data=f"pay:reject:{r['id']}")],[InlineKeyboardButton(back_label,callback_data=f"adm:{action}"),InlineKeyboardButton("🏠 Admin Panel",callback_data="adm:home")]])
+                kb=InlineKeyboardMarkup([[InlineKeyboardButton("✅ APPROVE",callback_data=f"pay:approve:{r['id']}"),InlineKeyboardButton("❌ REJECT",callback_data=f"pay:reject:{r['id']}")],[InlineKeyboardButton(back_label,callback_data=f"adm:{action}"),InlineKeyboardButton("🏠 System Panel",callback_data="adm:home")]])
                 if r['screenshot_file_id']:
                     await ctx.bot.send_photo(q.message.chat_id,r['screenshot_file_id'],caption=caption,reply_markup=kb,parse_mode="HTML")
                 else:
                     await q.message.reply_text(caption+"\n⚠️ No screenshot attached.",reply_markup=kb,parse_mode="HTML")
-            await q.message.reply_text("⬅️ Back options:",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]))
+            await q.message.reply_text("⬅️ Back options:",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ System Panel",callback_data="adm:home")]]))
         elif action=="withdrawwallets":
             rows=c.execute("""SELECT w.owner_id,w.network,w.address,w.updated_at,
                 s.id AS shop_id,s.shop_name
@@ -2421,7 +2394,7 @@ async def admin_panel_callback(update,ctx):
                 parse_mode="HTML")
             if not rows:
                 await q.message.reply_text("No merchants have saved a TRC20 payout address yet.",
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]))
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ System Panel",callback_data="adm:home")]]))
             for r in rows:
                 address=str(r["address"] or "")
                 caption=(f"<b>🏪 {html.escape(str(r['shop_name'] or 'Shop not found'))}</b>\n"
@@ -2433,7 +2406,7 @@ async def admin_panel_callback(update,ctx):
                 kb=InlineKeyboardMarkup([
                     [InlineKeyboardButton("📋 COPY TRC20 ADDRESS",copy_text=CopyTextButton(text=address))],
                     [InlineKeyboardButton("⬅️ Merchant Wallets",callback_data="adm:withdrawwallets"),
-                     InlineKeyboardButton("🏠 Admin Panel",callback_data="adm:home")]
+                     InlineKeyboardButton("🏠 System Panel",callback_data="adm:home")]
                 ])
                 await q.message.reply_text(caption,reply_markup=kb,parse_mode="HTML")
         elif action=="withdrawals":
@@ -2458,17 +2431,17 @@ async def admin_panel_callback(update,ctx):
                     [InlineKeyboardButton("✅ MARK PAID",callback_data=f"wd:paid:{r['id']}"),
                      InlineKeyboardButton("❌ REJECT",callback_data=f"wd:reject:{r['id']}")],
                     [InlineKeyboardButton("⬅️ Withdrawals",callback_data="adm:withdrawals"),
-                     InlineKeyboardButton("🏠 Admin Panel",callback_data="adm:home")]
+                     InlineKeyboardButton("🏠 System Panel",callback_data="adm:home")]
                 ])
                 await q.message.reply_text(caption,reply_markup=kb,parse_mode="HTML")
-            await q.message.reply_text("⬅️ Back options:",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]))
+            await q.message.reply_text("⬅️ Back options:",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ System Panel",callback_data="adm:home")]]))
         elif action=="products":
             # Replace the old plain-text Products by Level summary with the level-picker catalogue UI.
             await central.admin_catalog(update,ctx)
             return
         elif action=="orders":
             await q.message.reply_text("📦 ORDER MANAGEMENT\nUse /orders to view pending orders and Mark Delivered controls.\nUse /orderdone ORDER_ID or /orderreject ORDER_ID REASON when appropriate.",
-              reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]))
+              reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ System Panel",callback_data="adm:home")]]))
         elif action=="levels":
             level_rows=c.execute("SELECT level,activation_usdt,product_target,profit_min,profit_max FROM level_settings ORDER BY level").fetchall()
             body="🎚 LEVEL SETTINGS\n\n"+("\n".join(
@@ -2476,21 +2449,21 @@ async def admin_panel_callback(update,ctx):
               for r in level_rows) if level_rows else "No level settings found.")
             body+="\n\nEdit: /setlevel LEVEL ACTIVATION_USDT PRODUCT_TARGET PROFIT_MIN PROFIT_MAX"
             await q.message.reply_text(body,
-              reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]))
+              reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ System Panel",callback_data="adm:home")]]))
         elif action=="settings":
-            await q.message.reply_text("⚙️ ADMIN COMMANDS\n/addproduct SHOP_ID PRICE STOCK LEVEL Title | Description\n/setprice PRODUCT_ID INR_PRICE\n/setstock PRODUCT_ID QTY\n/setproductlevel PRODUCT_ID LEVEL\n/setfx INR_PER_USDT\n/setfee PERCENT\n/setlevel LEVEL ACTIVATION_USDT PRODUCT_TARGET PROFIT_MIN PROFIT_MAX\n/orders\n/owner OWNER_ID\n/shopaudit SHOP_ID\n/verifywallet OWNER_ID NETWORK ADDRESS",
-              reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]))
+            await q.message.reply_text("⚙️ SYSTEM COMMANDS\n/addproduct SHOP_ID PRICE STOCK LEVEL Title | Description\n/setprice PRODUCT_ID INR_PRICE\n/setstock PRODUCT_ID QTY\n/setproductlevel PRODUCT_ID LEVEL\n/setfx INR_PER_USDT\n/setfee PERCENT\n/setlevel LEVEL ACTIVATION_USDT PRODUCT_TARGET PROFIT_MIN PROFIT_MAX\n/orders\n/owner OWNER_ID\n/shopaudit SHOP_ID\n/verifywallet OWNER_ID NETWORK ADDRESS",
+              reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ System Panel",callback_data="adm:home")]]))
     except Exception:
-        log.exception("Admin panel section failed")
+        log.exception("System panel section failed")
         await q.message.reply_text("Could not load this section. Check database migration and logs.",
-          reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]))
+          reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ System Panel",callback_data="adm:home")]]))
     finally:
         c.close()
 
 async def audit_callback(update,ctx):
     q=update.callback_query
     if not is_admin(q.from_user.id):
-        await q.answer("Admin only",show_alert=True); return
+        await q.answer("System only",show_alert=True); return
     await q.answer()
     try:
         _,category,page=q.data.split(":")
@@ -2501,7 +2474,7 @@ async def audit_callback(update,ctx):
 
 async def admin_orders(update,ctx):
     if not is_admin(update.effective_user.id):
-        await update.message.reply_text("Admin only.")
+        await update.message.reply_text("System only.")
         return
     c=v4.db()
     rows=c.execute("""SELECT o.id,o.product_id,o.quantity,o.total_amount,o.status,
@@ -2530,7 +2503,7 @@ async def admin_orders(update,ctx):
 async def delivered_callback(update,ctx):
     q=update.callback_query
     if not is_admin(q.from_user.id):
-        await q.answer("Admin only",show_alert=True)
+        await q.answer("System only",show_alert=True)
         return
     await q.answer()
     try:
@@ -2581,7 +2554,7 @@ async def delivered_callback(update,ctx):
 
 async def addproduct(update,ctx):
     if not is_admin(update.effective_user.id):
-        await update.message.reply_text("Admin only."); return
+        await update.message.reply_text("System only."); return
     raw=" ".join(ctx.args)
     # Syntax: /addproduct SHOP_ID PRICE STOCK LEVEL Title | Description
     try:
@@ -2612,21 +2585,21 @@ async def addproduct(update,ctx):
     cur=c.execute(f"INSERT INTO products ({','.join(fields)}) VALUES ({marks})",vals)
     pid=cur.lastrowid
     c.commit(); c.close()
-    await update.message.reply_text(f"Product published by Admin. ID #{pid}\n{title}\nINR {price:,.2f} | Stock {stock} | Required level L{level}")
-    try: await ctx.bot.send_message(shop["owner_id"],f"Admin added a marketplace product to your shop: #{pid} {title}")
+    await update.message.reply_text(f"Product published by System. ID #{pid}\n{title}\nINR {price:,.2f} | Stock {stock} | Required level L{level}")
+    try: await ctx.bot.send_message(shop["owner_id"],f"System added a marketplace product to your shop: #{pid} {title}")
     except Exception: pass
 
 async def support_command(update,ctx):
     await update.message.reply_text(
         "💬 SHOP IN INDIA SUPPORT\n\n"
-        "Registration, login, shop approval, deposits, withdrawals ya account issue ke liye administrator se rabta karein."
+        "Registration, login, shop approval, deposits, withdrawals ya account issue ke liye System se rabta karein."
     )
 
 async def help_command(update,ctx):
     if is_admin(update.effective_user.id):
         body = (
-            "🛠 ADMIN COMMANDS\n"
-            "/admin — Admin control panel\n"
+            "🛠 SYSTEM COMMANDS\n"
+            "/admin — System control panel\n"
             "/orders — Pending orders\n"
             "/products — Product list\n"
             "/addproduct — Add product\n"
@@ -2646,7 +2619,7 @@ async def help_command(update,ctx):
             "/levels — View shop levels\n"
             "/buy PRODUCT_ID QUANTITY — Place a product order\n"
             "/verifywallet — Wallet verification help\n"
-            "/support — Contact administrator\n"
+            "/support — Contact System\n"
             "/help — Show this help"
         )
     await update.message.reply_text(body)
@@ -2656,7 +2629,7 @@ async def dashboard(update,ctx):
         await send_admin_panel(ctx.bot,update.effective_chat.id); return
     s=v4.shop_for(update.effective_user.id)
     if not s: await start(update,ctx)
-    elif s["status"]!="approved": await update.message.reply_text("Awaiting Admin approval.")
+    elif s["status"]!="approved": await update.message.reply_text("Awaiting System approval.")
     elif int(s["level"])<1: await levels(ctx.bot,update.effective_user.id)
     else: await send_shop_profile(ctx.bot,update.effective_chat.id,update.effective_user.id,
         f"🏪 <b>{html.escape(str(s['shop_name']))}</b> | L{s['level']}",reply_markup=owner_kb())
@@ -2678,9 +2651,9 @@ def main():
          .post_shutdown(stop_motivation_reminder_worker).build())
     app.add_handler(CommandHandler("start",start)); app.add_handler(CommandHandler("dashboard",dashboard))
     for cmd,fn in [("help",help_command),("support",support_command),("admin",admin_panel),("verifywallet",v3.verify_wallet),
-      ("buy",v4.buy),("addproduct",addproduct),("setproductlevel",v4.setproductlevel),("setlevel",v4.setlevel),("setfx",v4.setfx),("setfee",v4.setfee),
+("addproduct",addproduct),("setproductlevel",v4.setproductlevel),("setlevel",v4.setlevel),("setfee",v4.setfee),
       ("products",v4.products),("setprice",lambda u,c:v4.edit_product(u,c,"setprice")),("setstock",lambda u,c:v4.edit_product(u,c,"setstock")),
-      ("orders",admin_orders),("orderdone",v4.orderdone),("orderreject",v4.orderreject),("myproducts",v4.myproducts),("myorders",v4.myorders),("history",v4.history),("levels",v4.levels),("centralcatalog",central.admin_catalog),("centralprice",central.set_price),("centralstock",central.set_stock),("centralactive",central.set_active),("centralorders",central.orders),("centralbuy",central.buy)]:
+      ("orders",central.orders),("myproducts",v4.myproducts),("myorders",v4.myorders),("history",v4.history),("levels",v4.levels),("centralcatalog",central.admin_catalog),("centralprice",central.set_price),("centralstock",central.set_stock),("centralactive",central.set_active),("centralorders",central.orders),("centralbuy",central.buy)]:
         app.add_handler(CommandHandler(cmd,fn))
     app.add_handler(CallbackQueryHandler(approved_callback,pattern=r"^(approve|reject):[0-9]+$"))
     app.add_handler(CallbackQueryHandler(level_callback,pattern=r"^lv:[1-5]$"))

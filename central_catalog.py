@@ -10,6 +10,18 @@ import level2.products as level2_products
 import mobile_phones.products as mobile_phone_products
 
 log = logging.getLogger("central_catalog")
+
+async def _safe_callback_answer(query, text=None, show_alert=False):
+    """Ignore expired Telegram callback IDs without masking other failures."""
+    try:
+        await query.answer(text=text, show_alert=show_alert)
+    except Exception as exc:
+        message=str(exc).lower()
+        if "query is too old" in message or "query id is invalid" in message:
+            log.info("Ignoring expired Telegram callback query")
+            return
+        raise
+
 CATALOGUE_PAGE_SIZE=5
 PRODUCTS = [
 ("oxidised_jhumka","Oxidised Jhumka Earrings","Traditional and stylish earrings for women, perfect for daily wear and parties.","images/01_jhumka.jpg"),
@@ -546,15 +558,15 @@ async def orders(update,ctx):
       WHERE l.status='active' AND l.remaining_quantity>0
       ORDER BY l.id DESC LIMIT 50""").fetchall()
     c.close()
-    orders_text="<b>📦 MANAGE CENTRAL ORDERS</b>\n━━━━━━━━━━━━━━━━━━\n"
-    orders_text+=("<i>Original catalogue orders are shown below. Merchant-listed stock is available for direct System approval with an automatic 2% bonus on the listed amount.</i>\n\n"+
-      "\n\n".join(
-        f"<b>#{r['id']} {html.escape(str(r['title']))} ×{r['quantity']}</b>\n"
-        f"Owner: <code>{r['buyer_owner_id']}</code> • Shop: #{r['buyer_shop_id']}\n"
-        f"Amount: <b>{r['total_usdt']:g} USDT</b> • {'🟢' if r['status']=='fulfilled' else '🔴' if r['status']=='refunded' else '🟡'} {html.escape(str(r['status']).upper())}\n"
-        f"<code>{html.escape(str(r['created_at']))}</code>" for r in rows)
-      if rows else "No original catalogue orders.")
-    await update.effective_message.reply_text(orders_text[:3900],parse_mode="HTML")
+    # Keep the overview short. Truncating a long HTML string at an arbitrary
+    # character can cut through <code>/<b> tags and makes Telegram reject it.
+    orders_text=(
+        "<b>📦 MANAGE CENTRAL ORDERS</b>\n━━━━━━━━━━━━━━━━━━\n"
+        "<i>Original catalogue orders are shown below. Merchant-listed stock is available "
+        "for direct System approval with an automatic 2% bonus on the listed amount.</i>\n"
+        f"Original catalogue orders: <b>{len(rows)}</b>"
+    )
+    await update.effective_message.reply_text(orders_text,parse_mode="HTML")
     for r in rows:
         buttons=[]
         if r["status"]=="paid":
@@ -564,8 +576,12 @@ async def orders(update,ctx):
         buttons.append([InlineKeyboardButton("⬅️ Central Catalogue",callback_data="adm:central"),
                         InlineKeyboardButton("🏠 System Control Center",callback_data="adm:home")])
         await update.effective_message.reply_text(
-            f"Central order #{r['id']} — {r['status'].upper()}",
-            reply_markup=InlineKeyboardMarkup(buttons))
+            f"<b>Central order #{r['id']}</b> — {html.escape(str(r['status']).upper())}\n"
+            f"{html.escape(str(r['title']))} × {int(r['quantity'])}\n"
+            f"Owner: <code>{int(r['buyer_owner_id'])}</code> • Shop: #{int(r['buyer_shop_id'])}\n"
+            f"Amount: <b>{float(r['total_usdt']):g} USDT</b>\n"
+            f"Created: <code>{html.escape(str(r['created_at']))}</code>",
+            reply_markup=InlineKeyboardMarkup(buttons),parse_mode="HTML")
     await update.effective_message.reply_text(
         "<b>🏷️ MERCHANT-LISTED ORDERS</b>\nListed amount + 2% automatic bonus. Approve to purchase all available quantity.",
         parse_mode="HTML")
@@ -624,7 +640,7 @@ async def admin_callback(update,ctx):
     q=update.callback_query
     if not v4.admin(q.from_user.id):
         await q.answer("System only",show_alert=True); return
-    await q.answer()
+    await _safe_callback_answer(q)
     parts=q.data.split(":")
     action=parts[1]
     if action=="orders":

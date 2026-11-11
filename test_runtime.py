@@ -817,6 +817,57 @@ def test_level2_catalogue_and_purchase_flow():
 
 
 def test_admin_resale_flow(listing_id, inventory_id):
+    # Create a second active listing so the automatic 2% System approval can be
+    # tested independently from the existing manual PRICE QUANTITY workflow.
+    c=v4.db()
+    base_listing=c.execute("SELECT * FROM resale_listings WHERE id=?",(listing_id,)).fetchone()
+    base_inventory=c.execute("SELECT * FROM central_inventory WHERE id=?",(inventory_id,)).fetchone()
+    require(base_listing is not None and base_inventory is not None,"Resale fixture is missing")
+    c.execute("""INSERT INTO central_inventory
+        (owner_id,shop_id,catalog_id,order_id,quantity,remaining_quantity,unit_cost_usdt,status,created_at)
+        VALUES(?,?,?,?,?,?,?,?,?)""",
+        (base_inventory["owner_id"],base_inventory["shop_id"],base_inventory["catalog_id"],
+         9000000+int(inventory_id),1,1,base_inventory["unit_cost_usdt"],"owned",v4.now()))
+    auto_inventory_id=c.execute("SELECT last_insert_rowid()").fetchone()[0]
+    c.execute("""INSERT INTO resale_listings
+        (inventory_id,owner_id,shop_id,catalog_id,quantity,remaining_quantity,unit_cost_usdt,ask_price_usdt,status,created_at)
+        VALUES(?,?,?,?,1,1,?,?,'active',?)""",
+        (auto_inventory_id,base_listing["owner_id"],base_listing["shop_id"],base_listing["catalog_id"],
+         base_listing["unit_cost_usdt"],base_listing["ask_price_usdt"],v4.now()))
+    auto_listing_id=c.execute("SELECT last_insert_rowid()").fetchone()[0]
+    c.commit()
+    c.close()
+
+    auto_ctx=context()
+    orders_update,orders_message,_=callback_update(999999,"cc:orders")
+    asyncio.run(cc.admin_callback(orders_update,auto_ctx))
+    auto_buttons=[cb for reply in orders_message.replies for cb in callback_data(reply)]
+    require(f"cc:approve_listing:{auto_listing_id}" in auto_buttons,
+            "Manage Central Orders did not show direct System approval for merchant listings")
+    auto_update,auto_message,_=callback_update(999999,f"cc:approve_listing:{auto_listing_id}")
+    asyncio.run(cc.admin_callback(auto_update,auto_ctx))
+    require(any("2% bonus" in reply["text"] and "MERCHANT LISTING APPROVED" in reply["text"]
+                for reply in auto_message.replies),
+            "Automatic merchant listing approval did not confirm the 2% bonus")
+    c=v4.db()
+    auto_order=c.execute("SELECT * FROM admin_resale_orders WHERE listing_id=?",(auto_listing_id,)).fetchone()
+    auto_listing=c.execute("SELECT status,remaining_quantity FROM resale_listings WHERE id=?",(auto_listing_id,)).fetchone()
+    auto_credit=c.execute("""SELECT amount FROM ledger WHERE transaction_id=? AND owner_id=?
+        AND entry_type='resale_sale_credit'""",(auto_order["id"],base_listing["owner_id"])).fetchone()
+    expected_unit=round(float(base_listing["ask_price_usdt"])*1.02,6)
+    require(auto_order is not None and abs(float(auto_order["unit_price_usdt"])-expected_unit)<1e-8,
+            "System approval did not add exactly 2% to merchant listed price")
+    require(abs(float(auto_order["total_usdt"])-expected_unit)<1e-8 and
+            abs(float(auto_credit["amount"])-expected_unit)<1e-8,
+            "System approval did not credit the merchant the listed amount plus 2%")
+    require(auto_listing["status"]=="sold" and int(auto_listing["remaining_quantity"])==0,
+            "System approval did not close the merchant listing")
+    require(int(c.execute("SELECT remaining_quantity FROM central_inventory WHERE id=?",
+                          (auto_inventory_id,)).fetchone()[0])==0,
+            "System approval did not reconcile merchant inventory")
+    c.close()
+    print("PASS: Manage Central Orders auto-approves merchant listings and credits listed amount plus 2%")
+
     admin_ctx = context()
     update, message, query = callback_update(999999, "adm:resale")
     asyncio.run(v5.admin_panel_callback(update, admin_ctx))

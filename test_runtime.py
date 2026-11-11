@@ -393,8 +393,8 @@ def test_owner_wallet_and_inventory_design():
             "My Products heading is missing")
     require("Available quantity: <b>2</b>" in inventory["text"],
             "Available inventory quantity is missing")
-    require("💚 Expected margin: <b>+0.8 USDT / item</b>" in inventory["text"],
-            "Expected profit margin is missing from inventory")
+    require("Resale price: <b>3.3 USDT / item</b> | Margin: <b>32.00%</b>" in inventory["text"],
+            "Actual Level 2 resale price and margin are missing from inventory")
     require(inventory["kwargs"].get("parse_mode") == "HTML",
             "My Products is not using Telegram HTML")
     print("PASS: Owner wallet and My Products screens use readable Telegram HTML with profit status")
@@ -406,13 +406,14 @@ def test_list_stock_profit_screen():
     require(len(message.replies) >= 1, "List My Stock screen did not render")
     screen = message.replies[0]["text"]
     require("Your cost: 2.5 USDT / item" in screen, "List My Stock does not show unit cost")
-    require("Resale price: 3.3 USDT / item" in screen, "List My Stock does not show resale price")
-    require("Expected profit: +0.8 USDT / sold item" in screen,
-            "List My Stock does not show expected profit per item")
-    require("Listed stock potential: <b>+1.6 USDT</b>" in screen,
-            "List My Stock does not show total potential profit for active listings")
-    require("Free stock potential: <b>+0 USDT</b>" in screen,
-            "List My Stock does not show profit available from unlisted stock")
+    require("Resale margin: 2%–6.5% (random per Level 2 listing)" in screen,
+            "List My Stock does not show the configured Level 2 resale margin range")
+    require("Expected profit: +0.05 to +0.1625 USDT / sold item" in screen,
+            "List My Stock does not show the Level 2 expected profit range")
+    require("Listed stock potential: <b>+0.1 to +0.325 USDT</b>" in screen,
+            "List My Stock does not show total potential Level 2 profit for active listings")
+    require("Free stock potential: <b>+0 to +0 USDT</b>" in screen,
+            "List My Stock does not show Level 2 profit available from unlisted stock")
     require("Profit is credited after a sale is completed" in screen,
             "Expected profit is not clearly distinguished from realized profit")
     require(message.replies[0]["kwargs"].get("parse_mode") == "HTML",

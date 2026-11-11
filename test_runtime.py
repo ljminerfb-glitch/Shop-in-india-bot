@@ -422,6 +422,11 @@ def test_list_stock_profit_screen():
 
 
 def test_seller_market_screen(listing_id):
+    # The listing created above is Level 2; use a Level 2 buyer so it is eligible.
+    c=v4.db()
+    c.execute("UPDATE shops SET level=2 WHERE owner_id=202")
+    c.commit()
+    c.close()
     update, message, query = callback_update(202, "m:sellermarket")
     market_ctx=context()
     asyncio.run(v5.menu_callback(update, market_ctx))

@@ -1225,7 +1225,7 @@ async def resale_callback(update,ctx):
         await q.message.reply_text(
             f"✍️ Enter the rejection reason for resale listing #{lid}. "
             "The seller will receive this reason. Type CANCEL to stop.")
-            return
+        return
     if action=="review":
         if not v4.admin(q.from_user.id): await safe_callback_answer(q, "System only",show_alert=True); return
         lid=int(parts[2]); c=v4.db()

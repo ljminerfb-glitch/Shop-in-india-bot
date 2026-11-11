@@ -17,6 +17,18 @@ from telegram.ext import (
 
 TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+
+def is_admin(uid):
+    try:
+        uid=int(uid)
+    except (TypeError,ValueError):
+        return False
+    configured={ADMIN_ID} if ADMIN_ID else set()
+    for raw_id in os.getenv("ADMIN_IDS","").split(","):
+        raw_id=raw_id.strip()
+        if raw_id.isdigit() and int(raw_id)>0:
+            configured.add(int(raw_id))
+    return uid in configured
 DB = "shop_in_india.db"
 
 logging.basicConfig(level=logging.INFO)
@@ -336,7 +348,7 @@ async def approval(update, context):
     query = update.callback_query
     await query.answer()
 
-    if query.from_user.id != ADMIN_ID:
+    if not is_admin(query.from_user.id):
         await query.edit_message_text("⛔ Admin access only.")
         return
 
@@ -532,7 +544,7 @@ async def profile(update, context):
     )
 
 async def verify_wallet(update, context):
-    if update.effective_user.id != ADMIN_ID:
+    if not is_admin(update.effective_user.id):
         await update.message.reply_text("Admin access only.")
         return
 
@@ -580,7 +592,7 @@ async def verify_wallet(update, context):
 
 
 async def admin(update, context):
-    if update.effective_user.id != ADMIN_ID:
+    if not is_admin(update.effective_user.id):
         await update.message.reply_text("Admin access only.")
         return
 
@@ -759,7 +771,7 @@ async def save_suggestion_price(update, context):
 async def product_review(update, context):
     query = update.callback_query
     await query.answer()
-    if query.from_user.id != ADMIN_ID:
+    if not is_admin(query.from_user.id):
         await query.edit_message_text("Admin access only.")
         return
 
@@ -825,7 +837,7 @@ async def reject_product_suggestion_with_reason(update,context,reason):
 
 
 async def admin_product_price(update, context):
-    if update.effective_user.id != ADMIN_ID:
+    if not is_admin(update.effective_user.id):
         context.user_data.pop("state", None)
         return
     raw = update.message.text.strip()
@@ -842,7 +854,7 @@ async def admin_product_price(update, context):
 
 
 async def admin_product_stock(update, context):
-    if update.effective_user.id != ADMIN_ID:
+    if not is_admin(update.effective_user.id):
         context.user_data.pop("state", None)
         return
     try:

@@ -113,6 +113,34 @@ def _pair_reset_timestamp(reached_at, timezone_name):
     return local_reset.astimezone(timezone.utc).isoformat(timespec="seconds")
 
 
+def ensure_pair_progress(c, shop_id, owner_id, timezone_name=None, exclude_sold_quantity=0):
+    """Create a cycle row once, carrying forward legacy completed sales safely."""
+    row=c.execute("SELECT completed_count FROM merchant_pair_progress WHERE shop_id=?",
+                  (int(shop_id),)).fetchone()
+    if row:
+        return row
+    legacy=c.execute("""SELECT COALESCE(SUM(
+        CASE WHEN status<>'refunded' THEN MAX(quantity-remaining_quantity,0) ELSE 0 END),0)
+        FROM central_inventory WHERE shop_id=? AND owner_id=?""",
+        (int(shop_id),int(owner_id))).fetchone()[0]
+    previous=max(0,int(legacy or 0)-max(0,int(exclude_sold_quantity or 0)))
+    count=min(50,previous)
+    now=_pair_utc_now()
+    reached_at=now if count>=50 else None
+    reset_at=None
+    if reached_at and timezone_name:
+        try:
+            reset_at=_pair_reset_timestamp(reached_at,timezone_name)
+        except Exception:
+            log.exception("Could not schedule legacy pair progress for shop %s",shop_id)
+    c.execute("""INSERT OR IGNORE INTO merchant_pair_progress
+        (shop_id,owner_id,completed_count,reached_at,reset_at,cycle_started_at,updated_at)
+        VALUES(?,?,?,?,?,?,?)""",
+        (int(shop_id),int(owner_id),count,reached_at,reset_at,now,now))
+    return c.execute("SELECT completed_count FROM merchant_pair_progress WHERE shop_id=?",
+                     (int(shop_id),)).fetchone()
+
+
 def record_completed_pairs(c, shop_id, owner_id, quantity, source_type, source_order_id):
     """Record successfully settled resale units once, inside the sale transaction."""
     qty=max(0,int(quantity))
@@ -128,6 +156,7 @@ def record_completed_pairs(c, shop_id, owner_id, quantity, source_type, source_o
     shop=c.execute("SELECT location_timezone FROM shops WHERE id=? AND owner_id=?",
                     (int(shop_id),int(owner_id))).fetchone()
     timezone_name=shop["location_timezone"] if shop else None
+    ensure_pair_progress(c,int(shop_id),int(owner_id),timezone_name,exclude_sold_quantity=qty)
     row=c.execute("SELECT completed_count,reached_at FROM merchant_pair_progress WHERE shop_id=?",
                   (int(shop_id),)).fetchone()
     if row and int(row["completed_count"] or 0)>=50:

@@ -2294,9 +2294,9 @@ async def send_admin_panel(bot, chat_id):
     except Exception: pending_wd="N/A"
     c.close()
     kb=InlineKeyboardMarkup([
-      [InlineKeyboardButton("👥 Owner Control Panel",callback_data="adm:owners")],
+      [InlineKeyboardButton("👥 System Management Center",callback_data="adm:owners")],
       [InlineKeyboardButton("🛒 Central Catalogue (USDT)",callback_data="adm:central")],
-      [InlineKeyboardButton("🏷️ Admin Resale Market",callback_data="adm:resale")],
+      [InlineKeyboardButton("🏷️ System Resale Market",callback_data="adm:resale")],
       [InlineKeyboardButton("🧾 FULL AUDIT LOG",callback_data="adm:audit")],
       [InlineKeyboardButton("🏪 All Shops",callback_data="adm:shops"),InlineKeyboardButton("🛍 Products",callback_data="adm:products")],
       [InlineKeyboardButton(f"💳 Pending Deposits ({pending_deposits})",callback_data="adm:payments")],
@@ -2307,12 +2307,12 @@ async def send_admin_panel(bot, chat_id):
       [InlineKeyboardButton("⚙️ Settings & Commands",callback_data="adm:settings"),InlineKeyboardButton("🔄 Refresh",callback_data="adm:home")]
     ])
     await bot.send_message(chat_id,
-      "<b>🛡️ SHOP IN INDIA — ADMIN CONTROL PANEL</b>\n━━━━━━━━━━━━━━━━━━\n"
+      "<b>🛡️ SHOP IN INDIA — SYSTEM CONTROL CENTER</b>\n━━━━━━━━━━━━━━━━━━\n"
       f"🏪 Shops: <b>{counts['shops']}</b>\n🛍 Products: <b>{counts['products']}</b>\n"
       f"📦 Orders: <b>{counts['v4_orders']}</b>\n💳 Pending deposits: <b>{pending_deposits}</b>\n"
       f"🎚 Pending level payments: <b>{pending_levels}</b>\n"
       f"💸 Withdrawals: <b>{counts['withdrawals']}</b> (Pending: <b>{pending_wd}</b>)\n"
-      f"💱 Rate: 1 USDT = INR {v4.usdt_inr_rate():,.2f}\n\n"
+      "\n"
       "<b>CONTROL CENTER</b>\nChoose a section below.",
       reply_markup=kb,parse_mode="HTML")
 

@@ -2042,7 +2042,7 @@ async def show_admin_shop(update,ctx,shop_id,edit=False):
             "SELECT remaining_units,total_approved_units FROM merchant_extra_item_allowances WHERE shop_id=?",
             (int(shop_id),)).fetchone()
         active_l2_count=int(c.execute(
-            "SELECT COUNT(*) FROM central_catalog WHERE active=1 AND level_required=2").fetchone()[0])
+            "SELECT COUNT(*) FROM central_catalog WHERE active=1 AND level_required=2 AND product_key LIKE 'level2_%'").fetchone()[0])
     finally:
         c.close()
     if not row:
@@ -2118,10 +2118,19 @@ async def admin_shop_callback(update,ctx):
             current_limit=c.execute(
                 "SELECT item_limit FROM merchant_level_item_limits WHERE shop_id=? AND level=2",
                 (sid,)).fetchone()
+            # A shop starts with exactly the original 50 products. Extra approvals
+            # reveal the next ten mobile-phone SKUs without changing legacy products.
+            base_l2=int(c.execute(
+                "SELECT COUNT(*) FROM central_catalog WHERE active=1 AND level_required=2 AND product_key LIKE 'level2_%'").fetchone()[0])
             active_l2=int(c.execute(
                 "SELECT COUNT(*) FROM central_catalog WHERE active=1 AND level_required=2").fetchone()[0])
-            old_limit=int(current_limit["item_limit"]) if current_limit else active_l2
-            new_limit=old_limit+10
+            old_limit=int(current_limit["item_limit"]) if current_limit else base_l2
+            old_limit=max(base_l2,old_limit)
+            if old_limit>=active_l2:
+                c.rollback()
+                await q.message.reply_text("All currently prepared Level 2 products are already assigned. Add more mobile SKUs before approving another batch.")
+                return
+            new_limit=min(old_limit+10,active_l2)
             c.execute("""INSERT INTO merchant_level_item_limits
                 (shop_id,level,item_limit,updated_at,updated_by) VALUES(?,2,?,?,?)
                 ON CONFLICT(shop_id,level) DO UPDATE SET
@@ -2137,7 +2146,7 @@ async def admin_shop_callback(update,ctx):
             c.execute("""INSERT INTO admin_audit(admin_id,owner_id,action,details,created_at)
                 VALUES(?,?,?,?,?)""",
                 (ADMIN_ID,shop_row["owner_id"],"merchant_extra_items_approved",
-                 f"{shop_number(sid)} ({shop_row['shop_name']}): +10 purchase units; Level 2 product limit {old_limit} -> {new_limit}",
+                 f"{shop_number(sid)} ({shop_row['shop_name']}): +10 purchase units; Level 2 product limit {old_limit} -> {new_limit}; newly assigned mobile SKUs",
                  v4.now()))
             c.commit()
         except Exception:
@@ -2152,8 +2161,8 @@ async def admin_shop_callback(update,ctx):
                 shop_row["owner_id"],
                 "<b>🎉 CONGRATULATIONS!</b>\n"
                 "Your hard work and dedication have earned you another opportunity to grow.\n\n"
-                "You can now purchase 10 additional item units, and your Level 2 catalogue has been expanded. "
-                f"You can now access up to {new_limit} Level 2 products.\n\n"
+                "You can now purchase 10 additional item units and access 10 new mobile-phone variants in your Level 2 catalogue. "
+                f"Your assigned Level 2 catalogue now contains up to {new_limit} products.\n\n"
                 "Keep up your great effort, complete your current orders, and make the most of this opportunity. "
                 "Wishing you continued success! 🌟",
                 parse_mode="HTML")
@@ -2161,7 +2170,7 @@ async def admin_shop_callback(update,ctx):
             log.exception("Could not notify merchant about extra-item approval")
         await q.message.reply_text(
             f"✅ Approved 10 additional purchase units for {shop_number(sid)}. "
-            f"Level 2 product slots: {old_limit} → {new_limit}.")
+            f"Level 2 product slots: {old_limit} → {new_limit} (new mobile SKUs assigned).")
         await show_admin_shop(update,ctx,sid)
         return
     if action=="rename":

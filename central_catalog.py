@@ -513,15 +513,9 @@ async def buy(update,ctx):
     finally: c.close()
     await update.effective_message.reply_text(f"✅ Purchase successful\nOrder #{oid}\n{p['title']} × {qty}\nTotal paid: {total:g} USDT\nRemaining shared stock: {remaining_stock}\nRemaining USDT wallet: {balance_after_text(total,available)}" + (f"\n⚠️ SYSTEM WARNING: {buyer_warning}" if buyer_warning else ""))
     try:
-        from telegram import InlineKeyboardMarkup, InlineKeyboardButton
-        order_actions=InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ MARK THIS ORDER FULFILLED",callback_data=f"cc:fulfill:{oid}")],
-            [InlineKeyboardButton("↩️ REFUND + RESTOCK",callback_data=f"cc:refund:{oid}")]
-        ])
         await ctx.bot.send_message(
             v4.ADMIN_ID,
-            f"🛒 CENTRAL ORDER #{oid}\n{p['title']} × {qty}\nOwner: {update.effective_user.id} | Shop #{shop['id']}\nPaid: {total:g} USDT",
-            reply_markup=order_actions)
+            f"🛒 CENTRAL ORDER #{oid}\n{p['title']} × {qty}\nOwner: {update.effective_user.id} | Shop #{shop['id']}\nPaid: {total:g} USDT")
     except Exception: log.exception("System central order notification failed")
 
 def balance_after_text(total, before):

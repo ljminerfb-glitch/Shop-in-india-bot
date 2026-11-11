@@ -1272,15 +1272,22 @@ async def resale_callback(update,ctx):
         await safe_callback_answer(q)
         if not rows: await q.message.reply_text(f"<b>🛍 LEVEL {level} + LOWER RESALE MARKET</b>\nNo merchant listings available right now.",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Dashboard",callback_data="m:dashboard")]]),parse_mode="HTML"); return
         for r in rows:
-            buttons=[[InlineKeyboardButton("Buy 1",callback_data=f"rs:buy:{r['id']}:1")]]
-            if level>=2 and int(r["remaining_quantity"])>=5:
-                buttons[0].append(InlineKeyboardButton("Buy 5",callback_data=f"rs:buy:{r['id']}:5"))
+            minimum_quantity={1:1,2:1,3:12,4:24,5:36}[level]
+            available=int(r["remaining_quantity"])
+            if level in (1,2):
+                quantities=[1] + ([5] if level==2 and available>=5 else [])
+            else:
+                quantities=list(range(minimum_quantity,min(minimum_quantity+4,available)+1))
+            buttons=[[InlineKeyboardButton(f"Buy {n}",callback_data=f"rs:buy:{r['id']}:{n}")
+                      for n in quantities[pos:pos+2]]
+                     for pos in range(0,len(quantities),2)]
             buttons.append([InlineKeyboardButton("⬅️ Dashboard",callback_data="m:dashboard")])
             await q.message.reply_text(
                 f"<b>🛍 {html.escape(str(r['title']))}</b>\n"
                 f"Seller: {html.escape(str(r['shop_name']))}\n"
                 f"Price: <b>{float(r['ask_price_usdt']):g} USDT / item</b>\n"
-                f"Available: <b>{int(r['remaining_quantity'])}</b>",
+                f"Minimum purchase: <b>{minimum_quantity}</b> units\n"
+                f"Available: <b>{available}</b>",
                 reply_markup=InlineKeyboardMarkup(buttons),parse_mode="HTML")
         return
     if action=="buy":

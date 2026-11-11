@@ -624,6 +624,17 @@ async def txid_callback(update,ctx):
         reply_markup=back_dashboard_kb(),parse_mode="HTML")
 
 
+async def merchant_password_callback(update,ctx):
+    q=update.callback_query
+    if q.from_user.id==ADMIN_ID:
+        await q.answer("Merchant account only",show_alert=True); return
+    shop=v4.shop_for(q.from_user.id)
+    if not shop:
+        await q.answer("Shop account not found",show_alert=True); return
+    await q.answer()
+    ctx.user_data["merchant_password_stage"]="current"
+    await q.message.reply_text("🔐 Enter your current shop password. Your message will be deleted where Telegram permits. Type CANCEL to stop.")
+
 async def menu_callback(update,ctx):
     q=update.callback_query
     await q.answer()
@@ -1077,6 +1088,7 @@ async def menu_callback(update,ctx):
             f"BEP20: <code>{html.escape(str(v4.PAY_BSC))}</code>\n\n"
         )
         profile_kb=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔐 Change My Password",callback_data="m:changepassword")],
             [InlineKeyboardButton("📍 Update Location",callback_data="m:location")],
             [InlineKeyboardButton("⬅️ Back to Dashboard",callback_data="m:dashboard")]
         ])
@@ -1303,6 +1315,40 @@ async def withdrawal_review_callback(update,ctx):
 
 
 async def text_handler(update,ctx):
+    password_stage=ctx.user_data.get("merchant_password_stage")
+    if password_stage:
+        if update.effective_user.id==ADMIN_ID:
+            ctx.user_data.pop("merchant_password_stage",None); return
+        supplied=(update.message.text or "").strip()
+        try: await update.message.delete()
+        except Exception: pass
+        if supplied.lower()=="cancel":
+            ctx.user_data.pop("merchant_password_stage",None)
+            await ctx.bot.send_message(update.effective_chat.id,"Password change cancelled."); return
+        shop=v4.shop_for(update.effective_user.id)
+        if not shop:
+            ctx.user_data.pop("merchant_password_stage",None)
+            await ctx.bot.send_message(update.effective_chat.id,"Shop account not found."); return
+        if password_stage=="current":
+            if not v3.verify_password(supplied,str(shop["password_hash"] or "")):
+                await ctx.bot.send_message(update.effective_chat.id,"Current password is incorrect. Enter it again or type CANCEL."); return
+            ctx.user_data["merchant_password_stage"]="new"
+            await ctx.bot.send_message(update.effective_chat.id,"Enter your new password (8–128 characters).")
+            return
+        if len(supplied)<8 or len(supplied)>128:
+            await ctx.bot.send_message(update.effective_chat.id,"New password must be 8–128 characters. Try again or CANCEL."); return
+        c=v4.db()
+        try:
+            c.execute("UPDATE shops SET password_hash=? WHERE owner_id=?",(v3.hash_password(supplied),update.effective_user.id))
+            c.commit()
+        except Exception:
+            c.rollback(); log.exception("Merchant password change failed")
+            await ctx.bot.send_message(update.effective_chat.id,"Password could not be changed. Please retry."); return
+        finally: c.close()
+        ctx.user_data.pop("merchant_password_stage",None)
+        await ctx.bot.send_message(update.effective_chat.id,"✅ Your shop password has been changed successfully.")
+        return
+
     pending_photo=ctx.user_data.get("central_admin_photo")
     if pending_photo:
         if update.effective_user.id!=ADMIN_ID:
@@ -1337,6 +1383,93 @@ async def text_handler(update,ctx):
             return
         await show_admin_shop(update,ctx,int(found["id"]))
         return
+    rename_sid=ctx.user_data.get("admin_shop_rename_id")
+    if rename_sid is not None:
+        if update.effective_user.id!=ADMIN_ID:
+            ctx.user_data.pop("admin_shop_rename_id",None); return
+        new_name=(update.message.text or "").strip()
+        if new_name.lower()=="cancel":
+            ctx.user_data.pop("admin_shop_rename_id",None)
+            await update.message.reply_text("Shop-name change cancelled."); return
+        if len(new_name)<2 or len(new_name)>40:
+            await update.message.reply_text("Shop name must be 2–40 characters. Try again or CANCEL."); return
+        c=v4.db()
+        try:
+            clash=c.execute("SELECT id FROM shops WHERE LOWER(shop_name)=LOWER(?) AND id<>?",(new_name,int(rename_sid))).fetchone()
+            if clash:
+                await update.message.reply_text("That shop name is already in use. Enter a different unique name or CANCEL."); return
+            row=c.execute("SELECT owner_id,shop_name FROM shops WHERE id=?",(int(rename_sid),)).fetchone()
+            if not row:
+                await update.message.reply_text("Shop not found."); return
+            old_name=str(row["shop_name"])
+            c.execute("UPDATE shops SET shop_name=? WHERE id=?",(new_name,int(rename_sid)))
+            c.execute("INSERT INTO admin_audit(admin_id,owner_id,action,details,created_at) VALUES(?,?,?,?,?)",
+                      (ADMIN_ID,row["owner_id"],"admin_shop_name_changed",f"{shop_number(rename_sid)}: {old_name} -> {new_name}",v4.now()))
+            c.commit()
+        except Exception:
+            c.rollback(); log.exception("Admin shop rename failed")
+            await update.message.reply_text("Shop name could not be changed. Please retry."); return
+        finally: c.close()
+        ctx.user_data.pop("admin_shop_rename_id",None)
+        await update.message.reply_text(f"Shop name updated to {new_name}.")
+        await show_admin_shop(update,ctx,int(rename_sid)); return
+
+    reset_sid=ctx.user_data.get("admin_shop_password_id")
+    if reset_sid is not None:
+        if update.effective_user.id!=ADMIN_ID:
+            ctx.user_data.pop("admin_shop_password_id",None); return
+        new_password=(update.message.text or "").strip()
+        if new_password.lower()=="cancel":
+            ctx.user_data.pop("admin_shop_password_id",None)
+            await update.message.reply_text("Password reset cancelled."); return
+        if len(new_password)<8 or len(new_password)>128:
+            await update.message.reply_text("Password must be 8–128 characters. Try again or CANCEL."); return
+        c=v4.db()
+        try:
+            row=c.execute("SELECT owner_id FROM shops WHERE id=?",(int(reset_sid),)).fetchone()
+            if not row:
+                await update.message.reply_text("Shop not found."); return
+            c.execute("UPDATE shops SET password_hash=? WHERE id=?",(v3.hash_password(new_password),int(reset_sid)))
+            c.execute("INSERT INTO admin_audit(admin_id,owner_id,action,details,created_at) VALUES(?,?,?,?,?)",
+                      (ADMIN_ID,row["owner_id"],"admin_shop_password_reset",f"{shop_number(reset_sid)}: password reset by admin",v4.now()))
+            c.commit()
+        except Exception:
+            c.rollback(); log.exception("Admin password reset failed")
+            await update.message.reply_text("Password could not be reset. Please retry."); return
+        finally: c.close()
+        ctx.user_data.pop("admin_shop_password_id",None)
+        await update.message.reply_text(f"Password reset successfully for {shop_number(reset_sid)}. For security, the new password is not repeated here.")
+        await show_admin_shop(update,ctx,int(reset_sid)); return
+
+    limit_request=ctx.user_data.get("admin_shop_item_limit")
+    if limit_request:
+        if update.effective_user.id!=ADMIN_ID:
+            ctx.user_data.pop("admin_shop_item_limit",None); return
+        raw=(update.message.text or "").strip()
+        if raw.lower()=="cancel":
+            ctx.user_data.pop("admin_shop_item_limit",None)
+            await update.message.reply_text("Item assignment cancelled."); return
+        if not raw.isdigit() or not 0<=int(raw)<=int(limit_request["max"]):
+            await update.message.reply_text(f"Enter a whole number from 0 to {limit_request['max']}, or CANCEL."); return
+        c=v4.db()
+        try:
+            c.execute("""INSERT INTO merchant_level_item_limits(shop_id,level,item_limit,updated_at,updated_by)
+              VALUES(?,?,?,?,?) ON CONFLICT(shop_id,level) DO UPDATE SET
+              item_limit=excluded.item_limit,updated_at=excluded.updated_at,updated_by=excluded.updated_by""",
+              (int(limit_request["shop_id"]),int(limit_request["level"]),int(raw),v4.now(),ADMIN_ID))
+            c.execute("INSERT INTO admin_audit(admin_id,owner_id,action,details,created_at) VALUES(?,?,?,?,?)",
+                      (ADMIN_ID,None,"merchant_level_item_limit_set",
+                       f"{shop_number(limit_request['shop_id'])}: Level {limit_request['level']} assigned {int(raw)} items",v4.now()))
+            c.commit()
+        except Exception:
+            c.rollback(); log.exception("Merchant item limit save failed")
+            await update.message.reply_text("Item limit could not be saved. Please retry."); return
+        finally: c.close()
+        sid=int(limit_request["shop_id"]); level=int(limit_request["level"])
+        ctx.user_data.pop("admin_shop_item_limit",None)
+        await update.message.reply_text(f"Level {level} limit saved: {int(raw)} item(s) assigned to {shop_number(sid)}.")
+        await show_admin_shop(update,ctx,sid); return
+
     warning_sid=ctx.user_data.get("admin_shop_warning_id")
     if warning_sid is not None:
         if update.effective_user.id!=ADMIN_ID:
@@ -1763,11 +1896,18 @@ async def show_admin_shop(update,ctx,shop_id,edit=False):
           f"Control note: {html.escape(str(row['control_note'] or 'None'))}\n"
           f"Warning reason: {html.escape(str(row['warning_reason'] or 'None'))}")
     kb_rows=[
+        [InlineKeyboardButton("✏️ Change Shop Name",callback_data=f"admshop:rename:{row['id']}"),
+         InlineKeyboardButton("🔐 Reset Password",callback_data=f"admshop:password:{row['id']}")],
         [InlineKeyboardButton("❄️ Freeze",callback_data=f"admshop:freeze:{row['id']}"),
          InlineKeyboardButton("⛔ Disable",callback_data=f"admshop:disable:{row['id']}")],
         [InlineKeyboardButton("✅ Enable",callback_data=f"admshop:enable:{row['id']}"),
          InlineKeyboardButton("🗑 Delete",callback_data=f"admshop:delete:{row['id']}")],
         [InlineKeyboardButton("⚠️ Warn Next Order",callback_data=f"admshop:warn:{row['id']}")],
+        [InlineKeyboardButton("📦 L1 Item Limit",callback_data=f"admshop:items:{row['id']}:1"),
+         InlineKeyboardButton("📦 L2 Item Limit",callback_data=f"admshop:items:{row['id']}:2")],
+        [InlineKeyboardButton("📦 L3 Item Limit",callback_data=f"admshop:items:{row['id']}:3"),
+         InlineKeyboardButton("📦 L4 Item Limit",callback_data=f"admshop:items:{row['id']}:4")],
+        [InlineKeyboardButton("📦 L5 Item Limit",callback_data=f"admshop:items:{row['id']}:5")],
     ]
     if reminder_status=="on":
         kb_rows.append([InlineKeyboardButton("🛑 STOP Motivation Reminder",callback_data=f"admshop:motivationstop:{row['id']}")])
@@ -1793,6 +1933,26 @@ async def admin_shop_callback(update,ctx):
     sid=int(parts[2])
     if action=="view":
         await show_admin_shop(update,ctx,sid); return
+    if action=="rename":
+        ctx.user_data["admin_shop_rename_id"]=sid
+        await q.message.reply_text(f"Enter the new unique shop name for {shop_number(sid)} (2–40 characters), or CANCEL.")
+        return
+    if action=="password":
+        ctx.user_data["admin_shop_password_id"]=sid
+        await q.message.reply_text(f"Enter a new password for {shop_number(sid)} (8–128 characters), or CANCEL. The password will be stored as a secure hash.")
+        return
+    if action=="items":
+        level=int(parts[3])
+        central.setup()
+        c=v4.db()
+        try:
+            available=int(c.execute("SELECT COUNT(*) FROM central_catalog WHERE active=1 AND level_required=?",(level,)).fetchone()[0])
+        finally: c.close()
+        ctx.user_data["admin_shop_item_limit"]={"shop_id":sid,"level":level,"max":available}
+        await q.message.reply_text(
+            f"Enter how many active Level {level} products to assign to {shop_number(sid)} (0–{available}). "
+            "The merchant will see only one Level 2 product at a time; the next appears after a successful purchase. Type CANCEL to stop.")
+        return
     if action=="motivationstop":
         c=v4.db()
         try:
@@ -2243,9 +2403,10 @@ def main():
     app.add_handler(CallbackQueryHandler(level_back_callback,pattern=r"^lvback$"))
     app.add_handler(CallbackQueryHandler(network_callback,pattern=r"^net:[0-9]+:(trc|bep)$"))
     app.add_handler(CallbackQueryHandler(txid_callback,pattern=r"^txid:[0-9]+$"))
+    app.add_handler(CallbackQueryHandler(merchant_password_callback,pattern=r"^m:changepassword$"))
     app.add_handler(CallbackQueryHandler(menu_callback,pattern=r"^m:(market|level1|upgrade|sellermarket|deposit|depositstart|depositfund|deposit_fund|deposit-fund|depositdone|deposits|withdraw|withdrawsetup|withdrawsetupedit|wallet|products|orders|history|profile|referrals|motivation|dashboard|support)$"))
     app.add_handler(CallbackQueryHandler(admin_panel_callback,pattern=r"^adm:(home|owners|shops|payments|levelpayments|withdrawals|withdrawwallets|products|orders|levels|settings|central|resale|audit|back)$"))
-    app.add_handler(CallbackQueryHandler(admin_shop_callback,pattern=r"^admshop:(search|view:[0-9]+|freeze:[0-9]+|disable:[0-9]+|enable:[0-9]+|delete:[0-9]+|warn:[0-9]+|motivationstop:[0-9]+)$"))
+    app.add_handler(CallbackQueryHandler(admin_shop_callback,pattern=r"^admshop:(search|view:[0-9]+|freeze:[0-9]+|disable:[0-9]+|enable:[0-9]+|delete:[0-9]+|warn:[0-9]+|motivationstop:[0-9]+|rename:[0-9]+|password:[0-9]+|items:[0-9]+:[1-5])$"))
     app.add_handler(CallbackQueryHandler(central.resale_callback,pattern=r"^rs:(list:[0-9]+|listmenu|market|review:[0-9]+|reject:[0-9]+|buy:[0-9]+:[0-9]+)$"))
     app.add_handler(CallbackQueryHandler(audit_callback,pattern=r"^audit:(all|payments|levels|wallet|orders|products):[0-9]+$"))
     app.add_handler(CallbackQueryHandler(delivered_callback,pattern=r"^order:delivered:[0-9]+$"))

@@ -19,8 +19,9 @@ def _inline_keyboard_with_navigation(self, inline_keyboard=None, *, api_kwargs=N
     rows=[list(row) for row in (inline_keyboard or [])]
     buttons=[button for row in rows for button in row]
     labels=[str(getattr(button,"text","")).lower() for button in buttons]
-    if rows and not any(any(word in label for word in ("back","dashboard","system panel","control center","home")) for label in labels):
-        callbacks=[str(getattr(button,"callback_data","") or "") for button in buttons]
+    callbacks=[str(getattr(button,"callback_data","") or "") for button in buttons]
+    root_screen=("m:logout" in callbacks or "adm:home" in callbacks)
+    if rows and not root_screen and not any(any(word in label for word in ("back","dashboard","system panel","control center","home")) for label in labels):
         admin_screen=any(value.startswith(("adm:","admshop:","cc:","ccadmin","audit:","pay:","wd:","product:","approve:","reject:","rs:review:","rs:reject:")) for value in callbacks)
         rows.append([InlineKeyboardButton("⬅️ Back to System Panel" if admin_screen else "⬅️ Back to Dashboard",callback_data="adm:home" if admin_screen else "m:dashboard")])
     _original_inline_keyboard_init(self,rows,api_kwargs=api_kwargs)
@@ -483,10 +484,6 @@ async def merchant_auth_guard(update,ctx):
     await _merchant_login_prompt(q.message,ctx)
     raise ApplicationHandlerStop
 
-            f"🏪 <b>{html.escape(str(s['shop_name']))}</b> • <b>LEVEL {s['level']}</b>\n"
-            + (f"📍 <b>{html.escape(str(s['location_country']))}</b>\n" if s["location_country"] else "")
-            + "\n<b>MERCHANT COMMAND CENTER</b>\nWelcome back! Choose a section below.",
-            reply_markup=owner_kb(),parse_mode="HTML")
 
 async def approved_callback(update,ctx):
     q=update.callback_query

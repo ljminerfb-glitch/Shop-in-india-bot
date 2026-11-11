@@ -396,7 +396,8 @@ async def buy(update,ctx):
         await update.effective_message.reply_text("Approved Level 1 or Level 2 shop required for this catalogue."); return
     try:
         pid=int(ctx.args[0]); qty=int(ctx.args[1])
-        if pid<1 or qty<1 or qty>1000: raise ValueError()        if int(shop["level"])==1 and qty>1:
+        if pid<1 or qty<1 or qty>1000: raise ValueError()
+        if int(shop["level"])==1 and qty>1:
             await update.effective_message.reply_text(
                 "🔒 Level 1 purchase limit: you can buy only 1 item per order. "
                 "Upgrade to Level 2 to purchase multiple items.")

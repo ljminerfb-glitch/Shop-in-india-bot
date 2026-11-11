@@ -82,7 +82,7 @@ def setup(c=None):
               VALUES(?,?,?,?,?,?,1,2,?,?)""",
               (product_key,item["name"],item["description"],float(item["price_usd"]),50,
                image_path,v4.now(),v4.now()))
-        # Seed mobile variants strictly after the legacy 50. Admin approvals reveal
+        # Seed mobile variants strictly after the legacy 50. System approvals reveal
         # these in groups of ten; INSERT OR IGNORE preserves IDs, edits and stock.
         for item in mobile_phone_products.PRODUCTS:
             product_key=f"mobile_phone_{item['id']}"
@@ -213,7 +213,7 @@ def catalogue_text(c):
 
 async def admin_catalog(update,ctx):
     if not v4.admin(update.effective_user.id):
-        await update.effective_message.reply_text("Admin only."); return
+        await update.effective_message.reply_text("System only."); return
     from telegram import InlineKeyboardMarkup, InlineKeyboardButton
     await update.effective_message.reply_text(
         "<b>🛒 BUY PRODUCT</b>\n━━━━━━━━━━━━━━━━━━\nPick your level:",
@@ -221,7 +221,7 @@ async def admin_catalog(update,ctx):
             [InlineKeyboardButton("🟦 LEVEL 1",callback_data="ccadminlevel:1")],
             [InlineKeyboardButton("🟩 LEVEL 2 — 50 PRODUCTS",callback_data="ccadminlevel:2")],
             [InlineKeyboardButton("📦 Manage Central Orders",callback_data="cc:orders")],
-            [InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]),
+            [InlineKeyboardButton("⬅️ System Panel",callback_data="adm:home")]]),
         parse_mode="HTML")
 
 def _catalogue_page_keyboard(page,total,prefix,back_label,back_callback,dashboard_callback):
@@ -298,7 +298,7 @@ async def _send_admin_level_page(update,ctx,level=1,page=0):
 async def admin_level_callback(update,ctx):
     q=update.callback_query
     if not v4.admin(q.from_user.id):
-        await safe_callback_answer(q,"Admin only",show_alert=True); return
+        await safe_callback_answer(q,"System only",show_alert=True); return
     try:
         level=int(q.data.split(":")[1])
         if level not in (1,2): raise ValueError()
@@ -311,7 +311,7 @@ async def admin_level_callback(update,ctx):
 async def admin_catalog_page_callback(update,ctx):
     q=update.callback_query
     if not v4.admin(q.from_user.id):
-        await safe_callback_answer(q,"Admin only",show_alert=True); return
+        await safe_callback_answer(q,"System only",show_alert=True); return
     try:
         parts=q.data.split(":")
         if len(parts)==2:  # support old Level 1 page buttons
@@ -404,7 +404,7 @@ async def buy(update,ctx):
             c.rollback(); await update.effective_message.reply_text(purchase_message); return
         p=c.execute("SELECT * FROM central_catalog WHERE id=? AND active=1 AND level_required=?",(pid,int(shop["level"]))).fetchone()
         if not p or float(p["price_usdt"])<=0:
-            c.rollback(); await update.effective_message.reply_text("Product unavailable. Admin has not set its USDT price yet."); return
+            c.rollback(); await update.effective_message.reply_text("Product unavailable. System has not set its USDT price yet."); return
         if int(shop["level"])==2 and int(p["level_required"])==2:
             # Enforce the admin-assigned catalogue range and sequential unlock on the server,
             # not only in the visible Telegram buttons (commands/crafted callbacks cannot bypass it).
@@ -417,14 +417,14 @@ async def buy(update,ctx):
                 level_products=level_products[:max(0,int(assigned_limit["item_limit"]))]
             else:
                 # Existing merchants default to the original 50 only. Mobile SKUs
-                # require an explicit Admin-approved item-limit expansion.
+                # require an explicit System-approved item-limit expansion.
                 level_products=[x for x in level_products if str(c.execute(
                     "SELECT product_key FROM central_catalog WHERE id=?",(int(x["id"]),)).fetchone()[0]).startswith("level2_")]
             assigned_ids=[int(x["id"]) for x in level_products]
             if pid not in assigned_ids:
                 c.rollback()
                 await update.effective_message.reply_text(
-                    "🔒 This product is outside the Level 2 item limit assigned to your shop by Admin.")
+                    "🔒 This product is outside the Level 2 item limit assigned to your shop by System.")
                 return
             prior=c.execute("SELECT COUNT(*) FROM central_orders WHERE buyer_shop_id=? AND catalog_id=?",
                             (shop["id"],pid)).fetchone()[0]
@@ -461,7 +461,7 @@ async def buy(update,ctx):
                 "Choose the correct network. Do not send TRC20 to BEP20 or BEP20 to TRC20 address.\n\n"
                 f"🔵 TRC20 address:\n{tron}\n\n"
                 f"🟡 BEP20 address:\n{bep}\n\n"
-                "After sending, open Deposit and submit your transaction screenshot for Admin verification."
+                "After sending, open Deposit and submit your transaction screenshot for System verification."
             )
             deposit_kb=InlineKeyboardMarkup([
                 [InlineKeyboardButton("📋 Copy TRC20 Address",copy_text=CopyTextButton(tron))],
@@ -499,16 +499,16 @@ async def buy(update,ctx):
         await update.effective_message.reply_text("Purchase failed safely. No wallet debit or stock deduction was committed.")
         return
     finally: c.close()
-    await update.effective_message.reply_text(f"✅ Purchase successful\nOrder #{oid}\n{p['title']} × {qty}\nTotal paid: {total:g} USDT\nRemaining shared stock: {remaining_stock}\nRemaining USDT wallet: {balance_after_text(total,available)}" + (f"\n⚠️ ADMIN WARNING: {buyer_warning}" if buyer_warning else ""))
+    await update.effective_message.reply_text(f"✅ Purchase successful\nOrder #{oid}\n{p['title']} × {qty}\nTotal paid: {total:g} USDT\nRemaining shared stock: {remaining_stock}\nRemaining USDT wallet: {balance_after_text(total,available)}" + (f"\n⚠️ SYSTEM WARNING: {buyer_warning}" if buyer_warning else ""))
     try:
         await ctx.bot.send_message(v4.ADMIN_ID,f"🛒 CENTRAL ORDER #{oid}\n{p['title']} × {qty}\nOwner: {update.effective_user.id} | Shop #{shop['id']}\nPaid: {total:g} USDT")
-    except Exception: log.exception("Admin central order notification failed")
+    except Exception: log.exception("System central order notification failed")
 
 def balance_after_text(total, before):
     return f"{max(0.0, before-total):.6f}".rstrip("0").rstrip(".")
 
 def consume_extra_purchase_units(c, shop_id, owner_id, quantity):
-    """At 50 completed resale pairs, require and consume Admin-approved units atomically."""
+    """At 50 completed resale pairs, require and consume System-approved units atomically."""
     qty=max(1,int(quantity))
     progress=c.execute(
         "SELECT completed_count FROM merchant_pair_progress WHERE shop_id=? AND owner_id=?",
@@ -523,7 +523,7 @@ def consume_extra_purchase_units(c, shop_id, owner_id, quantity):
     if remaining<qty:
         return False, (
             "🔒 Your 50/50 completed-pair limit has been reached. "
-            f"Admin approval is required for more purchases. Approved units remaining: {remaining}.")
+            f"System approval is required for more purchases. Approved units remaining: {remaining}.")
     changed=c.execute(
         "UPDATE merchant_extra_item_allowances SET remaining_units=remaining_units-?,updated_at=? "
         "WHERE shop_id=? AND remaining_units>=?",
@@ -590,7 +590,7 @@ async def orders(update,ctx):
         await update.effective_message.reply_text("No active merchant-listed orders right now.")
 
 async def admin_photo(update,ctx):
-    """Persist an Admin-uploaded Telegram photo as the central catalogue image."""
+    """Persist an System-uploaded Telegram photo as the central catalogue image."""
     if not v4.admin(update.effective_user.id):
         ctx.user_data.pop("central_admin_photo",None); return
     pending=ctx.user_data.get("central_admin_photo")
@@ -616,14 +616,14 @@ async def admin_photo(update,ctx):
         await update.message.reply_text("Photo could not be saved. The previous picture remains unchanged."); return
     finally: conn.close()
     ctx.user_data.pop("central_admin_photo",None)
-    await update.message.reply_text(f"✅ Picture updated for product #{pid} — {html.escape(str(row['title']))}. The new image will appear in Admin and merchant catalogues.",parse_mode="HTML")
+    await update.message.reply_text(f"✅ Picture updated for product #{pid} — {html.escape(str(row['title']))}. The new image will appear in System and merchant catalogues.",parse_mode="HTML")
 
 
 async def admin_callback(update,ctx):
     from telegram import InlineKeyboardMarkup, InlineKeyboardButton
     q=update.callback_query
     if not v4.admin(q.from_user.id):
-        await q.answer("Admin only",show_alert=True); return
+        await q.answer("System only",show_alert=True); return
     await q.answer()
     parts=q.data.split(":")
     action=parts[1]
@@ -640,7 +640,7 @@ async def admin_callback(update,ctx):
            InlineKeyboardButton("📦 Edit Shared Stock",callback_data=f"cc:stock:{pid}")],
           [InlineKeyboardButton("🔴 Turn Off" if row["active"] else "🟢 Turn On",callback_data=f"cc:toggle:{pid}")],
           [InlineKeyboardButton("⬅️ Catalogue List",callback_data="adm:central"),
-           InlineKeyboardButton("🏠 Admin Panel",callback_data="adm:home")]
+           InlineKeyboardButton("🏠 System Panel",callback_data="adm:home")]
         ])
         active_label="🟢 ACTIVE" if row["active"] else "🔴 OFF"
         await q.message.reply_text(
@@ -895,11 +895,11 @@ async def show_owner_level_products(update,ctx,shop,page=0,track_visit=True,leve
     if limit_row is not None:
         rows=rows[:max(0,int(limit_row["item_limit"]))]
     elif level==2:
-        # No explicit Admin grant means exactly the original 50 Level 2 products.
+        # No explicit System grant means exactly the original 50 Level 2 products.
         rows=[row for row in rows if str(row["product_key"]).startswith("level2_")]
     total=len(rows)
     if level==2:
-        # Admin-assigned Level 2 products unlock strictly one at a time.
+        # System-assigned Level 2 products unlock strictly one at a time.
         # A successful paid purchase is the only event that reveals the next item.
         purchased_count=sum(1 for row in rows if int(row["already_purchased"]))
         page_rows=[next((row for row in rows if not int(row["already_purchased"])),None)]
@@ -926,7 +926,7 @@ async def show_owner_level_products(update,ctx,shop,page=0,track_visit=True,leve
         await ctx.bot.send_message(
             update.effective_chat.id,
             ("<b>🎉 LEVEL 2 ASSIGNED ITEMS COMPLETED</b>\n"
-             f"You have purchased all {total} products assigned by Admin."),
+             f"You have purchased all {total} products assigned by System."),
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ My Products",callback_data="m:products"),InlineKeyboardButton("🏠 Dashboard",callback_data="m:dashboard")]]),
             parse_mode="HTML")
     for p in page_rows:
@@ -939,7 +939,7 @@ async def show_owner_level_products(update,ctx,shop,page=0,track_visit=True,leve
                   if level==2 else "")+
                  ("🔒 Already purchased — this Level 2 product can only be bought once."
                   if level==2 and int(p["already_purchased"]) else
-                  ("Select a quantity below to buy." if price>0 and stock>0 else "🔴 Unavailable — Admin must set price and stock.")))
+                  ("Select a quantity below to buy." if price>0 and stock>0 else "🔴 Unavailable — System must set price and stock.")))
         # Level 1 merchants may purchase only one unit per order.
         max_quantity=1 if int(shop["level"])==1 else 10
         already_purchased=level==2 and bool(int(p["already_purchased"]))
@@ -998,7 +998,7 @@ async def owner_buy_callback(update,ctx):
         await q.message.reply_text("Purchase could not be completed. Please retry with /centralbuy PRODUCT_ID QUANTITY.")
 
 
-# --- Owner resale listings and Admin direct-purchase market ---
+# --- Owner resale listings and System direct-purchase market ---
 def resale_setup(c=None):
     own=c is None; conn=c or v4.db()
     try:
@@ -1153,11 +1153,11 @@ async def resale_callback(update,ctx):
             f"💚 Expected profit if all sell: <b>+{expected_profit:g} USDT</b>\n\n"
             f"Your listing is now available in the Level {int(inv['level_required'])} resale market.",
             parse_mode="HTML")
-        try: await ctx.bot.send_message(v4.ADMIN_ID,f"📣 NEW RESALE LISTING #{lid}\n{inv['title']} ×{qty}\nSeller: {q.from_user.id} | Shop #{inv['shop_id']}\nAsking: {price:g} USDT each",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Review / Buy",callback_data=f"rs:review:{lid}")],[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]))
-        except Exception: log.exception("Admin listing notification failed")
+        try: await ctx.bot.send_message(v4.ADMIN_ID,f"📣 NEW RESALE LISTING #{lid}\n{inv['title']} ×{qty}\nSeller: {q.from_user.id} | Shop #{inv['shop_id']}\nAsking: {price:g} USDT each",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Review / Buy",callback_data=f"rs:review:{lid}")],[InlineKeyboardButton("⬅️ System Panel",callback_data="adm:home")]]))
+        except Exception: log.exception("System listing notification failed")
         return
     if action=="reject":
-        if not v4.admin(q.from_user.id): await safe_callback_answer(q, "Admin only",show_alert=True); return
+        if not v4.admin(q.from_user.id): await safe_callback_answer(q, "System only",show_alert=True); return
         lid=int(parts[2])
         c=v4.db()
         listing=c.execute("SELECT owner_id,status FROM resale_listings WHERE id=?",(lid,)).fetchone()
@@ -1171,7 +1171,7 @@ async def resale_callback(update,ctx):
             "The seller will receive this reason. Type CANCEL to stop.")
         return
     if action=="review":
-        if not v4.admin(q.from_user.id): await safe_callback_answer(q, "Admin only",show_alert=True); return
+        if not v4.admin(q.from_user.id): await safe_callback_answer(q, "System only",show_alert=True); return
         lid=int(parts[2]); c=v4.db()
         r=c.execute("""SELECT l.*,p.title,s.shop_name FROM resale_listings l JOIN central_catalog p ON p.id=l.catalog_id JOIN shops s ON s.id=l.shop_id WHERE l.id=?""",(lid,)).fetchone(); c.close()
         if not r: await safe_callback_answer(q, "Listing not found",show_alert=True); return
@@ -1187,12 +1187,12 @@ async def resale_callback(update,ctx):
             f"Seller: {html.escape(str(r['shop_name']))}\n"
             f"Available: <b>{available_qty}</b> item(s)\n"
             f"Asking price: <b>{suggested_price:g} USDT / item</b>\n\n"
-            "<b>ADMIN OFFER</b>\nSend: <code>PRICE QUANTITY</code>\n"
+            "<b>SYSTEM OFFER</b>\nSend: <code>PRICE QUANTITY</code>\n"
             f"Buy all at asking price: <code>{suggested_price:g} {available_qty}</code>\n"
             f"<i>Maximum quantity: {available_qty}. Type CANCEL to stop.</i>",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("❌ REJECT LISTING",callback_data=f"rs:reject:{lid}")],
-                [InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]),parse_mode="HTML")
+                [InlineKeyboardButton("⬅️ System Panel",callback_data="adm:home")]]),parse_mode="HTML")
         return
     if action=="market":
         shop=v4.shop_for(q.from_user.id)
@@ -1244,8 +1244,8 @@ async def resale_callback(update,ctx):
             allowed,buyer_warning=v4.shop_order_gate(c,shop["id"])
             if not allowed:
                 c.rollback()
-                await safe_callback_answer(q,"Admin warning shown" if "ADMIN WARNING" in str(buyer_warning) else buyer_warning,show_alert=True)
-                if "ADMIN WARNING" in str(buyer_warning):
+                await safe_callback_answer(q,"System warning shown" if "SYSTEM WARNING" in str(buyer_warning) else buyer_warning,show_alert=True)
+                if "SYSTEM WARNING" in str(buyer_warning):
                     await q.message.reply_text(buyer_warning)
                 return
             seller_shop=c.execute("SELECT status,level,control_status FROM shops WHERE id=?",(l["shop_id"],)).fetchone()
@@ -1278,7 +1278,7 @@ async def resale_callback(update,ctx):
         await safe_callback_answer(q, "Purchased")
         await q.message.reply_text(
             f"<b>✅ PURCHASE CONFIRMED</b>\n━━━━━━━━━━━━━━━━━━\n"
-            f"Level: <b>{buyer_level}</b>\nQuantity: <b>{qty}</b> item(s)\nTotal paid: <b>{total:g} USDT</b>\nOrder: <code>#{oid}</code>" + (f"\n⚠️ ADMIN WARNING: {html.escape(buyer_warning)}" if buyer_warning else ""),
+            f"Level: <b>{buyer_level}</b>\nQuantity: <b>{qty}</b> item(s)\nTotal paid: <b>{total:g} USDT</b>\nOrder: <code>#{oid}</code>" + (f"\n⚠️ SYSTEM WARNING: {html.escape(buyer_warning)}" if buyer_warning else ""),
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Marketplace",callback_data="rs:market")],[InlineKeyboardButton("🏠 Dashboard",callback_data="m:dashboard")]]),
             parse_mode="HTML")
         try: await ctx.bot.send_message(l["owner_id"],f"🎉 Your resale listing #{lid} sold {qty} item(s). Sale proceeds: {total:g} USDT; recorded profit: {max(0,profit):g} USDT.")
@@ -1290,7 +1290,7 @@ async def admin_resale_text(update,ctx):
     if not data or not v4.admin(update.effective_user.id): return False
     raw=(update.message.text or "").strip()
     if raw.lower()=="cancel":
-        ctx.user_data.pop("admin_resale_offer",None); await update.message.reply_text("Offer cancelled.",reply_markup=__import__('telegram').InlineKeyboardMarkup([[__import__('telegram').InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]])); return True
+        ctx.user_data.pop("admin_resale_offer",None); await update.message.reply_text("Offer cancelled.",reply_markup=__import__('telegram').InlineKeyboardMarkup([[__import__('telegram').InlineKeyboardButton("⬅️ System Panel",callback_data="adm:home")]])); return True
     try:
         price_s,qty_s=raw.split(); price=round(float(price_s),6); qty=int(qty_s)
         if price<=0 or qty<1 or qty>100000: raise ValueError()
@@ -1304,24 +1304,24 @@ async def admin_resale_text(update,ctx):
         total=round(price*qty,6); profit=round((price-float(l["unit_cost_usdt"]))*qty,6)
         changed=c.execute("UPDATE resale_listings SET remaining_quantity=remaining_quantity-?,status=CASE WHEN remaining_quantity-?=0 THEN 'sold' ELSE status END WHERE id=? AND status='active' AND remaining_quantity>=?",(qty,qty,lid,qty))
         if changed.rowcount != 1:
-            c.rollback(); await update.message.reply_text("Listing stock changed. Refresh the Admin Resale Market."); return True
+            c.rollback(); await update.message.reply_text("Listing stock changed. Refresh the System Resale Market."); return True
         cur=c.execute("""INSERT INTO admin_resale_orders(listing_id,seller_owner_id,seller_shop_id,catalog_id,quantity,unit_price_usdt,total_usdt,status,created_at) VALUES(?,?,?,?,?,?,?,'purchased',?)""",(lid,l["owner_id"],l["shop_id"],l["catalog_id"],qty,price,total,v4.now())); oid=cur.lastrowid
         changed=c.execute("UPDATE central_inventory SET remaining_quantity=remaining_quantity-? WHERE id=? AND owner_id=? AND remaining_quantity>=?",(qty,l["inventory_id"],l["owner_id"],qty))
         if changed.rowcount != 1:
-            raise RuntimeError("Seller inventory changed; Admin purchase rolled back")
+            raise RuntimeError("Seller inventory changed; System purchase rolled back")
         c.execute("""INSERT INTO admin_resale_inventory(admin_id,catalog_id,order_id,quantity,remaining_quantity,unit_cost_usdt,created_at) VALUES(?,?,?,?,?,?,?)""",(v4.ADMIN_ID,l["catalog_id"],oid,qty,qty,price,v4.now()))
-        c.execute("""INSERT INTO ledger(transaction_id,shop_id,owner_id,entry_type,amount,currency,note,created_at) VALUES(?,?,?,'resale_sale_credit',?,'USDT',?,?)""",(oid,l["shop_id"],l["owner_id"],total,f"Admin purchase listing #{lid}",v4.now()))
-        if profit>0: c.execute("""INSERT INTO ledger(transaction_id,shop_id,owner_id,entry_type,amount,currency,note,created_at) VALUES(?,?,?,'resale_profit_credit',?,'USDT',?,?)""",(oid,l["shop_id"],l["owner_id"],profit,f"Profit on Admin purchase #{oid}",v4.now()))
+        c.execute("""INSERT INTO ledger(transaction_id,shop_id,owner_id,entry_type,amount,currency,note,created_at) VALUES(?,?,?,'resale_sale_credit',?,'USDT',?,?)""",(oid,l["shop_id"],l["owner_id"],total,f"System purchase listing #{lid}",v4.now()))
+        if profit>0: c.execute("""INSERT INTO ledger(transaction_id,shop_id,owner_id,entry_type,amount,currency,note,created_at) VALUES(?,?,?,'resale_profit_credit',?,'USDT',?,?)""",(oid,l["shop_id"],l["owner_id"],profit,f"Profit on System purchase #{oid}",v4.now()))
         record_completed_pairs(c,l["shop_id"],l["owner_id"],qty,"admin_resale",oid)
         c.execute("INSERT INTO admin_audit(admin_id,owner_id,action,details,created_at) VALUES(?,?,?,?,?)",(v4.ADMIN_ID,l["owner_id"],"admin_resale_purchased",f"Order #{oid}; listing #{lid}; qty {qty}; offer {price:g}; total {total:g} USDT; seller margin {profit:g}",v4.now()))
         c.commit()
     except Exception:
-        c.rollback(); log.exception("Admin resale purchase failed"); await update.message.reply_text("Admin purchase failed safely. No changes committed."); return True
+        c.rollback(); log.exception("System resale purchase failed"); await update.message.reply_text("System purchase failed safely. No changes committed."); return True
     finally: c.close()
     ctx.user_data.pop("admin_resale_offer",None)
-    await update.message.reply_text(f"✅ ADMIN PURCHASE COMPLETE\nOrder #{oid}\nQuantity: {qty}\nOffer: {price:g} USDT each\nSeller paid: {total:g} USDT\nSeller profit: {profit:g} USDT (negative means sold below cost).")
+    await update.message.reply_text(f"✅ SYSTEM PURCHASE COMPLETE\nOrder #{oid}\nQuantity: {qty}\nOffer: {price:g} USDT each\nSeller paid: {total:g} USDT\nSeller profit: {profit:g} USDT (negative means sold below cost).")
     try: await ctx.bot.send_message(l["owner_id"],f"✅ Customer purchased your listing #{lid}: {qty} item(s) at {price:g} USDT each. Total credited: {total:g} USDT. Margin vs your recorded cost: {profit:g} USDT.")
-    except Exception: log.exception("Admin resale seller notification failed")
+    except Exception: log.exception("System resale seller notification failed")
     return True
 
 async def admin_resale_market(update,ctx):
@@ -1330,13 +1330,13 @@ async def admin_resale_market(update,ctx):
     resale_setup(); c=v4.db()
     rows=c.execute("""SELECT l.id,l.owner_id,l.shop_id,l.remaining_quantity,l.ask_price_usdt,p.title,s.shop_name FROM resale_listings l JOIN central_catalog p ON p.id=l.catalog_id JOIN shops s ON s.id=l.shop_id WHERE l.status='active' AND l.remaining_quantity>0 ORDER BY l.id DESC LIMIT 50""").fetchall(); c.close()
     await update.effective_message.reply_text(
-        "<b>🛒 ADMIN RESALE MARKET</b>\n━━━━━━━━━━━━━━━━━━\nReview merchant listings and make a USDT offer.",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]),parse_mode="HTML")
+        "<b>🛒 SYSTEM RESALE MARKET</b>\n━━━━━━━━━━━━━━━━━━\nReview merchant listings and make a USDT offer.",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ System Panel",callback_data="adm:home")]]),parse_mode="HTML")
     for r in rows:
         await update.effective_message.reply_text(
             f"<b>#{r['id']} {html.escape(str(r['title']))}</b>\n"
             f"Seller: {html.escape(str(r['shop_name']))} | Shop #{r['shop_id']}\n"
             f"Available: <b>{int(r['remaining_quantity'])}</b>\n"
             f"Asking: <b>{float(r['ask_price_usdt']):g} USDT / item</b>",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Review / Buy",callback_data=f"rs:review:{r['id']}")],[InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]]),parse_mode="HTML")
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Review / Buy",callback_data=f"rs:review:{r['id']}")],[InlineKeyboardButton("⬅️ System Panel",callback_data="adm:home")]]),parse_mode="HTML")
     if not rows: await update.effective_message.reply_text("No active merchant resale listings.")

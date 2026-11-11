@@ -584,13 +584,15 @@ def test_level2_catalogue_and_purchase_flow():
     require(tuple(configured)==(50.0,50,2.0,6.5),
             f"/setlevel did not persist requested Level 2 settings: {tuple(configured)!r}")
     rows=c.execute(
-        "SELECT id,title,price_usdt,stock,image_path FROM central_catalog WHERE level_required=2 ORDER BY id"
+        "SELECT id,title,price_usdt,stock,image_path,product_key FROM central_catalog WHERE level_required=2 ORDER BY id"
     ).fetchall()
-    require(len(rows)==50, f"Level 2 catalogue should contain 50 products, found {len(rows)}")
-    require(all(int(r["stock"])==50 for r in rows), "Every new Level 2 product must begin with 50 stock")
+    require(len(rows)==80, f"Level 2 seed should contain 50 original products plus 30 staged mobile SKUs, found {len(rows)}")
+    require(all(int(r["stock"])==50 for r in rows), "Every Level 2 product must begin with 50 stock")
     root=Path(__file__).resolve().parent
-    require(all((root/str(r["image_path"])).is_file() for r in rows),
-            "A Level 2 product image path is missing on disk")
+    original_rows=[r for r in rows if str(r["product_key"]).startswith("level2_")]
+    require(len(original_rows)==50, "The original Level 2 catalogue must remain exactly 50 products")
+    require(all((root/str(r["image_path"])).is_file() for r in original_rows),
+            "An original Level 2 product image path is missing on disk")
     ids=[int(r["id"]) for r in rows]
     first_pid=ids[0]
     c.close()
@@ -601,7 +603,7 @@ def test_level2_catalogue_and_purchase_flow():
     require(product_card_ids(admin_ctx.bot.sent)==ids[:5],
             "Admin Level 2 first page did not show exactly products 1–5")
     admin_nav=next(x for x in admin_ctx.bot.sent if "ccadminpage:2:1" in sent_callback_data(x))
-    require("PAGE 1/10" in sent_text(admin_nav),
+    require("PAGE 1/16" in sent_text(admin_nav),
             "Admin Level 2 page count or Next 5 navigation is wrong")
     before=len(admin_ctx.bot.sent)
     admin_next,_,_=callback_update(999999,"ccadminpage:2:1")

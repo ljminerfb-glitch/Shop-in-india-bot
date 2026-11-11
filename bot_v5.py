@@ -904,11 +904,7 @@ async def menu_callback(update,ctx):
         central.resale_setup()
         c=v4.db()
         try:
-            rows=c.execute("""SELECT p.id,p.title,p.description,p.price,p.currency,p.stock,
-                s.shop_name,s.owner_id,s.id shop_id
-              FROM products p JOIN shops s ON s.id=p.shop_id
-              WHERE p.active=1 AND p.stock>0 AND s.status='approved' AND p.shop_id<>?
-              ORDER BY p.id DESC LIMIT 30""",(s["id"],)).fetchall()
+            rows=[]  # Legacy non-USDT products are intentionally excluded from the V5 marketplace.
             own_resale=c.execute("""SELECT l.id,l.remaining_quantity,l.ask_price_usdt,p.title
               FROM resale_listings l JOIN central_catalog p ON p.id=l.catalog_id
               JOIN shops sh ON sh.id=l.shop_id

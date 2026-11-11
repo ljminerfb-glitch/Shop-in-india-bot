@@ -2115,6 +2115,14 @@ async def admin_shop_callback(update,ctx):
                 c.rollback()
                 await q.message.reply_text("Shop ID not found. No approval was applied.")
                 return
+            pair_progress=c.execute(
+                "SELECT completed_count FROM merchant_pair_progress WHERE shop_id=?",(sid,)).fetchone()
+            completed_pairs=int(pair_progress["completed_count"] or 0) if pair_progress else 0
+            if completed_pairs<50:
+                c.rollback()
+                await q.message.reply_text(
+                    f"Approval is available only after the merchant completes 50/50 buy-and-resell pairs. Current progress: {completed_pairs}/50.")
+                return
             current_limit=c.execute(
                 "SELECT item_limit FROM merchant_level_item_limits WHERE shop_id=? AND level=2",
                 (sid,)).fetchone()

@@ -354,6 +354,7 @@ def test_central_purchase_and_auto_listing():
             "Level 2 resale asking price did not include a positive configured margin")
     # Set a deterministic ask for the separate manual-offer regression test below.
     c.execute("UPDATE resale_listings SET ask_price_usdt=3.3 WHERE id=?",(listing["id"],))
+    c.commit()
     require(int(listing["remaining_quantity"]) == 2, "Listing quantity does not match purchased inventory")
     require(abs(cc.balance(c, 101) - 7.5) < 1e-8, "Central purchase wallet debit is wrong")
     require(c.execute("PRAGMA integrity_check").fetchone()[0] == "ok", "SQLite integrity check failed")

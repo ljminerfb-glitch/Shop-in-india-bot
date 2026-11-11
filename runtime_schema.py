@@ -103,6 +103,10 @@ def ensure_schema(db_path=None):
             created_at TEXT NOT NULL, UNIQUE(source_type,source_order_id))
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_pair_progress_due ON merchant_pair_progress(completed_count,reset_at)")
+        conn.execute("""CREATE TABLE IF NOT EXISTS merchant_extra_item_allowances (
+            shop_id INTEGER PRIMARY KEY, remaining_units INTEGER NOT NULL DEFAULT 0,
+            total_approved_units INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL)
+        """)
 
         conn.execute("""CREATE TABLE IF NOT EXISTS owner_wallets (
             owner_id INTEGER PRIMARY KEY, network TEXT NOT NULL, address TEXT NOT NULL,

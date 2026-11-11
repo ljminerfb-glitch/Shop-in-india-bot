@@ -293,11 +293,11 @@ async def save_shop_password(update, context):
         )
         admin_sent = True
     except Exception:
-        log.exception("Admin notification failed")
+        log.exception("System notification failed")
 
-    message = "Your application is waiting for Admin approval."
+    message = "Your application is waiting for System approval."
     if not admin_sent:
-        message += "\nPlease contact support: Admin notification could not be delivered."
+        message += "\nPlease contact support: System notification could not be delivered."
 
     await update.message.reply_text(
         f"<b>✅ REGISTRATION SUBMITTED</b>\n━━━━━━━━━━━━━━━━━━\nShop ID: <code>{shop_id}</code>\n🟡 <b>STATUS: PENDING REVIEW</b>\n{html.escape(message)}",
@@ -349,7 +349,7 @@ async def approval(update, context):
     await query.answer()
 
     if not is_admin(query.from_user.id):
-        await query.edit_message_text("⛔ Admin access only.")
+        await query.edit_message_text("⛔ System access only.")
         return
 
     action, shop_id_text = query.data.split(":")
@@ -493,7 +493,7 @@ async def save_wallet_address(update, context):
     con.close()
     context.user_data.clear()
 
-    # Admin can see the saved address; owner sees only saved status.
+    # System can see the saved address; owner sees only saved status.
     try:
         await context.bot.send_message(
             ADMIN_ID,
@@ -504,7 +504,7 @@ async def save_wallet_address(update, context):
             "Status: Saved by owner; not independently verified."
         )
     except Exception:
-        log.exception("Admin wallet notification failed")
+        log.exception("System wallet notification failed")
 
     await update.message.reply_text(
         f"✅ Withdrawal wallet saved.\n"
@@ -545,7 +545,7 @@ async def profile(update, context):
 
 async def verify_wallet(update, context):
     if not is_admin(update.effective_user.id):
-        await update.message.reply_text("Admin access only.")
+        await update.message.reply_text("System access only.")
         return
 
     if len(context.args) != 1 or not context.args[0].isdigit():
@@ -581,7 +581,7 @@ async def verify_wallet(update, context):
     try:
         await context.bot.send_message(
             owner_id,
-            "✅ Your withdrawal wallet has been verified by Admin. "
+            "✅ Your withdrawal wallet has been verified by System. "
             "Your profile now shows: Verified."
         )
     except Exception:
@@ -593,7 +593,7 @@ async def verify_wallet(update, context):
 
 async def admin(update, context):
     if not is_admin(update.effective_user.id):
-        await update.message.reply_text("Admin access only.")
+        await update.message.reply_text("System access only.")
         return
 
     con = connect()
@@ -606,7 +606,7 @@ async def admin(update, context):
     """).fetchall()
     con.close()
 
-    lines = ["🛡️ ADMIN DASHBOARD", ""]
+    lines = ["🛡️ SYSTEM DASHBOARD", ""]
 
     if not shops:
         lines.append("No shops registered.")
@@ -659,12 +659,12 @@ def ensure_catalog_schema():
 async def suggest_product_start(update, context):
     shop = get_shop(update.effective_user.id)
     if not shop or shop["status"] != "approved":
-        await update.message.reply_text("Admin-approved shop required.")
+        await update.message.reply_text("System-approved shop required.")
         return
     ensure_catalog_schema()
     context.user_data["state"] = "suggest_title"
     await update.message.reply_text(
-        "📝 Enter the product name for Admin approval. Type Cancel to stop."
+        "📝 Enter the product name for System approval. Type Cancel to stop."
     )
 
 
@@ -694,7 +694,7 @@ async def save_suggestion_description(update, context):
     context.user_data["suggest_description"] = value
     context.user_data["state"] = "suggest_price"
     await update.message.reply_text(
-        "Enter your suggested price in INR. Admin will decide the final price:"
+        "Enter your suggested price in INR. System will decide the final price:"
     )
 
 
@@ -742,7 +742,7 @@ async def save_suggestion_price(update, context):
         f"Suggestion ID: #{suggestion_id}\n"
         f"Product: {title}\n"
         f"Suggested price: ₹{price:,.2f}\n"
-        "Status: Pending Admin approval.",
+        "Status: Pending System approval.",
         reply_markup=main_keyboard()
     )
 
@@ -764,7 +764,7 @@ async def save_suggestion_price(update, context):
     except Exception:
         log.exception("Could not notify admin about product suggestion")
         await update.message.reply_text(
-            "Suggestion saved, but Admin notification failed. Please contact support."
+            "Suggestion saved, but System notification failed. Please contact support."
         )
 
 
@@ -772,7 +772,7 @@ async def product_review(update, context):
     query = update.callback_query
     await query.answer()
     if not is_admin(query.from_user.id):
-        await query.edit_message_text("Admin access only.")
+        await query.edit_message_text("System access only.")
         return
 
     ensure_catalog_schema()
@@ -805,7 +805,7 @@ async def product_review(update, context):
     context.user_data["state"] = "admin_product_price"
     await query.edit_message_text(
         f"Suggestion #{sid} approved for listing.\n"
-        "Now enter the FINAL selling price in INR. This price will be controlled by Admin."
+        "Now enter the FINAL selling price in INR. This price will be controlled by System."
     )
 
 
@@ -901,7 +901,7 @@ async def admin_product_stock(update, context):
             item["owner_id"],
             f"✅ Your product suggestion #{sid} was approved and listed.\n"
             f"Product: {item['title']}\n"
-            f"Admin final price: ₹{price:,.2f}\nStock: {stock}"
+            f"System final price: ₹{price:,.2f}\nStock: {stock}"
         )
     except Exception:
         log.exception("Owner approval notification failed")
@@ -937,7 +937,7 @@ async def handle_message(update, context):
 
     if state in ("suggest_title", "suggest_description", "suggest_price"):
         context.user_data.clear()
-        await update.message.reply_text("Product suggestions are disabled. Only Admin can add or edit marketplace products.")
+        await update.message.reply_text("Product suggestions are disabled. Only System can add or edit marketplace products.")
     elif state == "admin_product_price":
         await admin_product_price(update, context)
     elif state == "admin_product_stock":
@@ -984,9 +984,9 @@ async def handle_message(update, context):
                     )
                 await update.message.reply_text("\n".join(lines))
         else:
-            await update.message.reply_text("Admin-approved shop required.")
+            await update.message.reply_text("System-approved shop required.")
     elif msg == "💬 Support":
-        await update.message.reply_text("Please contact the administrator.")
+        await update.message.reply_text("Please contact the System.")
     else:
         await update.message.reply_text(
             "Please choose an option from the menu.",
@@ -995,7 +995,7 @@ async def handle_message(update, context):
 
 async def help_command(update, context):
     await update.message.reply_text(
-        "/start — Main menu\n/admin — Admin dashboard\n/help — Help"
+        "/start — Main menu\n/admin — System dashboard\n/help — Help"
     )
 
 def main():

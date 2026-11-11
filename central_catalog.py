@@ -597,23 +597,22 @@ async def orders(update,ctx,show_filled=False):
         if not rows:
             await update.effective_message.reply_text("No filled orders have been recorded yet.")
         return
-    await update.effective_message.reply_text(
-        "<b>🏷️ MERCHANT-LISTED ORDERS</b>\nListed amount + 2% automatic bonus. Approve to purchase all available quantity.",
-        parse_mode="HTML")
     for r in listings:
         listed=float(r["ask_price_usdt"])
-        payout=round(listed*1.02,6)
+        profit=round(listed*0.02,6)
+        payout=round(listed+profit,6)
         qty=int(r["remaining_quantity"])
         await update.effective_message.reply_text(
-            f"<b>Listing #{r['id']} — {html.escape(str(r['title']))}</b>\n"
+            f"<b>🏷️ MERCHANT RESALE ORDER #{r['id']}</b>\n"
+            f"<b>{html.escape(str(r['title']))}</b>\n"
             f"Merchant: {html.escape(str(r['shop_name']))} • Shop #{r['shop_id']}\n"
             f"Available: <b>{qty}</b> item(s)\n"
             f"Merchant listed amount: <b>{listed:g} USDT / item</b>\n"
-            f"Automatic 2% bonus: <b>+{listed*0.02:.6f} USDT / item</b>\n"
+            f"<b>💚 SYSTEM PROFIT BONUS: +2% ({profit:.6f} USDT / item)</b>\n"
             f"Merchant receives: <b>{payout:g} USDT / item</b>\n"
             f"Total System payment: <b>{payout*qty:.6f} USDT</b>",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("✅ APPROVE + BUY (2% BONUS)",callback_data=f"cc:approve_listing:{r['id']}")],
+                [InlineKeyboardButton("✅ APPROVE + BUY (2% PROFIT)",callback_data=f"cc:approve_listing:{r['id']}")],
                 [InlineKeyboardButton("❌ Reject Listing",callback_data=f"rs:reject:{r['id']}")],
                 [InlineKeyboardButton("⬅️ Refresh Orders",callback_data="cc:orders")]]),
             parse_mode="HTML")

@@ -1467,8 +1467,16 @@ def test_runtime_schema_bootstrap():
             level2_products=conn.execute(
                 "SELECT COUNT(*),MIN(stock),MAX(stock) FROM central_catalog WHERE level_required=2"
             ).fetchone()
-            require(tuple(level2_products)==(50,50,50),
-                    f"Level 2 catalogue seed must have 50 products with 50 stock each: {tuple(level2_products)!r}")
+            require(tuple(level2_products)==(80,50,50),
+                    f"Level 2 catalogue must contain the original 50 plus 30 staged mobile SKUs, each with 50 stock: {tuple(level2_products)!r}")
+            original_l2=int(conn.execute(
+                "SELECT COUNT(*) FROM central_catalog WHERE level_required=2 AND product_key LIKE 'level2_%'"
+            ).fetchone()[0])
+            mobile_l2=int(conn.execute(
+                "SELECT COUNT(*) FROM central_catalog WHERE level_required=2 AND product_key LIKE 'mobile_phone_%'"
+            ).fetchone()[0])
+            require((original_l2,mobile_l2)==(50,30),
+                    f"Original/mobile catalogue split must be 50/30: {(original_l2,mobile_l2)!r}")
             conn.close()
         finally:
             v4.DB = old_v4_db

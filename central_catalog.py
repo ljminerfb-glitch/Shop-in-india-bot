@@ -772,10 +772,15 @@ async def admin_callback(update,ctx):
             f"Total credited: <b>{total:.6f} USDT</b>",parse_mode="HTML")
         try:
             await ctx.bot.send_message(listing["owner_id"],
-                f"<b>✅ YOUR LISTING WAS APPROVED BY SYSTEM</b>\nListing #{lid} • Order #{oid}\n"
-                f"Quantity: {qty}\nListed amount: {listed_price:g} USDT / item\n"
-                f"2% bonus: +{listed_price*0.02:.6f} USDT / item\n"
-                f"Total credited: <b>{total:.6f} USDT</b>",parse_mode="HTML")
+                f"<b>🎉 CONGRATULATIONS! YOUR ITEM HAS BEEN SOLD!</b>\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"Your listing has been successfully purchased by a customer. Great work! 💚\n\n"
+                f"Listing #{lid} • Order #{oid}\n"
+                f"Quantity sold: <b>{qty}</b>\n"
+                f"Sale amount: {listed_price:g} USDT / item\n"
+                f"💚 2% profit bonus: +{listed_price*0.02:.6f} USDT / item\n"
+                f"Total credited to your wallet: <b>{total:.6f} USDT</b>\n\n"
+                f"Keep up the great work — more successful sales are ahead! 🚀",parse_mode="HTML")
         except Exception: log.exception("System resale approval merchant notification failed")
         return
     if action in ("fulfill","refund"):

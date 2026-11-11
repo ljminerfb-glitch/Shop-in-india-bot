@@ -1030,7 +1030,7 @@ async def menu_callback(update,ctx):
         await q.message.reply_text(body[:4000],reply_markup=back_dashboard_kb(),parse_mode="HTML")
     elif action=="history":
         c=v4.db()
-        rows=c.execute("SELECT entry_type,amount,currency,note,created_at FROM ledger WHERE owner_id=? ORDER BY id DESC LIMIT 20",(q.from_user.id,)).fetchall()
+        rows=c.execute("SELECT entry_type,amount,currency,note,created_at FROM ledger WHERE owner_id=? AND currency='USDT' ORDER BY id DESC LIMIT 20",(q.from_user.id,)).fetchall()
         c.close()
         body="<b>📊 PROFIT & TRANSACTION HISTORY</b>\n━━━━━━━━━━━━━━━━━━\n"
         if rows:
@@ -2600,11 +2600,9 @@ async def help_command(update,ctx):
         body = (
             "🛠 SYSTEM COMMANDS\n"
             "/admin — System control panel\n"
-            "/orders — Pending orders\n"
-            "/products — Product list\n"
-            "/addproduct — Add product\n"
+            "/orders — Manage Central Catalogue and merchant-listed orders\n"
             "/setlevel — Configure levels\n"
-            "/setfx — Update USDT/INR rate\n"
+
             "/setfee — Update platform fee\n"
             "/orderdone — Mark an order delivered\n"
             "/orderreject — Reject an order\n"
@@ -2617,7 +2615,7 @@ async def help_command(update,ctx):
             "/start — Open registration or owner dashboard\n"
             "/dashboard — Open your dashboard\n"
             "/levels — View shop levels\n"
-            "/buy PRODUCT_ID QUANTITY — Place a product order\n"
+            "/centralbuy PRODUCT_ID QUANTITY — Place a USDT catalogue order\n"
             "/verifywallet — Wallet verification help\n"
             "/support — Contact System\n"
             "/help — Show this help"
@@ -2653,7 +2651,7 @@ def main():
     for cmd,fn in [("help",help_command),("support",support_command),("admin",admin_panel),("verifywallet",v3.verify_wallet),
 ("setlevel",v4.setlevel),("setfee",v4.setfee),
       
-      ("orders",central.orders),("myproducts",v4.myproducts),("myorders",v4.myorders),("history",v4.history),("levels",v4.levels),("centralcatalog",central.admin_catalog),("centralprice",central.set_price),("centralstock",central.set_stock),("centralactive",central.set_active),("centralorders",central.orders),("centralbuy",central.buy)]:
+      ("orders",central.orders),("history",v4.history),("levels",levels),("centralcatalog",central.admin_catalog),("centralprice",central.set_price),("centralstock",central.set_stock),("centralactive",central.set_active),("centralorders",central.orders),("centralbuy",central.buy)]:
         app.add_handler(CommandHandler(cmd,fn))
     app.add_handler(CallbackQueryHandler(approved_callback,pattern=r"^(approve|reject):[0-9]+$"))
     app.add_handler(CallbackQueryHandler(level_callback,pattern=r"^lv:[1-5]$"))
@@ -2667,7 +2665,6 @@ def main():
     app.add_handler(CallbackQueryHandler(admin_shop_callback,pattern=r"^admshop:(search|view:[0-9]+|freeze:[0-9]+|disable:[0-9]+|enable:[0-9]+|delete:[0-9]+|warn:[0-9]+|motivationstop:[0-9]+|rename:[0-9]+|password:[0-9]+|approve10:[0-9]+|items:[0-9]+:[1-5])$"))
     app.add_handler(CallbackQueryHandler(central.resale_callback,pattern=r"^rs:(list:[0-9]+|listmenu|market|review:[0-9]+|reject:[0-9]+|buy:[0-9]+:[0-9]+)$"))
     app.add_handler(CallbackQueryHandler(audit_callback,pattern=r"^audit:(all|payments|levels|wallet|orders|products):[0-9]+$"))
-    app.add_handler(CallbackQueryHandler(delivered_callback,pattern=r"^order:delivered:[0-9]+$"))
     app.add_handler(CallbackQueryHandler(central.admin_level_callback,pattern=r"^ccadminlevel:[12]$"))
     app.add_handler(CallbackQueryHandler(central.admin_catalog_page_callback,pattern=r"^ccadminpage:(?:[12]:)?[0-9]+$"))
     app.add_handler(CallbackQueryHandler(central.owner_level_callback,pattern=r"^cclevel:[12]$"))

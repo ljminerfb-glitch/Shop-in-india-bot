@@ -107,6 +107,9 @@ def ensure_schema(db_path=None):
             shop_id INTEGER PRIMARY KEY, remaining_units INTEGER NOT NULL DEFAULT 0,
             total_approved_units INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL)
         """)
+        conn.execute("""CREATE TABLE IF NOT EXISTS merchant_l2_workflow_reminders (
+            shop_id INTEGER PRIMARY KEY, next_at TEXT NOT NULL, last_sent_at TEXT)
+        """)
 
         conn.execute("""CREATE TABLE IF NOT EXISTS owner_wallets (
             owner_id INTEGER PRIMARY KEY, network TEXT NOT NULL, address TEXT NOT NULL,

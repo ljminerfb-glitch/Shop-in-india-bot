@@ -885,7 +885,7 @@ async def owner_market(update,ctx,shop):
     ]
     await update.callback_query.message.reply_text(
         "<b>🛒 BUY PRODUCT</b>\n━━━━━━━━━━━━━━━━━━\n"
-        "Choose a catalogue. Your active level includes all lower-level catalogues:",
+        "Only your current level is available. Lower levels stay locked:",
         reply_markup=InlineKeyboardMarkup(buttons+[
             [InlineKeyboardButton("⬅️ Back to My Products",callback_data="m:products"),
              InlineKeyboardButton("🏠 Dashboard",callback_data="m:dashboard")]]),
@@ -993,17 +993,17 @@ async def show_owner_level_products(update,ctx,shop,page=0,track_visit=True,leve
             parse_mode="HTML")
     for p in page_rows:
         price=float(p["price_usdt"] or 0); stock=int(p["stock"] or 0)
+        minimum_quantity={1:1,2:1,3:12,4:24,5:36}[level]
         caption=(f"<b>#{p['id']} {html.escape(str(p['title']))}</b>\n"
                  f"{html.escape(str(p['description'] or ''))}\n\n"
                  f"Price: <b>{price:g} USDT</b>\n"
                  f"Available stock: <b>{stock}</b>\n"+
                  (f"Your purchase: <b>{int(p['shop_order_count'])} order(s) • {int(p['shop_units_bought'])} item(s)</b>\n"
-                  if level==2 else "")+
+                  if level>=2 else "")+
                  ("🔒 Already purchased — this Level 2 product can only be bought once."
                   if level==2 and int(p["already_purchased"]) else
-                  ("Select a quantity below to buy." if price>0 and stock>0 else "🔴 Unavailable — System must set price and stock.")))
+                  (f"Minimum purchase: {minimum_quantity} units for this product." if price>0 and stock>=minimum_quantity else f"🔴 Unavailable — requires at least {minimum_quantity} units in stock.")))
         # Level 1 merchants may purchase only one unit per order.
-        minimum_quantity={1:1,2:1,3:12,4:24,5:36}[level]
         max_quantity=1 if level==1 else minimum_quantity+4
         already_purchased=level==2 and bool(int(p["already_purchased"]))
         quantities=list(range(minimum_quantity,min(max_quantity,stock)+1)) if stock>=minimum_quantity and not already_purchased else []
@@ -1049,12 +1049,11 @@ async def owner_buy_callback(update,ctx):
             c.close()
         ctx.args=[pid_s,qty_s]
         await buy(update,ctx)
-        if product and int(product["level_required"])==2:
-            # Refresh the Level 2 screen; after a successful buy the next
-            # unpurchased product is shown, otherwise the same one remains.
+        if product and int(product["level_required"]) in (2,3,4,5):
+            # Refresh the active catalogue after a successful purchase.
             shop=v4.shop_for(q.from_user.id)
-            if shop and shop["status"]=="approved" and int(shop["level"])>=2:
-                await show_owner_level_products(update,ctx,shop,level=2,track_visit=False)
+            if shop and shop["status"]=="approved" and int(shop["level"])==int(product["level_required"]):
+                await show_owner_level_products(update,ctx,shop,level=int(product["level_required"]),track_visit=False)
     except Exception:
         log.exception("Catalogue button purchase failed")
         await q.message.reply_text("Purchase could not be completed. Please retry with /centralbuy PRODUCT_ID QUANTITY.")

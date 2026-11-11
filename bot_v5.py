@@ -5,13 +5,26 @@ from zoneinfo import ZoneInfo
 from urllib.request import Request, urlopen
 from urllib.parse import urlencode
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove, CopyTextButton, KeyboardButton
-from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters
+from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, ApplicationHandlerStop, filters
 from telegram.request import HTTPXRequest
 import bot_v3 as v3
 import bot_v4 as v4
 import central_catalog as central
 import audit_dashboard as audit
 import runtime_schema
+
+# Add a clear Back escape to inline screens that do not already expose navigation.
+_original_inline_keyboard_init=InlineKeyboardMarkup.__init__
+def _inline_keyboard_with_navigation(self, inline_keyboard=None, *, api_kwargs=None):
+    rows=[list(row) for row in (inline_keyboard or [])]
+    buttons=[button for row in rows for button in row]
+    labels=[str(getattr(button,"text","")).lower() for button in buttons]
+    if rows and not any(any(word in label for word in ("back","dashboard","system panel","control center","home")) for label in labels):
+        callbacks=[str(getattr(button,"callback_data","") or "") for button in buttons]
+        admin_screen=any(value.startswith(("adm:","admshop:","cc:","ccadmin","audit:","pay:","wd:","product:","approve:","reject:","rs:review:","rs:reject:")) for value in callbacks)
+        rows.append([InlineKeyboardButton("⬅️ Back to System Panel" if admin_screen else "⬅️ Back to Dashboard",callback_data="adm:home" if admin_screen else "m:dashboard")])
+    _original_inline_keyboard_init(self,rows,api_kwargs=api_kwargs)
+InlineKeyboardMarkup.__init__=_inline_keyboard_with_navigation
 
 TOKEN=os.getenv("BOT_TOKEN")
 ADMIN_ID=int(os.getenv("ADMIN_ID","0"))
@@ -97,7 +110,8 @@ def owner_kb():
       [InlineKeyboardButton("📦 My Products",callback_data="m:products"),InlineKeyboardButton("🧾 My Orders",callback_data="m:orders")],
       [InlineKeyboardButton("📊 Profit & History",callback_data="m:history"),InlineKeyboardButton("👤 My Account",callback_data="m:profile")],
       [InlineKeyboardButton("👥 Invited Merchants",callback_data="m:referrals")],
-      [InlineKeyboardButton("💬 Support",callback_data="m:support")]
+      [InlineKeyboardButton("💬 Support",callback_data="m:support")],
+      [InlineKeyboardButton("🚪 LOG OUT",callback_data="m:logout")]
     ])
 
 
@@ -443,11 +457,32 @@ async def start(update,ctx):
             "<b>🟡 APPLICATION PENDING</b>\n━━━━━━━━━━━━━━━━━━\n"
             "Your shop is waiting for System review. You will receive a message when a decision is made.",
             parse_mode="HTML")
-    elif int(s["level"])<1:
-        await levels(ctx.bot,update.effective_user.id)
-    else:
+    elif s["status"]=="approved":
+        ctx.user_data["state"]="login_password"
         await update.message.reply_text(
-            f"<b>🔷 {html.escape(shop_brand(s))}</b>\n━━━━━━━━━━━━━━━━━━\n"
+            "<b>🔐 MERCHANT LOGIN REQUIRED</b>\n━━━━━━━━━━━━━━━━━━\nEnter your shop password to open your dashboard.",
+            reply_markup=ReplyKeyboardMarkup([["🔐 Login"],["💬 Support"]],resize_keyboard=True),parse_mode="HTML")
+    else:
+        await update.message.reply_text("Shop status does not allow dashboard access. Contact Support.")
+
+async def _merchant_login_prompt(message,ctx):
+    ctx.user_data.clear()
+    ctx.user_data["state"]="login_password"
+    await message.reply_text(
+        "<b>🔐 MERCHANT LOGIN REQUIRED</b>\n━━━━━━━━━━━━━━━━━━\nEnter your shop password to continue.",
+        reply_markup=ReplyKeyboardMarkup([["🔐 Login"],["💬 Support"]],resize_keyboard=True),parse_mode="HTML")
+
+async def merchant_auth_guard(update,ctx):
+    q=update.callback_query
+    if not q or is_admin(q.from_user.id): return
+    shop=v4.shop_for(q.from_user.id)
+    if not shop or shop["status"]!="approved": return
+    if ctx.user_data.get("logged_in") and int(ctx.user_data.get("shop_id",0) or 0)==int(shop["id"]): return
+    if q.data=="m:logout": return
+    await q.answer("Please log in with your shop password.",show_alert=True)
+    await _merchant_login_prompt(q.message,ctx)
+    raise ApplicationHandlerStop
+
             f"🏪 <b>{html.escape(str(s['shop_name']))}</b> • <b>LEVEL {s['level']}</b>\n"
             + (f"📍 <b>{html.escape(str(s['location_country']))}</b>\n" if s["location_country"] else "")
             + "\n<b>MERCHANT COMMAND CENTER</b>\nWelcome back! Choose a section below.",
@@ -685,6 +720,14 @@ async def menu_callback(update,ctx):
     ctx.user_data["screen_chat_id"]=q.message.chat_id
     s=v4.shop_for(q.from_user.id)
 
+    if action=="logout":
+        ctx.user_data.clear()
+        ctx.user_data["state"]="login_password"
+        await q.message.reply_text(
+            "<b>🚪 YOU HAVE BEEN LOGGED OUT</b>\n━━━━━━━━━━━━━━━━━━\nEnter your shop password to log in again.",
+            reply_markup=ReplyKeyboardMarkup([["🔐 Login"],["💬 Support"]],resize_keyboard=True),parse_mode="HTML")
+        return
+
     if action=="upgrade":
         if not s or s["status"]!="approved" or int(s["level"])<1:
             await q.message.reply_text(
@@ -727,7 +770,6 @@ async def menu_callback(update,ctx):
         if not s or s["status"]!="approved" or int(s["level"])<1:
             await q.message.reply_text("Approved shop aur active level zaroori hai.")
             return
-        ctx.user_data.clear()
         ctx.user_data["screen_message_id"]=q.message.message_id
         ctx.user_data["screen_chat_id"]=q.message.chat_id
         await q.message.reply_text(
@@ -1466,6 +1508,36 @@ async def withdrawal_review_callback(update,ctx):
 
 
 async def text_handler(update,ctx):
+    incoming=(update.message.text or "").strip()
+    if incoming=="🔐 Login":
+        ctx.user_data["state"]="login_password"
+        await update.message.reply_text("🔐 Enter your shop password. Your password message will be deleted where Telegram permits.")
+        return
+    if ctx.user_data.get("state")=="login_password":
+        try: await update.message.delete()
+        except Exception: pass
+        shop=v4.shop_for(update.effective_user.id)
+        if not shop or not shop["password_hash"]:
+            ctx.user_data.clear()
+            await ctx.bot.send_message(update.effective_chat.id,"No shop password found. Please contact Support.")
+            return
+        if not v3.verify_password(incoming,str(shop["password_hash"])):
+            await ctx.bot.send_message(update.effective_chat.id,"❌ Incorrect password. Please enter it again, or use /start to cancel.")
+            return
+        if shop["status"]!="approved":
+            ctx.user_data.clear()
+            await ctx.bot.send_message(update.effective_chat.id,"Your shop is not approved yet. Dashboard access is unavailable.")
+            return
+        ctx.user_data.clear()
+        ctx.user_data["logged_in"]=True
+        ctx.user_data["shop_id"]=int(shop["id"])
+        if int(shop["level"])<1:
+            await levels(ctx.bot,update.effective_user.id)
+        else:
+            await ctx.bot.send_message(update.effective_chat.id,
+                f"<b>✅ LOGIN SUCCESSFUL</b>\n━━━━━━━━━━━━━━━━━━\nShop: <b>{html.escape(str(shop['shop_name']))}</b>\nShop ID: <code>{shop_number(shop['id'])}</code> • Level: <b>{shop['level']}</b>",
+                reply_markup=owner_kb(),parse_mode="HTML")
+        return
     password_stage=ctx.user_data.get("merchant_password_stage")
     if password_stage:
         if is_admin(update.effective_user.id):
@@ -2542,6 +2614,8 @@ async def dashboard(update,ctx):
     if is_admin(update.effective_user.id):
         await send_admin_panel(ctx.bot,update.effective_chat.id); return
     s=v4.shop_for(update.effective_user.id)
+    if s and s["status"]=="approved" and not ctx.user_data.get("logged_in"):
+        await _merchant_login_prompt(update.message,ctx); return
     if not s: await start(update,ctx)
     elif s["status"]!="approved": await update.message.reply_text("Awaiting System approval.")
     elif int(s["level"])<1: await levels(ctx.bot,update.effective_user.id)
@@ -2569,6 +2643,7 @@ def main():
       
       ("orders",central.orders),("history",history_command),("levels",levels),("centralcatalog",central.admin_catalog),("centralprice",central.set_price),("centralstock",central.set_stock),("centralactive",central.set_active),("centralorders",central.orders),("centralbuy",central.buy)]:
         app.add_handler(CommandHandler(cmd,fn))
+    app.add_handler(CallbackQueryHandler(merchant_auth_guard,pattern=r".*"),group=-1)
     app.add_handler(CallbackQueryHandler(approved_callback,pattern=r"^(approve|reject):[0-9]+$"))
     app.add_handler(CallbackQueryHandler(level_callback,pattern=r"^lv:[1-5]$"))
     app.add_handler(CallbackQueryHandler(level_pay_callback,pattern=r"^lvpay:[1-5]$"))
@@ -2576,7 +2651,7 @@ def main():
     app.add_handler(CallbackQueryHandler(network_callback,pattern=r"^net:[0-9]+:(trc|bep)$"))
     app.add_handler(CallbackQueryHandler(txid_callback,pattern=r"^txid:[0-9]+$"))
     app.add_handler(CallbackQueryHandler(merchant_password_callback,pattern=r"^m:changepassword$"))
-    app.add_handler(CallbackQueryHandler(menu_callback,pattern=r"^m:(market|level1|upgrade|sellermarket|deposit|depositstart|depositfund|deposit_fund|deposit-fund|depositdone|deposits|withdraw|withdrawsetup|withdrawsetupedit|wallet|products|orders|history|profile|location|referrals|motivation|dashboard|support)$"))
+    app.add_handler(CallbackQueryHandler(menu_callback,pattern=r"^m:(market|level1|upgrade|sellermarket|deposit|depositstart|depositfund|deposit_fund|deposit-fund|depositdone|deposits|withdraw|withdrawsetup|withdrawsetupedit|wallet|products|orders|history|profile|location|referrals|motivation|dashboard|support|logout)$"))
     app.add_handler(CallbackQueryHandler(admin_panel_callback,pattern=r"^adm:(home|owners|shops|payments|levelpayments|withdrawals|withdrawwallets|products|orders|levels|settings|central|resale|audit|back)$"))
     app.add_handler(CallbackQueryHandler(admin_shop_callback,pattern=r"^admshop:(search|view:[0-9]+|freeze:[0-9]+|disable:[0-9]+|enable:[0-9]+|delete:[0-9]+|warn:[0-9]+|motivationstop:[0-9]+|rename:[0-9]+|password:[0-9]+|approve10:[0-9]+|items:[0-9]+:[1-5])$"))
     app.add_handler(CallbackQueryHandler(central.resale_callback,pattern=r"^rs:(list:[0-9]+|listmenu|market|review:[0-9]+|reject:[0-9]+|buy:[0-9]+:[0-9]+)$"))

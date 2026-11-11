@@ -1815,8 +1815,8 @@ def test_admin_rejection_reasons():
 def test_50_pair_purchase_gate_and_admin_approval():
     c=v4.db()
     c.execute("""INSERT INTO shops(owner_id,shop_name,status,created_at,level)
-                 VALUES(505,'Allowance Test Shop','approved',?,2)""",(v4.now(),))
-    sid=int(c.execute("SELECT id FROM shops WHERE owner_id=505 ORDER BY id DESC LIMIT 1").fetchone()[0])
+                 VALUES(707,'Allowance Test Shop','approved',?,2)""",(v4.now(),))
+    sid=int(c.execute("SELECT id FROM shops WHERE owner_id=707 ORDER BY id DESC LIMIT 1").fetchone()[0])
     product=c.execute(
         "SELECT id,price_usdt,stock FROM central_catalog WHERE active=1 AND level_required=2 ORDER BY id LIMIT 1"
     ).fetchone()
@@ -1826,12 +1826,12 @@ def test_50_pair_purchase_gate_and_admin_approval():
     c.execute("UPDATE central_catalog SET price_usdt=1,stock=20 WHERE id=?",(pid,))
     c.execute("""INSERT INTO merchant_pair_progress
         (shop_id,owner_id,completed_count,cycle_started_at,updated_at)
-        VALUES(?,?,50,?,?)""",(sid,505,v4.now(),v4.now()))
+        VALUES(?,?,50,?,?)""",(sid,707,v4.now(),v4.now()))
     c.commit()
     c.close()
-    add_deposit(505,sid,100)
+    add_deposit(707,sid,100)
 
-    blocked=run_central_buy(505,pid,1)
+    blocked=run_central_buy(707,pid,1)
     require(blocked and "50/50" in blocked[0]["text"] and "Admin approval" in blocked[0]["text"],
             "A merchant at 50/50 could purchase without Admin approval")
 
@@ -1866,14 +1866,14 @@ def test_50_pair_purchase_gate_and_admin_approval():
     require(tuple(allowance)==(20,20),"Repeated Admin approval did not stack the 10-unit allowance")
     require(item_limit==active_l2+20,"Repeated Admin approval did not add another 10 product slots")
 
-    purchased=run_central_buy(505,pid,1)
+    purchased=run_central_buy(707,pid,1)
     require(purchased and "Purchase successful" in purchased[0]["text"],
             "Merchant could not purchase after Admin approved extra units")
     c=v4.db()
     remaining=int(c.execute(
         "SELECT remaining_units FROM merchant_extra_item_allowances WHERE shop_id=?",(sid,)).fetchone()[0])
     audit_count=int(c.execute(
-        "SELECT COUNT(*) FROM admin_audit WHERE owner_id=505 AND action='merchant_extra_items_approved'"
+        "SELECT COUNT(*) FROM admin_audit WHERE owner_id=707 AND action='merchant_extra_items_approved'"
     ).fetchone()[0])
     c.close()
     require(remaining==19,"Successful post-limit purchase did not consume exactly one approved unit")
@@ -2011,8 +2011,8 @@ def test_legacy_product_purchase_gate_after_50_pairs():
     c=v4.db()
     seller=c.execute("SELECT id FROM shops WHERE owner_id=101 ORDER BY id DESC LIMIT 1").fetchone()
     c.execute("""INSERT INTO shops(owner_id,shop_name,status,created_at,level)
-                 VALUES(606,'Legacy Gate Buyer','approved',?,2)""",(v4.now(),))
-    buyer_shop=int(c.execute("SELECT id FROM shops WHERE owner_id=606 ORDER BY id DESC LIMIT 1").fetchone()[0])
+                 VALUES(808,'Legacy Gate Buyer','approved',?,2)""",(v4.now(),))
+    buyer_shop=int(c.execute("SELECT id FROM shops WHERE owner_id=808 ORDER BY id DESC LIMIT 1").fetchone()[0])
     cur=c.execute("""INSERT INTO products
         (shop_id,title,description,price,currency,active,stock,level_required,created_at,updated_at)
         VALUES(?,?,? ,50,'INR',1,5,2,?,?)""",
@@ -2020,12 +2020,12 @@ def test_legacy_product_purchase_gate_after_50_pairs():
     product_id=int(cur.lastrowid)
     c.execute("""INSERT INTO merchant_pair_progress
         (shop_id,owner_id,completed_count,cycle_started_at,updated_at)
-        VALUES(?,?,50,?,?)""",(buyer_shop,606,v4.now(),v4.now()))
+        VALUES(?,?,50,?,?)""",(buyer_shop,808,v4.now(),v4.now()))
     c.commit()
     c.close()
 
     def run_legacy_buy():
-        update,message=message_update(606,"")
+        update,message=message_update(808,"")
         ctx=context()
         ctx.args=[str(product_id),"1"]
         asyncio.run(v4.buy(update,ctx))

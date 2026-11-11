@@ -2123,6 +2123,17 @@ async def admin_shop_callback(update,ctx):
                 await q.message.reply_text(
                     f"Approval is available only after the merchant completes 50/50 buy-and-resell pairs. Current progress: {completed_pairs}/50.")
                 return
+            base_products=int(c.execute(
+                "SELECT COUNT(*) FROM central_catalog WHERE active=1 AND level_required=2 AND product_key LIKE 'level2_%'").fetchone()[0])
+            purchased_base=int(c.execute("""SELECT COUNT(DISTINCT o.catalog_id)
+                FROM central_orders o JOIN central_catalog p ON p.id=o.catalog_id
+                WHERE o.buyer_shop_id=? AND p.level_required=2 AND p.product_key LIKE 'level2_%'""",
+                (sid,)).fetchone()[0])
+            if purchased_base<base_products:
+                c.rollback()
+                await q.message.reply_text(
+                    f"Finish all original Level 2 products first ({purchased_base}/{base_products} purchased). New mobile products unlock only after the original 50 are used and 50/50 pairs are completed.")
+                return
             current_limit=c.execute(
                 "SELECT item_limit FROM merchant_level_item_limits WHERE shop_id=? AND level=2",
                 (sid,)).fetchone()

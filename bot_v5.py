@@ -1097,19 +1097,19 @@ async def menu_callback(update,ctx):
         c=v4.db()
         try:
             wallet_summary=usdt_wallet_summary(c,q.from_user.id)
+            # Reserve is the historical purchase cost of every non-refunded item,
+            # including items already sold. Selling an item never releases its cost
+            # back into Total Funds.
             reserve_row=c.execute("""SELECT
-                COALESCE(SUM(i.remaining_quantity*i.unit_cost_usdt),0) reserve_usdt,
-                COALESCE(SUM(i.remaining_quantity),0) reserve_items
-                FROM central_inventory i WHERE i.owner_id=? AND i.remaining_quantity>0""",(q.from_user.id,)).fetchone()
-            bought_row=c.execute("""SELECT COALESCE(SUM(o.quantity),0) bought_items
-                FROM central_orders o
-                WHERE o.buyer_owner_id=? AND o.status IN ('paid','fulfilled')
-                  AND EXISTS (
-                    SELECT 1 FROM ledger l
-                    WHERE l.transaction_id=o.id AND l.owner_id=o.buyer_owner_id
-                      AND l.entry_type IN ('central_purchase_debit','resale_purchase_debit')
-                      AND l.currency='USDT'
-                  )""",(q.from_user.id,)).fetchone()
+                COALESCE(SUM(i.quantity*i.unit_cost_usdt),0) reserve_usdt,
+                COALESCE(SUM(i.quantity),0) reserve_items
+                FROM central_inventory i
+                WHERE i.owner_id=? AND COALESCE(i.status,'owned')<>'refunded'""",
+                (q.from_user.id,)).fetchone()
+            bought_row=c.execute("""SELECT COALESCE(SUM(i.quantity),0) bought_items
+                FROM central_inventory i
+                WHERE i.owner_id=? AND COALESCE(i.status,'owned')<>'refunded'""",
+                (q.from_user.id,)).fetchone()
             central.ensure_pair_progress(c,int(s["id"]),int(q.from_user.id),s["location_timezone"] if "location_timezone" in s.keys() else None)
             pair_row=c.execute("""SELECT completed_count FROM merchant_pair_progress WHERE shop_id=?""",
                                (int(s["id"]),)).fetchone()
@@ -1123,19 +1123,25 @@ async def menu_callback(update,ctx):
         pair_target=50
         pair_progress=min(pair_target,max(0,int(pair_row["completed_count"] or 0))) if pair_row else 0
         profit=float(profit_row["profit"] or 0)
-        # Sale proceeds contain returned purchase cost plus profit. Keep only
-        # unwithdrawn profit separate; sold item cost returns to Total Funds.
+        # Sale proceeds are recorded gross. Split the wallet into:
+        # unused funds, the historical cost reserve (sold or unsold), and
+        # profit that has not yet been withdrawn. Never return sold-item cost
+        # to Total Funds.
         profit_remaining=max(0.0,round(profit-float(wallet_summary["paid"])-float(wallet_summary["pending"]),6))
-        total_funds=max(0.0,round(float(wallet_summary["ledger_balance"])-float(wallet_summary["pending"])-profit_remaining,6))
+        total_funds=max(0.0,round(
+            float(wallet_summary["ledger_balance"])
+            -float(wallet_summary["pending"])
+            -reserve
+            -profit_remaining,6))
         body=(
             "<b>👤 MY ACCOUNT</b>\n━━━━━━━━━━━━━━━━━━\n"
             f"Shop: <b>{html.escape(str(s['shop_name']))}</b>\n"
             f"Shop ID: <code>{html.escape(str(s['shop_code'] or 'Pending'))}</code> • Level: <b>L{s['level']}</b>\n"
             f"📍 Location: <b>{html.escape(str(s['location_city'] or 'Not available'))}, {html.escape(str(s['location_state'] or 'Not available'))}, {html.escape(str(s['location_country'] or 'Not available'))}</b>\n\n"
             "<b>💼 MERCHANT FUNDS SUMMARY</b>\n"
-            f"Total funds (unused + returned purchase cost): <b>{format_usdt(total_funds)} USDT</b>\n"
-            f"🔒 Reserve in unsold items: <b>{format_usdt(reserve)} USDT</b>\n"
-            f"Items currently in reserve: <b>{reserve_items}</b>\n"
+            f"Total Funds (deposited funds not used for buying): <b>{format_usdt(total_funds)} USDT</b>\n"
+            f"🔒 Reserve (all purchased items, sold + unsold): <b>{format_usdt(reserve)} USDT</b>\n"
+            f"Total items in reserve: <b>{reserve_items}</b>\n"
             f"Total items purchased: <b>{int(bought_row['bought_items'] or 0)}</b>\n"
             f"🔄 Completed buy/sell pairs: <b>{pair_progress}/{pair_target}</b>\n"
             f"💚 Total realized profit earned: <b>+{format_usdt(profit)} USDT</b>\n"

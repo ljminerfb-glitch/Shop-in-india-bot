@@ -1100,14 +1100,14 @@ async def menu_callback(update,ctx):
             reserve_row=c.execute("""SELECT
                 COALESCE(SUM(i.remaining_quantity*i.unit_cost_usdt),0) reserve_usdt,
                 COALESCE(SUM(i.remaining_quantity),0) reserve_items
-                FROM central_inventory i WHERE i.owner_id=?""",(q.from_user.id,)).fetchone()
+                FROM central_inventory i WHERE i.owner_id=? AND i.remaining_quantity>0""",(q.from_user.id,)).fetchone()
             bought_row=c.execute("""SELECT COALESCE(SUM(o.quantity),0) bought_items
                 FROM central_orders o
                 WHERE o.buyer_owner_id=? AND o.status IN ('paid','fulfilled')
                   AND EXISTS (
                     SELECT 1 FROM ledger l
                     WHERE l.transaction_id=o.id AND l.owner_id=o.buyer_owner_id
-                      AND l.entry_type='central_purchase_debit'
+                      AND l.entry_type IN ('central_purchase_debit','resale_purchase_debit')
                       AND l.currency='USDT'
                   )""",(q.from_user.id,)).fetchone()
             central.ensure_pair_progress(c,int(s["id"]),int(q.from_user.id),s["location_timezone"] if "location_timezone" in s.keys() else None)
@@ -1122,20 +1122,24 @@ async def menu_callback(update,ctx):
         reserve_items=int(reserve_row["reserve_items"] or 0)
         pair_target=50
         pair_progress=min(pair_target,max(0,int(pair_row["completed_count"] or 0))) if pair_row else 0
-        total_funds=max(0.0,float(wallet_summary["ledger_balance"])-float(wallet_summary["pending"]))
         profit=float(profit_row["profit"] or 0)
+        # Sale proceeds contain returned purchase cost plus profit. Keep only
+        # unwithdrawn profit separate; sold item cost returns to Total Funds.
+        profit_remaining=max(0.0,round(profit-float(wallet_summary["paid"])-float(wallet_summary["pending"]),6))
+        total_funds=max(0.0,round(float(wallet_summary["ledger_balance"])-float(wallet_summary["pending"])-profit_remaining,6))
         body=(
             "<b>👤 MY ACCOUNT</b>\n━━━━━━━━━━━━━━━━━━\n"
             f"Shop: <b>{html.escape(str(s['shop_name']))}</b>\n"
             f"Shop ID: <code>{html.escape(str(s['shop_code'] or 'Pending'))}</code> • Level: <b>L{s['level']}</b>\n"
             f"📍 Location: <b>{html.escape(str(s['location_city'] or 'Not available'))}, {html.escape(str(s['location_state'] or 'Not available'))}, {html.escape(str(s['location_country'] or 'Not available'))}</b>\n\n"
             "<b>💼 MERCHANT FUNDS SUMMARY</b>\n"
-            f"Total funds (available wallet only): <b>{format_usdt(total_funds)} USDT</b>\n"
-            f"🔒 Reserve in unsold items (not included above): <b>{format_usdt(reserve)} USDT</b>\n"
+            f"Total funds (unused + returned purchase cost): <b>{format_usdt(total_funds)} USDT</b>\n"
+            f"🔒 Reserve in unsold items: <b>{format_usdt(reserve)} USDT</b>\n"
             f"Items currently in reserve: <b>{reserve_items}</b>\n"
             f"Total items purchased: <b>{int(bought_row['bought_items'] or 0)}</b>\n"
             f"🔄 Completed buy/sell pairs: <b>{pair_progress}/{pair_target}</b>\n"
-            f"💚 Recorded realized profit: <b>+{format_usdt(profit)} USDT</b>\n\n"
+            f"💚 Total realized profit earned: <b>+{format_usdt(profit)} USDT</b>\n"
+            f"Profit not yet withdrawn: <b>{format_usdt(profit_remaining)} USDT</b>\n\n"
             "Withdrawal network: <b>USDT TRC20 only</b>\n"
             "Enter your TRC20 address with each withdrawal request.\n\n"
             "<b>DEPOSIT NETWORKS</b>\n"
@@ -1147,7 +1151,14 @@ async def menu_callback(update,ctx):
             [InlineKeyboardButton("📍 Update Location",callback_data="m:location")],
             [InlineKeyboardButton("⬅️ Back to Dashboard",callback_data="m:dashboard")]
         ])
-        await send_shop_profile(ctx.bot,q.message.chat_id,q.from_user.id,body,reply_markup=profile_kb)
+        try:
+            await send_shop_profile(ctx.bot,q.message.chat_id,q.from_user.id,body,reply_markup=profile_kb)
+        except Exception:
+            log.exception("My Account screen failed for merchant %s",q.from_user.id)
+            await q.message.reply_text(
+                "My Account could not load completely. Please try again or contact Support.",
+                reply_markup=profile_kb
+            )
     elif action=="support":
         from telegram import InlineKeyboardMarkup, InlineKeyboardButton
         await q.message.reply_text(

@@ -1149,10 +1149,14 @@ async def menu_callback(update,ctx):
         ])
         await send_shop_profile(ctx.bot,q.message.chat_id,q.from_user.id,body,reply_markup=profile_kb)
     elif action=="support":
+        from telegram import InlineKeyboardMarkup, InlineKeyboardButton
         await q.message.reply_text(
-            "<b>💬 SUPPORT</b>\n━━━━━━━━━━━━━━━━━━\n"
-            "For help with registration, payments, shop approval or account issues, contact the Shop in India System.",
-            reply_markup=back_dashboard_kb(),parse_mode="HTML")
+            "<b>💬 CUSTOMER SUPPORT</b>\n━━━━━━━━━━━━━━━━━━\n"
+            "For help with registration, payments, shop approval or account issues, contact our customer support team.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("💬 CONTACT CUSTOMER SUPPORT",url="https://t.me/customerservices_2002")],
+                [InlineKeyboardButton("⬅️ BACK TO DASHBOARD",callback_data="m:dashboard")]
+            ]),parse_mode="HTML")
 
 
 def usdt_wallet_summary(c, owner_id):
@@ -2547,9 +2551,13 @@ async def audit_callback(update,ctx):
         await q.message.reply_text("Audit log could not be loaded.")
 
 async def support_command(update,ctx):
+    from telegram import InlineKeyboardMarkup, InlineKeyboardButton
     await update.message.reply_text(
-        "💬 SHOP IN INDIA SUPPORT\n\n"
-        "Registration, login, shop approval, deposits, withdrawals ya account issue ke liye System se rabta karein."
+        "💬 CUSTOMER SUPPORT\n\n"
+        "Registration, login, shop approval, deposits, withdrawals ya account issue ke liye hamari customer support team se rabta karein.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("💬 CONTACT CUSTOMER SUPPORT",url="https://t.me/customerservices_2002")]
+        ])
     )
 
 async def history_command(update,ctx):

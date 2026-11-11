@@ -402,7 +402,7 @@ async def buy(update,ctx):
             c,shop["id"],update.effective_user.id,qty)
         if not purchase_allowed:
             c.rollback(); await update.effective_message.reply_text(purchase_message); return
-        p=c.execute("SELECT * FROM central_catalog WHERE id=? AND active=1 AND level_required>=1 AND level_required<=?",(pid,int(shop["level"]))).fetchone()
+        p=c.execute("SELECT * FROM central_catalog WHERE id=? AND active=1 AND level_required=?",(pid,int(shop["level"]))).fetchone()
         if not p or float(p["price_usdt"])<=0:
             c.rollback(); await update.effective_message.reply_text("Product unavailable. Admin has not set its USDT price yet."); return
         if int(shop["level"])==2 and int(p["level_required"])==2:
@@ -722,7 +722,7 @@ async def owner_market(update,ctx,shop):
         [InlineKeyboardButton(
             "🟦 LEVEL 1 — CLASSIC CATALOGUE" if available_level==1 else f"🟩 LEVEL {available_level} CATALOGUE",
             callback_data=f"cclevel:{available_level}")]
-        for available_level in range(1,level+1)
+        for available_level in (level,)
     ]
     await update.callback_query.message.reply_text(
         "<b>🛒 BUY PRODUCT</b>\n━━━━━━━━━━━━━━━━━━\n"
@@ -738,7 +738,7 @@ async def owner_level_callback(update,ctx):
     shop=v4.shop_for(q.from_user.id)
     try: level=int(q.data.split(":")[1])
     except (ValueError,IndexError): level=0
-    if not shop or shop["status"]!="approved" or int(shop["level"]) not in (1,2) or level>int(shop["level"]):
+    if not shop or shop["status"]!="approved" or int(shop["level"]) not in (1,2) or level!=int(shop["level"]):
         await safe_callback_answer(q,"Your approved shop level does not match this catalogue",show_alert=True); return
     await safe_callback_answer(q)
     await show_owner_level_products(update,ctx,shop,level=level)
@@ -757,7 +757,7 @@ async def owner_catalog_page_callback(update,ctx):
             level,page=int(parts[1]),int(parts[2])
         else:
             raise ValueError()
-        if level<1 or level>int(shop["level"]) or page<0: raise ValueError()
+        if level<1 or level!=int(shop["level"]) or page<0: raise ValueError()
     except (ValueError,IndexError):
         await safe_callback_answer(q,"Invalid page",show_alert=True); return
     await safe_callback_answer(q)

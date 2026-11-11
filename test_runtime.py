@@ -1812,6 +1812,73 @@ def test_admin_rejection_reasons():
     print("PASS: Admin rejection reasons saved and delivered for deposits, withdrawals and product listings")
 
 
+def test_50_pair_purchase_gate_and_admin_approval():
+    c=v4.db()
+    c.execute("""INSERT INTO shops(owner_id,shop_name,status,created_at,level)
+                 VALUES(505,'Allowance Test Shop','approved',?,2)""",(v4.now(),))
+    sid=int(c.execute("SELECT id FROM shops WHERE owner_id=505 ORDER BY id DESC LIMIT 1").fetchone()[0])
+    product=c.execute(
+        "SELECT id FROM central_catalog WHERE active=1 AND level_required=2 ORDER BY id LIMIT 1"
+    ).fetchone()
+    pid=int(product["id"])
+    c.execute("UPDATE central_catalog SET price_usdt=1,stock=20 WHERE id=?",(pid,))
+    c.execute("""INSERT INTO merchant_pair_progress
+        (shop_id,owner_id,completed_count,cycle_started_at,updated_at)
+        VALUES(?,?,50,?,?)""",(sid,505,v4.now(),v4.now()))
+    c.commit()
+    c.close()
+    add_deposit(505,sid,100)
+
+    blocked=run_central_buy(505,pid,1)
+    require(blocked and "50/50" in blocked[0]["text"] and "Admin approval" in blocked[0]["text"],
+            "A merchant at 50/50 could purchase without Admin approval")
+
+    # First Admin approval grants 10 purchase units and 10 more Level 2 product slots.
+    update,_,_=callback_update(999999,f"admshop:approve10:{sid}")
+    admin_ctx=context()
+    asyncio.run(v5.admin_shop_callback(update,admin_ctx))
+    c=v4.db()
+    allowance=c.execute(
+        "SELECT remaining_units,total_approved_units FROM merchant_extra_item_allowances WHERE shop_id=?",
+        (sid,)).fetchone()
+    item_limit=c.execute(
+        "SELECT item_limit FROM merchant_level_item_limits WHERE shop_id=? AND level=2",
+        (sid,)).fetchone()[0]
+    active_l2=int(c.execute(
+        "SELECT COUNT(*) FROM central_catalog WHERE active=1 AND level_required=2").fetchone()[0])
+    c.close()
+    require(tuple(allowance)==(10,10),"Admin approval did not grant exactly 10 extra purchase units")
+    require(int(item_limit)==active_l2+10,"Admin approval did not unlock 10 additional Level 2 product slots")
+
+    # A second approval stacks, rather than overwriting, both allowances.
+    update,_,_=callback_update(999999,f"admshop:approve10:{sid}")
+    asyncio.run(v5.admin_shop_callback(update,context()))
+    c=v4.db()
+    allowance=c.execute(
+        "SELECT remaining_units,total_approved_units FROM merchant_extra_item_allowances WHERE shop_id=?",
+        (sid,)).fetchone()
+    item_limit=int(c.execute(
+        "SELECT item_limit FROM merchant_level_item_limits WHERE shop_id=? AND level=2",
+        (sid,)).fetchone()[0])
+    c.close()
+    require(tuple(allowance)==(20,20),"Repeated Admin approval did not stack the 10-unit allowance")
+    require(item_limit==active_l2+20,"Repeated Admin approval did not add another 10 product slots")
+
+    purchased=run_central_buy(505,pid,1)
+    require(purchased and "Purchase successful" in purchased[0]["text"],
+            "Merchant could not purchase after Admin approved extra units")
+    c=v4.db()
+    remaining=int(c.execute(
+        "SELECT remaining_units FROM merchant_extra_item_allowances WHERE shop_id=?",(sid,)).fetchone()[0])
+    audit_count=int(c.execute(
+        "SELECT COUNT(*) FROM admin_audit WHERE owner_id=505 AND action='merchant_extra_items_approved'"
+    ).fetchone()[0])
+    c.close()
+    require(remaining==19,"Successful post-limit purchase did not consume exactly one approved unit")
+    require(audit_count==2,"Admin approvals were not written to the audit log")
+    print("PASS: 50-pair purchase lock, repeated Admin +10 approvals, Level 2 slot expansion and allowance consumption")
+
+
 def test_admin_shop_controls_and_search():
     c=v4.db()
     shop=c.execute("SELECT id FROM shops WHERE owner_id=101 ORDER BY id DESC LIMIT 1").fetchone()
@@ -1976,6 +2043,7 @@ def main():
     fixture()
     test_automatic_excel_export()
     test_admin_shop_controls_and_search()
+    test_50_pair_purchase_gate_and_admin_approval()
     # Each shop screen fetches the current profile image again rather than retaining an old photo ID.
     avatar_bot=FakeBot()
     asyncio.run(v5.send_shop_profile(avatar_bot,101,101,"Shop card"))

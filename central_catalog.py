@@ -825,7 +825,8 @@ async def admin_callback(update,ctx):
                     WHERE order_id=? AND owner_id=? AND shop_id=? ORDER BY id LIMIT 1""",
                     (oid,order["buyer_owner_id"],order["buyer_shop_id"])).fetchone()
                 if not inventory or int(inventory["remaining_quantity"])!=int(order["quantity"]):
-                    c.rollback()                    await q.message.reply_text(
+                    c.rollback()
+                    await q.message.reply_text(
                         "Refund blocked: some or all items have already been resold or used. "
                         "No wallet, inventory, listing, or catalogue stock was changed.")
                     return
@@ -1223,7 +1224,8 @@ async def resale_callback(update,ctx):
         await safe_callback_answer(q)
         await q.message.reply_text(
             f"✍️ Enter the rejection reason for resale listing #{lid}. "
-            "The seller will receive this reason. Type CANCEL to stop.")        return
+            "The seller will receive this reason. Type CANCEL to stop.")
+            return
     if action=="review":
         if not v4.admin(q.from_user.id): await safe_callback_answer(q, "System only",show_alert=True); return
         lid=int(parts[2]); c=v4.db()

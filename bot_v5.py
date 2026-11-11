@@ -1963,6 +1963,13 @@ async def show_admin_shop(update,ctx,shop_id,edit=False):
         row=c.execute("SELECT * FROM shops WHERE id=?",(int(shop_id),)).fetchone()
         item_limits={int(x["level"]):int(x["item_limit"]) for x in c.execute(
             "SELECT level,item_limit FROM merchant_level_item_limits WHERE shop_id=?",(int(shop_id),)).fetchall()}
+        pair_row=c.execute(
+            "SELECT completed_count FROM merchant_pair_progress WHERE shop_id=?",(int(shop_id),)).fetchone()
+        allowance_row=c.execute(
+            "SELECT remaining_units,total_approved_units FROM merchant_extra_item_allowances WHERE shop_id=?",
+            (int(shop_id),)).fetchone()
+        active_l2_count=int(c.execute(
+            "SELECT COUNT(*) FROM central_catalog WHERE active=1 AND level_required=2").fetchone()[0])
     finally:
         c.close()
     if not row:
@@ -1980,6 +1987,10 @@ async def show_admin_shop(update,ctx,shop_id,edit=False):
           f"Motivation reminder: <b>{html.escape(reminder_status.upper())}</b>\n"
           f"Control note: {html.escape(str(row['control_note'] or 'None'))}\n"
           f"Warning reason: {html.escape(str(row['warning_reason'] or 'None'))}\n"
+          f"Completed pairs: <b>{int(pair_row['completed_count'] or 0) if pair_row else 0}/50</b>\n"
+          f"Extra approved purchase units: <b>{int(allowance_row['remaining_units'] or 0) if allowance_row else 0}</b> remaining "
+          f"(total approved: {int(allowance_row['total_approved_units'] or 0) if allowance_row else 0})\n"
+          f"Level 2 product slots: <b>{item_limits.get(2, active_l2_count)}</b>\n"
           f"Assigned item limits: " + " • ".join(
               f"L{level}: {item_limits.get(level, 'Default')}" for level in range(1,6)))
     kb_rows=[
@@ -1995,6 +2006,7 @@ async def show_admin_shop(update,ctx,shop_id,edit=False):
         [InlineKeyboardButton("📦 L3 Item Limit",callback_data=f"admshop:items:{row['id']}:3"),
          InlineKeyboardButton("📦 L4 Item Limit",callback_data=f"admshop:items:{row['id']}:4")],
         [InlineKeyboardButton("📦 L5 Item Limit",callback_data=f"admshop:items:{row['id']}:5")],
+        [InlineKeyboardButton("➕ APPROVE 10 MORE ITEMS",callback_data=f"admshop:approve10:{row['id']}")],
     ]
     if reminder_status=="on":
         kb_rows.append([InlineKeyboardButton("🛑 STOP Motivation Reminder",callback_data=f"admshop:motivationstop:{row['id']}")])
@@ -2020,6 +2032,62 @@ async def admin_shop_callback(update,ctx):
     sid=int(parts[2])
     if action=="view":
         await show_admin_shop(update,ctx,sid); return
+    if action=="approve10":
+        central.setup()
+        c=v4.db()
+        try:
+            c.execute("BEGIN IMMEDIATE")
+            shop_row=c.execute("SELECT owner_id,shop_name FROM shops WHERE id=?",(sid,)).fetchone()
+            if not shop_row:
+                c.rollback()
+                await q.message.reply_text("Shop ID not found. No approval was applied.")
+                return
+            current_limit=c.execute(
+                "SELECT item_limit FROM merchant_level_item_limits WHERE shop_id=? AND level=2",
+                (sid,)).fetchone()
+            active_l2=int(c.execute(
+                "SELECT COUNT(*) FROM central_catalog WHERE active=1 AND level_required=2").fetchone()[0])
+            old_limit=int(current_limit["item_limit"]) if current_limit else active_l2
+            new_limit=old_limit+10
+            c.execute("""INSERT INTO merchant_level_item_limits
+                (shop_id,level,item_limit,updated_at,updated_by) VALUES(?,2,?,?,?)
+                ON CONFLICT(shop_id,level) DO UPDATE SET
+                  item_limit=excluded.item_limit,updated_at=excluded.updated_at,updated_by=excluded.updated_by""",
+                (sid,new_limit,v4.now(),ADMIN_ID))
+            c.execute("""INSERT INTO merchant_extra_item_allowances
+                (shop_id,remaining_units,total_approved_units,updated_at)
+                VALUES(?,10,10,?)
+                ON CONFLICT(shop_id) DO UPDATE SET
+                  remaining_units=merchant_extra_item_allowances.remaining_units+10,
+                  total_approved_units=merchant_extra_item_allowances.total_approved_units+10,
+                  updated_at=excluded.updated_at""",(sid,v4.now()))
+            c.execute("""INSERT INTO admin_audit(admin_id,owner_id,action,details,created_at)
+                VALUES(?,?,?,?,?)""",
+                (ADMIN_ID,shop_row["owner_id"],"merchant_extra_items_approved",
+                 f"{shop_number(sid)} ({shop_row['shop_name']}): +10 purchase units; Level 2 product limit {old_limit} -> {new_limit}",
+                 v4.now()))
+            c.commit()
+        except Exception:
+            c.rollback()
+            log.exception("Admin extra-item approval failed")
+            await q.message.reply_text("Approval failed safely. No extra units or product slots were added.")
+            return
+        finally:
+            c.close()
+        try:
+            await ctx.bot.send_message(
+                shop_row["owner_id"],
+                "<b>🎉 ADMIN APPROVAL RECEIVED</b>\n"
+                "You can now purchase 10 additional item units. "
+                f"Your Level 2 product catalogue limit has increased to {new_limit} products.",
+                parse_mode="HTML")
+        except Exception:
+            log.exception("Could not notify merchant about extra-item approval")
+        await q.message.reply_text(
+            f"✅ Approved 10 additional purchase units for {shop_number(sid)}. "
+            f"Level 2 product slots: {old_limit} → {new_limit}.")
+        await show_admin_shop(update,ctx,sid)
+        return
     if action=="rename":
         ctx.user_data["admin_shop_rename_id"]=sid
         await q.message.reply_text(f"Enter the new unique shop name for {shop_number(sid)} (2–40 characters), or CANCEL.")
@@ -2493,7 +2561,7 @@ def main():
     app.add_handler(CallbackQueryHandler(merchant_password_callback,pattern=r"^m:changepassword$"))
     app.add_handler(CallbackQueryHandler(menu_callback,pattern=r"^m:(market|level1|upgrade|sellermarket|deposit|depositstart|depositfund|deposit_fund|deposit-fund|depositdone|deposits|withdraw|withdrawsetup|withdrawsetupedit|wallet|products|orders|history|profile|location|referrals|motivation|dashboard|support)$"))
     app.add_handler(CallbackQueryHandler(admin_panel_callback,pattern=r"^adm:(home|owners|shops|payments|levelpayments|withdrawals|withdrawwallets|products|orders|levels|settings|central|resale|audit|back)$"))
-    app.add_handler(CallbackQueryHandler(admin_shop_callback,pattern=r"^admshop:(search|view:[0-9]+|freeze:[0-9]+|disable:[0-9]+|enable:[0-9]+|delete:[0-9]+|warn:[0-9]+|motivationstop:[0-9]+|rename:[0-9]+|password:[0-9]+|items:[0-9]+:[1-5])$"))
+    app.add_handler(CallbackQueryHandler(admin_shop_callback,pattern=r"^admshop:(search|view:[0-9]+|freeze:[0-9]+|disable:[0-9]+|enable:[0-9]+|delete:[0-9]+|warn:[0-9]+|motivationstop:[0-9]+|rename:[0-9]+|password:[0-9]+|approve10:[0-9]+|items:[0-9]+:[1-5])$"))
     app.add_handler(CallbackQueryHandler(central.resale_callback,pattern=r"^rs:(list:[0-9]+|listmenu|market|review:[0-9]+|reject:[0-9]+|buy:[0-9]+:[0-9]+)$"))
     app.add_handler(CallbackQueryHandler(audit_callback,pattern=r"^audit:(all|payments|levels|wallet|orders|products):[0-9]+$"))
     app.add_handler(CallbackQueryHandler(delivered_callback,pattern=r"^order:delivered:[0-9]+$"))

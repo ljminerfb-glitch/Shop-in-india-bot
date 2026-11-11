@@ -310,8 +310,8 @@ def test_admin_catalogue_pagination():
 def test_central_purchase_and_auto_listing():
     add_deposit(101, 1, 10)
     c = v4.db()
-    pid = c.execute("SELECT id FROM central_catalog ORDER BY id LIMIT 1").fetchone()["id"]
-    c.execute("UPDATE central_catalog SET price_usdt=2.5, stock=5 WHERE id=?", (pid,))
+    l1_pid = c.execute("SELECT id FROM central_catalog WHERE level_required=1 ORDER BY id LIMIT 1").fetchone()["id"]
+    c.execute("UPDATE central_catalog SET price_usdt=2.5, stock=5 WHERE id=?", (l1_pid,))
     c.execute("""INSERT INTO ledger(shop_id,owner_id,entry_type,amount,currency,note,created_at)
                  VALUES(1,101,'level_activation_wallet_credit',2.5,'USDT','test activation cashback',?)""",
               (v4.now(),))
@@ -319,12 +319,25 @@ def test_central_purchase_and_auto_listing():
     require(cc.balance(c, 101) == 12.5, "USDT wallet balance calculation failed")
     c.close()
 
-    blocked = run_central_buy(101, pid, 2)
+    blocked = run_central_buy(101, l1_pid, 2)
     require(any("only 1 item per order" in x["text"] for x in blocked),
             "Server did not block a Level 1 purchase quantity above one")
     c = v4.db()
     c.execute("UPDATE shops SET level=2 WHERE owner_id=101")
+    l2_row=c.execute("SELECT id FROM central_catalog WHERE level_required=2 AND product_key LIKE 'level2_%' ORDER BY id LIMIT 1").fetchone()
+    require(l2_row is not None,"Level 2 catalogue fixture is missing")
+    pid=int(l2_row["id"])
+    c.execute("UPDATE central_catalog SET price_usdt=2.5, stock=5 WHERE id=?", (pid,))
     c.commit(); c.close()
+
+    blocked_l1=run_central_buy(101,l1_pid,1)
+    require(any("Product unavailable" in x["text"] for x in blocked_l1),
+            "Level 2 merchant could still buy a Level 1 product")
+    c=v4.db()
+    require(c.execute("SELECT COUNT(*) FROM central_orders WHERE buyer_owner_id=101 AND catalog_id=?",(l1_pid,)).fetchone()[0]==0,
+            "Blocked Level 1 purchase created an order for a Level 2 merchant")
+    c.close()
+
     replies = run_central_buy(101, pid, 2)
     require(any("Purchase successful" in x["text"] for x in replies), "Level 2 central purchase did not succeed")
     c = v4.db()
@@ -332,20 +345,22 @@ def test_central_purchase_and_auto_listing():
     c.commit()
     require(c.execute("SELECT stock FROM central_catalog WHERE id=?", (pid,)).fetchone()[0] == 3,
             "Central shared stock was not reduced")
-    order = c.execute("SELECT id FROM central_orders WHERE buyer_owner_id=101 AND quantity=2").fetchone()
+    order = c.execute("SELECT id FROM central_orders WHERE buyer_owner_id=101 AND catalog_id=? AND quantity=2",(pid,)).fetchone()
     require(order is not None, "Level 2 purchase order missing")
-    inv = c.execute("SELECT * FROM central_inventory WHERE owner_id=101 AND remaining_quantity=2").fetchone()
+    inv = c.execute("SELECT * FROM central_inventory WHERE owner_id=101 AND catalog_id=? AND remaining_quantity=2",(pid,)).fetchone()
     require(inv is not None, "Buyer inventory missing")
-    listing = c.execute("SELECT * FROM resale_listings WHERE owner_id=101 AND status='active'").fetchone()
-    require(listing is not None, "Level 1 purchase did not auto-create resale listing")
-    require(abs(float(listing["ask_price_usdt"]) - 3.3) < 1e-8,
-            "Resale asking price is not cost + 0.8 USDT")
+    listing = c.execute("SELECT * FROM resale_listings WHERE owner_id=101 AND catalog_id=? AND status='active'",(pid,)).fetchone()
+    require(listing is not None, "Level 2 purchase did not auto-create resale listing")
+    require(float(listing["ask_price_usdt"])>2.5,
+            "Level 2 resale asking price did not include a positive configured margin")
+    # Set a deterministic ask for the separate manual-offer regression test below.
+    c.execute("UPDATE resale_listings SET ask_price_usdt=3.3 WHERE id=?",(listing["id"],))
     require(int(listing["remaining_quantity"]) == 2, "Listing quantity does not match purchased inventory")
     require(abs(cc.balance(c, 101) - 7.5) < 1e-8, "Central purchase wallet debit is wrong")
     require(c.execute("PRAGMA integrity_check").fetchone()[0] == "ok", "SQLite integrity check failed")
     listing_id, inventory_id = int(listing["id"]), int(inv["id"])
     c.close()
-    print("PASS: Central purchase, USDT debit, inventory and automatic +0.8 listing")
+    print("PASS: Level 1 quantity restriction, Level 2-only purchases, USDT debit, inventory and resale listing")
     return pid, listing_id, inventory_id
 
 

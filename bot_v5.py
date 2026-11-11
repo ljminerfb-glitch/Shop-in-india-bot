@@ -1419,6 +1419,8 @@ async def text_handler(update,ctx):
         if update.effective_user.id!=ADMIN_ID:
             ctx.user_data.pop("admin_shop_password_id",None); return
         new_password=(update.message.text or "").strip()
+        try: await update.message.delete()
+        except Exception: pass
         if new_password.lower()=="cancel":
             ctx.user_data.pop("admin_shop_password_id",None)
             await update.message.reply_text("Password reset cancelled."); return

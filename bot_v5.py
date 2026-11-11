@@ -919,7 +919,7 @@ async def menu_callback(update,ctx):
               ORDER BY l.id DESC LIMIT 30""",(q.from_user.id,int(s["level"]))).fetchall()
         finally: c.close()
         seller_cards={}
-        for seller in list(resale)+list(rows):
+        for seller in list(resale)+list(rows)+list(own_resale):
             seller_cards.setdefault(int(seller["owner_id"]),(seller["shop_name"],int(seller["owner_id"])))
         for seller_name,seller_owner in seller_cards.values():
             await send_shop_profile(ctx.bot,q.message.chat_id,seller_owner,

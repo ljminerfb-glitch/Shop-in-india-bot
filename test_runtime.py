@@ -406,7 +406,7 @@ def test_list_stock_profit_screen():
     require(len(message.replies) >= 1, "List My Stock screen did not render")
     screen = message.replies[0]["text"]
     require("Your cost: 2.5 USDT / item" in screen, "List My Stock does not show unit cost")
-    require("Resale margin: 2%–6.5% (random per Level 2 listing)" in screen,
+    require("Resale margin: 2.00%–6.50% (random per Level 2 listing)" in screen,
             "List My Stock does not show the configured Level 2 resale margin range")
     require("Expected profit: +0.05 to +0.1625 USDT / sold item" in screen,
             "List My Stock does not show the Level 2 expected profit range")

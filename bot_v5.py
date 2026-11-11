@@ -1875,9 +1875,12 @@ def shop_number(shop_id):
         c.close()
 
 async def show_admin_shop(update,ctx,shop_id,edit=False):
+    central.setup()
     c=v4.db()
     try:
         row=c.execute("SELECT * FROM shops WHERE id=?",(int(shop_id),)).fetchone()
+        item_limits={int(x["level"]):int(x["item_limit"]) for x in c.execute(
+            "SELECT level,item_limit FROM merchant_level_item_limits WHERE shop_id=?",(int(shop_id),)).fetchall()}
     finally:
         c.close()
     if not row:
@@ -1894,7 +1897,9 @@ async def show_admin_shop(update,ctx,shop_id,edit=False):
           f"Warning queued: <b>{'YES' if row['next_order_warning'] else 'NO'}</b>\n"
           f"Motivation reminder: <b>{html.escape(reminder_status.upper())}</b>\n"
           f"Control note: {html.escape(str(row['control_note'] or 'None'))}\n"
-          f"Warning reason: {html.escape(str(row['warning_reason'] or 'None'))}")
+          f"Warning reason: {html.escape(str(row['warning_reason'] or 'None'))}\n"
+          f"Assigned item limits: " + " • ".join(
+              f"L{level}: {item_limits.get(level, 'Default')}" for level in range(1,6)))
     kb_rows=[
         [InlineKeyboardButton("✏️ Change Shop Name",callback_data=f"admshop:rename:{row['id']}"),
          InlineKeyboardButton("🔐 Reset Password",callback_data=f"admshop:password:{row['id']}")],

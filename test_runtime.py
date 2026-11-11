@@ -290,21 +290,21 @@ def test_admin_catalogue_pagination():
     ids=[int(r[0]) for r in v4.db().execute(
         "SELECT id FROM central_catalog WHERE level_required=1 ORDER BY id").fetchall()]
     require(product_card_ids(ctx.bot.sent)==ids[:5],
-            "Admin Level 1 page must show only the first five products")
+            "System Level 1 page must show only the first five products")
     nav=next(x for x in ctx.bot.sent if "ccadminpage:1" in sent_callback_data(x))
     require("PAGE 1/3" in sent_text(nav),
-            "Admin catalogue page indicator or Next 5 button is missing")
+            "System catalogue page indicator or Next 5 button is missing")
     before=len(ctx.bot.sent)
     next_update,_,_=callback_update(999999,"ccadminpage:1")
     asyncio.run(cc.admin_catalog_page_callback(next_update,ctx))
     page_two=ctx.bot.sent[before:]
     require(product_card_ids(page_two)==ids[5:10],
-            "Admin Next 5 did not show products 6 through 10")
+            "System Next 5 did not show products 6 through 10")
     nav_two=next(x for x in page_two if any(cb.startswith("ccadminpage:") for cb in sent_callback_data(x)))
     buttons=sent_callback_data(nav_two)
     require("ccadminpage:0" in buttons and "ccadminpage:2" in buttons,
-            "Admin middle page must provide Previous 5 and Next 5")
-    print("PASS: Admin Level 1 catalogue shows five products per page with Previous/Next")
+            "System middle page must provide Previous 5 and Next 5")
+    print("PASS: System Level 1 catalogue shows five products per page with Previous/Next")
 
 
 def test_central_purchase_and_auto_listing():
@@ -576,7 +576,7 @@ def test_level2_catalogue_and_purchase_flow():
     settings_ctx.args=["2","50","50","2.0","6.5"]
     asyncio.run(v4.setlevel(settings_update,settings_ctx))
     require(any("Saved L2 settings" in x["text"] for x in settings_message.replies),
-            "Admin /setlevel did not save Level 2 activation, target and margin settings")
+            "System /setlevel did not save Level 2 activation, target and margin settings")
     c=v4.db()
     configured=c.execute(
         "SELECT activation_usdt,product_target,profit_min,profit_max FROM level_settings WHERE level=2"
@@ -601,15 +601,15 @@ def test_level2_catalogue_and_purchase_flow():
     admin_ctx=context()
     asyncio.run(cc.admin_level_callback(admin_update,admin_ctx))
     require(product_card_ids(admin_ctx.bot.sent)==ids[:5],
-            "Admin Level 2 first page did not show exactly products 1–5")
+            "System Level 2 first page did not show exactly products 1–5")
     admin_nav=next(x for x in admin_ctx.bot.sent if "ccadminpage:2:1" in sent_callback_data(x))
     require("PAGE 1/16" in sent_text(admin_nav),
-            "Admin Level 2 page count or Next 5 navigation is wrong")
+            "System Level 2 page count or Next 5 navigation is wrong")
     before=len(admin_ctx.bot.sent)
     admin_next,_,_=callback_update(999999,"ccadminpage:2:1")
     asyncio.run(cc.admin_catalog_page_callback(admin_next,admin_ctx))
     require(product_card_ids(admin_ctx.bot.sent[before:])==ids[5:10],
-            "Admin Level 2 Next 5 did not show products 6–10")
+            "System Level 2 Next 5 did not show products 6–10")
 
     # A Level 2 merchant sees only Level 2; Level 1 is hidden and callback-blocked.
     menu_update,menu_message,_=callback_update(303,"m:market")
@@ -783,7 +783,7 @@ def test_level2_catalogue_and_purchase_flow():
             and any(cb.startswith("cc:toggle:") for cb in admin_data),
             "Level 2 admin product controls are incomplete")
     require(any(cb.startswith(f"cc:photo:{photo_pid}") for cb in admin_data),
-            "Admin catalogue card is missing the Change Picture action")
+            "System catalogue card is missing the Change Picture action")
     photo_ctx=context()
     photo_update,photo_message,photo_query=callback_update(999999,f"cc:photo:{photo_pid}")
     asyncio.run(cc.admin_callback(photo_update,photo_ctx))
@@ -798,7 +798,7 @@ def test_level2_catalogue_and_purchase_flow():
                           (f"Product #{photo_pid}%",)).fetchone()[0]
     c.close()
     require(saved_photo=="replacement-product-photo" and audit_count==1,
-            "Admin product photo was not persisted or audited")
+            "System product photo was not persisted or audited")
     owner_photo_ctx=context()
     owner_photo_update,_,_=callback_update(303,"cclevel:2")
     asyncio.run(cc.owner_level_callback(owner_photo_update,owner_photo_ctx))
@@ -810,8 +810,8 @@ def test_level2_catalogue_and_purchase_flow():
     asyncio.run(cc.admin_level_callback(admin_photo_page,admin_photo_ctx))
     admin_photo_card=next(x for x in admin_photo_ctx.bot.sent if product_card_ids([x]) and photo_pid in product_card_ids([x]))
     require(admin_photo_card["kwargs"].get("photo")=="replacement-product-photo",
-            "Admin catalogue did not use the replacement product photo")
-    print("PASS: Admin can replace central catalogue product pictures; changes persist in Admin and merchant catalogues")
+            "System catalogue did not use the replacement product photo")
+    print("PASS: System can replace central catalogue product pictures; changes persist in System and merchant catalogues")
     print("PASS: Level 2 50-product catalogue, one-at-a-time unlock, images, stock, purchase and resale margin")
     print("PASS: Level 2 resale stays within level; cross-level wallet/stock protection works")
 
@@ -852,10 +852,11 @@ def test_admin_resale_flow(listing_id, inventory_id):
     c=v4.db()
     auto_order=c.execute("SELECT * FROM admin_resale_orders WHERE listing_id=?",(auto_listing_id,)).fetchone()
     auto_listing=c.execute("SELECT status,remaining_quantity FROM resale_listings WHERE id=?",(auto_listing_id,)).fetchone()
+    require(auto_order is not None,"System approval did not create a resale order")
     auto_credit=c.execute("""SELECT amount FROM ledger WHERE transaction_id=? AND owner_id=?
         AND entry_type='resale_sale_credit'""",(auto_order["id"],base_listing["owner_id"])).fetchone()
     expected_unit=round(float(base_listing["ask_price_usdt"])*1.02,6)
-    require(auto_order is not None and abs(float(auto_order["unit_price_usdt"])-expected_unit)<1e-8,
+    require(abs(float(auto_order["unit_price_usdt"])-expected_unit)<1e-8,
             "System approval did not add exactly 2% to merchant listed price")
     require(abs(float(auto_order["total_usdt"])-expected_unit)<1e-8 and
             abs(float(auto_credit["amount"])-expected_unit)<1e-8,
@@ -872,19 +873,19 @@ def test_admin_resale_flow(listing_id, inventory_id):
     update, message, query = callback_update(999999, "adm:resale")
     asyncio.run(v5.admin_panel_callback(update, admin_ctx))
     review_buttons = [cb for r in message.replies for cb in callback_data(r)]
-    require("rs:review:%d" % listing_id in review_buttons, "Admin Resale Market review button missing")
+    require("rs:review:%d" % listing_id in review_buttons, "System Resale Market review button missing")
 
     update, review_message, review_query = callback_update(999999, "rs:review:%d" % listing_id)
     asyncio.run(cc.resale_callback(update, admin_ctx))
     require(admin_ctx.user_data.get("admin_resale_offer", {}).get("listing_id") == listing_id,
-            "Admin review callback did not select listing")
+            "System review callback did not select listing")
     prompt = review_message.replies[-1]["text"]
     require("Buy all at asking price: <code>3.3 1</code>" in prompt,
-            "Admin review prompt does not provide exact valid price and quantity")
+            "System review prompt does not provide exact valid price and quantity")
     require("Maximum quantity: 1" in prompt,
-            "Admin review prompt does not state current available quantity")
+            "System review prompt does not state current available quantity")
     require(review_message.replies[-1]["kwargs"].get("parse_mode") == "HTML",
-            "Admin review prompt is not using Telegram HTML")
+            "System review prompt is not using Telegram HTML")
 
     # Verify common input mistakes get an actionable reply without changing stock.
     bad_update, bad_message = message_update(999999, "3.5")
@@ -894,36 +895,36 @@ def test_admin_resale_flow(listing_id, inventory_id):
     too_many_update, too_many_message = message_update(999999, "3.5 10")
     asyncio.run(v5.text_handler(too_many_update, admin_ctx))
     require("Listing no longer available in that quantity" in too_many_message.replies[-1]["text"],
-            "Admin offer above remaining stock was not rejected clearly")
+            "System offer above remaining stock was not rejected clearly")
 
     offer_update, offer_message = message_update(999999, "3.5 1")
     asyncio.run(v5.text_handler(offer_update, admin_ctx))
-    require(any("ADMIN PURCHASE COMPLETE" in x["text"] for x in offer_message.replies),
-            "Admin offer text handler did not complete")
+    require(any("SYSTEM PURCHASE COMPLETE" in x["text"] for x in offer_message.replies),
+            "System offer text handler did not complete")
     seller_notifications = [x for x in admin_ctx.bot.sent
                             if x["args"] and x["args"][0] == 101]
     notification_text = seller_notifications[-1]["args"][1] if seller_notifications and len(seller_notifications[-1]["args"]) > 1 else ""
     require("Customer purchased your listing" in notification_text,
             "Seller notification did not use Customer wording")
-    require("Admin purchased your listing" not in notification_text,
-            "Seller notification still exposes Admin wording")
+    require("System purchased your listing" not in notification_text,
+            "Seller notification still exposes System wording")
     c = v4.db()
     listing = c.execute("SELECT status,remaining_quantity FROM resale_listings WHERE id=?", (listing_id,)).fetchone()
     require(listing["status"] == "sold" and listing["remaining_quantity"] == 0,
-            "Admin purchase did not close fully sold listing")
+            "System purchase did not close fully sold listing")
     order = c.execute("SELECT * FROM admin_resale_orders WHERE listing_id=?", (listing_id,)).fetchone()
     require(order is not None and order["quantity"] == 1 and abs(order["total_usdt"] - 3.5) < 1e-8,
-            "Admin resale order was not recorded")
+            "System resale order was not recorded")
     profit = c.execute("""SELECT amount FROM ledger WHERE owner_id=101 AND entry_type='resale_profit_credit'
                           ORDER BY id DESC LIMIT 1""").fetchone()
     require(profit is not None and abs(float(profit["amount"]) - 1.0) < 1e-8,
-            "Admin resale seller profit calculation was wrong")
+            "System resale seller profit calculation was wrong")
     require(c.execute("SELECT remaining_quantity FROM central_inventory WHERE id=?", (inventory_id,)).fetchone()[0] == 0,
             "Seller inventory was not reconciled after admin purchase")
     require(c.execute("PRAGMA integrity_check").fetchone()[0] == "ok", "SQLite integrity check failed after resale flow")
     c.close()
-    require("admin_resale_offer" not in admin_ctx.user_data, "Admin offer state was not cleared")
-    print("PASS: Admin Resale Market, Review callback, offer message, seller credit and inventory reconciliation")
+    require("admin_resale_offer" not in admin_ctx.user_data, "System offer state was not cleared")
+    print("PASS: System Resale Market, Review callback, offer message, seller credit and inventory reconciliation")
 
 
 def test_failed_central_purchases(pid):
@@ -1021,7 +1022,7 @@ def test_merchant_deposit_screenshot_and_admin_approval():
     photo_message.photo=[SimpleNamespace(file_id="merchant-proof-photo")]
     asyncio.run(v4.payment_photo(photo_update,owner_ctx))
     require(any(x.get("photo") and x["args"][0]==999999 for x in owner_ctx.bot.sent),
-            "Payment screenshot was not forwarded to Admin")
+            "Payment screenshot was not forwarded to System")
     c=v4.db()
     request=c.execute("SELECT status,screenshot_file_id,transaction_hash FROM payment_requests WHERE id=?",(rid,)).fetchone()
     credits=c.execute("SELECT COUNT(*) FROM ledger WHERE owner_id=101 AND entry_type='deposit_credit'").fetchone()[0]
@@ -1029,7 +1030,7 @@ def test_merchant_deposit_screenshot_and_admin_approval():
             "Screenshot was not saved while leaving request pending")
     require(request["transaction_hash"] in (None, ""),
             "A TXID was unexpectedly added when the merchant skipped the optional TXID step")
-    require(credits==credits_before,"Wallet was credited before Admin approval")
+    require(credits==credits_before,"Wallet was credited before System approval")
     c.close()
 
     admin_update,admin_message,_=callback_update(999999,f"pay:approve:{rid}")
@@ -1039,7 +1040,7 @@ def test_merchant_deposit_screenshot_and_admin_approval():
     request=c.execute("SELECT status FROM payment_requests WHERE id=?",(rid,)).fetchone()
     credits_after=c.execute("SELECT COUNT(*) FROM ledger WHERE owner_id=101 AND entry_type='deposit_credit'").fetchone()[0]
     credit=c.execute("SELECT amount FROM ledger WHERE owner_id=101 AND entry_type='deposit_credit' AND note LIKE ? ORDER BY id DESC LIMIT 1", (f"%#{rid}%",)).fetchone()
-    require(request["status"]=="approved","Admin approval did not update deposit status")
+    require(request["status"]=="approved","System approval did not update deposit status")
     require(credits_after==credits_before+1 and credit is not None and abs(float(credit["amount"])-12.5)<1e-8,
             "Approved deposit did not credit the merchant wallet exactly once")
     c.close()
@@ -1071,9 +1072,9 @@ def test_merchant_deposit_screenshot_and_admin_approval():
     c.close()
     require(txid_row["transaction_hash"]=="TXID1234567890abcdef" and
             txid_row["screenshot_file_id"]=="txid-proof-photo" and txid_row["status"]=="pending",
-            "Optional TXID and screenshot were not saved together for Admin review")
+            "Optional TXID and screenshot were not saved together for System review")
     require(any("TXID1234567890abcdef" in x.get("kwargs",{}).get("caption","") for x in txid_ctx.bot.sent),
-            "Admin proof card did not include the saved TXID")
+            "System proof card did not include the saved TXID")
 
     # A rejected deposit must leave Pending and must never credit the wallet.
     c=v4.db()
@@ -1127,7 +1128,7 @@ def test_merchant_deposit_screenshot_and_admin_approval():
     c.close()
     require(level_request["status"]=="pending" and
             level_request["screenshot_file_id"]=="level-upgrade-proof-photo",
-            "Level upgrade screenshot was not saved for Admin review")
+            "Level upgrade screenshot was not saved for System review")
 
     # Optional TXID must also work for an upgrade payment, not only a wallet deposit.
     c=v4.db()
@@ -1158,7 +1159,7 @@ def test_merchant_deposit_screenshot_and_admin_approval():
     require(tx_level_request["transaction_hash"]=="LEVELTXID1234567890abcdef" and
             tx_level_request["screenshot_file_id"]=="level-upgrade-txid-proof" and
             tx_level_request["status"]=="pending",
-            "Level upgrade TXID and screenshot were not saved together for Admin review")
+            "Level upgrade TXID and screenshot were not saved together for System review")
     print("PASS: Deposit Center and Level Upgrade share the same address, optional TXID, confirmation and proof flow")
 
 
@@ -1212,13 +1213,13 @@ def test_usdt_trc20_withdrawal_flow():
     admin_update,admin_message,admin_query=callback_update(999999,"adm:withdrawwallets")
     asyncio.run(v5.admin_panel_callback(admin_update,context()))
     admin_cards=[x for x in admin_message.replies if address in x["text"]]
-    require(admin_cards,"Admin Merchant Withdrawal Wallets screen does not show saved address")
+    require(admin_cards,"System Merchant Withdrawal Wallets screen does not show saved address")
     admin_card=admin_cards[0]
     require("Merchant ID: <code>101</code>" in admin_card["text"] and "USDT TRC20" in admin_card["text"],
-            "Admin saved-wallet card is missing merchant or network details")
+            "System saved-wallet card is missing merchant or network details")
     copy_buttons=[button for row in admin_card["kwargs"]["reply_markup"].inline_keyboard for button in row]
     require(any(getattr(btn,"copy_text",None) and btn.copy_text.text==address for btn in copy_buttons),
-            "Admin saved-wallet card has no copy-address button")
+            "System saved-wallet card has no copy-address button")
 
     withdraw_ctx=context()
     withdraw_update,withdraw_message,withdraw_query=callback_update(101,"m:withdraw")
@@ -1232,7 +1233,7 @@ def test_usdt_trc20_withdrawal_flow():
     amount_update,amount_message=message_update(101,"2.5")
     asyncio.run(v5.text_handler(amount_update,withdraw_ctx))
     submitted=withdraw_ctx.bot.sent[-2]["kwargs"]["text"]
-    require("2.500000 USDT" in submitted and "PENDING ADMIN REVIEW" in submitted,
+    require("2.500000 USDT" in submitted and "PENDING SYSTEM REVIEW" in submitted,
             "USDT withdrawal confirmation missing")
     require(address in submitted,"Withdrawal request did not use saved address")
     require(withdraw_ctx.user_data.get("state") is None,
@@ -1254,24 +1255,24 @@ def test_usdt_trc20_withdrawal_flow():
     admin_notices=[x for x in withdraw_ctx.bot.sent if x["args"] and x["args"][0]==999999]
     require(admin_notices and "2.500000 USDT" in admin_notices[-1]["args"][1]
             and address in admin_notices[-1]["args"][1],
-            "Admin did not receive amount and configured TRC20 address")
+            "System did not receive amount and configured TRC20 address")
 
     admin_wd_update,admin_wd_message,admin_wd_query=callback_update(999999,"adm:withdrawals")
     asyncio.run(v5.admin_panel_callback(admin_wd_update,context()))
     card=next((x["text"] for x in admin_wd_message.replies if address in x["text"]), "")
     require("TRC20 address" in card and "2.500000 USDT" in card,
-            "Admin withdrawal review card is missing amount or payout address")
-    require("INR" not in card,"Admin withdrawal card still displays INR")
+            "System withdrawal review card is missing amount or payout address")
+    require("INR" not in card,"System withdrawal card still displays INR")
 
     paid_update,paid_message,paid_query=callback_update(999999,f"wd:paid:{wid}")
     paid_ctx=context()
     asyncio.run(v5.withdrawal_review_callback(paid_update,paid_ctx))
     require(any(x["kwargs"].get("parse_mode")=="HTML" for x in paid_message.edits),
-            "Admin withdrawal review result was edited without HTML parse mode")
+            "System withdrawal review result was edited without HTML parse mode")
     require(any("POST-WITHDRAWAL WALLET SUMMARY" in x["text"] and
                 "Sale proceeds remaining: <b>4.300000 USDT</b>" in x["text"]
                 for x in paid_message.replies),
-            "Admin did not receive the post-payment remaining-balance summary")
+            "System did not receive the post-payment remaining-balance summary")
     require(any(x["args"] and x["args"][0]==101 and len(x["args"])>1 and
                 "POST-WITHDRAWAL WALLET SUMMARY" in x["args"][1]
                 for x in paid_ctx.bot.sent),
@@ -1279,7 +1280,7 @@ def test_usdt_trc20_withdrawal_flow():
     c=v4.db()
     paid=c.execute("SELECT status FROM withdrawals WHERE id=?",(wid,)).fetchone()
     debit=c.execute("SELECT amount,currency FROM ledger WHERE owner_id=101 AND entry_type='withdrawal_debit' ORDER BY id DESC LIMIT 1").fetchone()
-    require(paid["status"]=="paid","Admin Mark Paid did not close withdrawal")
+    require(paid["status"]=="paid","System Mark Paid did not close withdrawal")
     c=v4.db()
     reminder=c.execute("SELECT motivation_reminder_status,motivation_reminder_next_at FROM shops WHERE owner_id=101 ORDER BY id DESC LIMIT 1").fetchone()
     c.close()
@@ -1302,10 +1303,10 @@ def test_usdt_trc20_withdrawal_flow():
             "Due hourly motivation reminder was not delivered")
     require(reminder_bot.sent[0]["kwargs"].get("chat_id")==v5.ADMIN_ID and
             reminder_bot.sent[0]["kwargs"].get("chat_id")!=101,
-            "Hourly motivation reminder was delivered to the merchant instead of Admin")
+            "Hourly motivation reminder was delivered to the merchant instead of System")
     reminder_text=reminder_bot.sent[0]["kwargs"]["text"]
     require("Hourly encouragement" not in reminder_text and
-            "Contact Admin" not in reminder_text and
+            "Contact System" not in reminder_text and
             "Customer Services" in reminder_text,
             "Reminder footer does not use the requested Customer Services wording")
     first_text=reminder_text
@@ -1322,9 +1323,9 @@ def test_usdt_trc20_withdrawal_flow():
     stopped=c.execute("SELECT motivation_reminder_status,motivation_reminder_next_at FROM shops WHERE owner_id=101 ORDER BY id DESC LIMIT 1").fetchone()
     c.close()
     require(stopped["motivation_reminder_status"]=="stopped" and stopped["motivation_reminder_next_at"] is None,
-            "Admin STOP did not permanently disable hourly motivation reminders")
+            "System STOP did not permanently disable hourly motivation reminders")
     require(any("stopped" in item["text"].lower() for item in stop_message.replies),
-            "Admin was not shown the reminder stop confirmation")
+            "System was not shown the reminder stop confirmation")
     require(debit and debit["currency"]=="USDT" and abs(float(debit["amount"])-2.5)<1e-8,
             "Paid withdrawal debit was not written in USDT")
     c.close()
@@ -1352,7 +1353,7 @@ def test_usdt_trc20_withdrawal_flow():
     c.close()
     require(abs(v5.available_withdrawal_usdt(101)-4.3)<1e-8,
             "Rejected withdrawal did not release reserved amount")
-    print("PASS: Merchant Withdraw Setup, saved TRC20 wallet, Admin wallet directory, Admin-only hourly reminders and Admin STOP")
+    print("PASS: Merchant Withdraw Setup, saved TRC20 wallet, System wallet directory, System-only hourly reminders and System STOP")
 
 def test_existing_paid_withdrawal_enables_motivation_reminder():
     from datetime import datetime, timezone
@@ -1373,7 +1374,7 @@ def test_existing_paid_withdrawal_enables_motivation_reminder():
     c.close()
     require(row["motivation_reminder_status"]=="on" and row["motivation_reminder_next_at"],
             "Existing merchant with an already-paid withdrawal was not activated at startup")
-    # Admin-stopped reminders must never be re-enabled by startup backfill.
+    # System-stopped reminders must never be re-enabled by startup backfill.
     c=v4.db()
     c.execute("UPDATE shops SET motivation_reminder_status='stopped',motivation_reminder_next_at=NULL WHERE owner_id=101")
     c.commit(); c.close()
@@ -1382,8 +1383,8 @@ def test_existing_paid_withdrawal_enables_motivation_reminder():
     row=c.execute("SELECT motivation_reminder_status,motivation_reminder_next_at FROM shops WHERE owner_id=101").fetchone()
     c.close()
     require(row["motivation_reminder_status"]=="stopped" and row["motivation_reminder_next_at"] is None,
-            "Startup backfill re-enabled a reminder that Admin had stopped")
-    print("PASS: Existing paid merchants are activated at startup; Admin-stopped reminders remain stopped")
+            "Startup backfill re-enabled a reminder that System had stopped")
+    print("PASS: Existing paid merchants are activated at startup; System-stopped reminders remain stopped")
 
 def test_usdt_balance_reconciliation():
     # Mirrors the reported figures: deposits 50, catalogue investment 138.7,
@@ -1689,14 +1690,14 @@ def test_referral_registration_and_bonuses():
             "New shop registration did not persist the detected merchant location")
     require(any("Country: <b>Pakistan</b>" in x["args"][1] and "City: <b>Rawalpindi</b>" in x["args"][1]
                 for x in signup_ctx.bot.sent if x["args"] and x["args"][0]==999999),
-            "Admin shop application did not include merchant country/state/city")
+            "System shop application did not include merchant country/state/city")
     child_shop_id=int(child["id"])
     c.execute("UPDATE shops SET status='approved',level=1 WHERE id=?",(child_shop_id,))
     c.commit()
     c.close()
 
     # A $10 verified wallet deposit must add $10 deposit + $2 bonus to the child
-    # and $0.20 referral bonus to the inviter, only after Admin approval.
+    # and $0.20 referral bonus to the inviter, only after System approval.
     c=v4.db()
     cur=c.execute("""INSERT INTO payment_requests
         (owner_id,shop_id,payment_type,level,amount,currency,network,screenshot_file_id,status,created_at)
@@ -1708,7 +1709,7 @@ def test_referral_registration_and_bonuses():
         "SELECT COUNT(*) FROM ledger WHERE owner_id=505 AND entry_type='deposit_bonus_credit'"
     ).fetchone()[0]
     c.close()
-    require(before_pending==0,"Deposit bonus was credited before Admin approval")
+    require(before_pending==0,"Deposit bonus was credited before System approval")
 
     admin_update,admin_message,_=callback_update(999999,f"pay:approve:{deposit_rid}")
     asyncio.run(v4.payment_review(admin_update,context()))
@@ -1805,7 +1806,7 @@ def test_admin_rejection_reasons():
     pu,pm,pq=callback_update(999999,f"pay:reject:{payment_id}")
     asyncio.run(v4.payment_review(pu,admin_ctx))
     require(admin_ctx.user_data.get("pending_admin_rejection")=={"kind":"payment","id":payment_id},
-            "Payment rejection did not request an Admin reason")
+            "Payment rejection did not request an System reason")
     reason="Transaction screenshot is unclear."
     ru,rm=message_update(999999,reason)
     asyncio.run(v5.text_handler(ru,admin_ctx))
@@ -1826,7 +1827,7 @@ def test_admin_rejection_reasons():
     wu,wm,wq=callback_update(999999,f"wd:reject:{withdrawal_id}")
     asyncio.run(v4.withdrawal_review(wu,admin_ctx))
     require(admin_ctx.user_data.get("pending_admin_rejection")=={"kind":"withdrawal","id":withdrawal_id},
-            "Withdrawal rejection did not request an Admin reason")
+            "Withdrawal rejection did not request an System reason")
     wreason="Payout address does not match the verified wallet."
     wru,wrm=message_update(999999,wreason)
     asyncio.run(v5.text_handler(wru,admin_ctx))
@@ -1848,7 +1849,7 @@ def test_admin_rejection_reasons():
     pu2,pm2,pq2=callback_update(999999,f"product:reject:{suggestion_id}")
     asyncio.run(v5.v3.product_review(pu2,admin_ctx))
     require(admin_ctx.user_data.get("pending_admin_rejection")=={"kind":"product_suggestion","id":suggestion_id},
-            "Product listing rejection did not request an Admin reason")
+            "Product listing rejection did not request an System reason")
     preason="Product photos or details need correction."
     pru,prm=message_update(999999,preason)
     asyncio.run(v5.text_handler(pru,admin_ctx))
@@ -1857,7 +1858,7 @@ def test_admin_rejection_reasons():
     require(any(x["args"] and x["args"][0]==101 and preason in (x["args"][1] if len(x["args"])>1 else x["kwargs"].get("text",""))
                 for x in admin_ctx.bot.sent),
             "Merchant did not receive the product listing rejection reason")
-    print("PASS: Admin rejection reasons saved and delivered for deposits, withdrawals and product listings")
+    print("PASS: System rejection reasons saved and delivered for deposits, withdrawals and product listings")
 
 
 def test_50_pair_purchase_gate_and_admin_approval():
@@ -1889,10 +1890,10 @@ def test_50_pair_purchase_gate_and_admin_approval():
     add_deposit(707,sid,100)
 
     blocked=run_central_buy(707,pid,1)
-    require(blocked and "50/50" in blocked[0]["text"] and "Admin approval" in blocked[0]["text"],
-            "A merchant at 50/50 could purchase without Admin approval")
+    require(blocked and "50/50" in blocked[0]["text"] and "System approval" in blocked[0]["text"],
+            "A merchant at 50/50 could purchase without System approval")
 
-    # First Admin approval grants 10 purchase units and 10 more Level 2 product slots.
+    # First System approval grants 10 purchase units and 10 more Level 2 product slots.
     update,_,_=callback_update(999999,f"admshop:approve10:{sid}")
     admin_ctx=context()
     asyncio.run(v5.admin_shop_callback(update,admin_ctx))
@@ -1904,8 +1905,8 @@ def test_50_pair_purchase_gate_and_admin_approval():
         "SELECT item_limit FROM merchant_level_item_limits WHERE shop_id=? AND level=2",
         (sid,)).fetchone()[0]
     c.close()
-    require(tuple(allowance)==(10,10),"Admin approval did not grant exactly 10 extra purchase units")
-    require(int(item_limit)==60,"Admin approval did not unlock the first 10 new mobile SKUs after the original 50")
+    require(tuple(allowance)==(10,10),"System approval did not grant exactly 10 extra purchase units")
+    require(int(item_limit)==60,"System approval did not unlock the first 10 new mobile SKUs after the original 50")
 
     # A second approval stacks, rather than overwriting, both allowances.
     update,_,_=callback_update(999999,f"admshop:approve10:{sid}")
@@ -1918,12 +1919,12 @@ def test_50_pair_purchase_gate_and_admin_approval():
         "SELECT item_limit FROM merchant_level_item_limits WHERE shop_id=? AND level=2",
         (sid,)).fetchone()[0])
     c.close()
-    require(tuple(allowance)==(20,20),"Repeated Admin approval did not stack the 10-unit allowance")
-    require(item_limit==70,"Repeated Admin approval did not add another 10 mobile SKU slots")
+    require(tuple(allowance)==(20,20),"Repeated System approval did not stack the 10-unit allowance")
+    require(item_limit==70,"Repeated System approval did not add another 10 mobile SKU slots")
 
     purchased=run_central_buy(707,pid,1)
     require(purchased and "Purchase successful" in purchased[0]["text"],
-            "Merchant could not purchase after Admin approved extra units")
+            "Merchant could not purchase after System approved extra units")
     c=v4.db()
     remaining=int(c.execute(
         "SELECT remaining_units FROM merchant_extra_item_allowances WHERE shop_id=?",(sid,)).fetchone()[0])
@@ -1932,14 +1933,14 @@ def test_50_pair_purchase_gate_and_admin_approval():
     ).fetchone()[0])
     c.close()
     require(remaining==19,"Successful post-limit purchase did not consume exactly one approved unit")
-    require(audit_count==2,"Admin approvals were not written to the audit log")
+    require(audit_count==2,"System approvals were not written to the audit log")
     # Restore shared catalogue stock and price so later tests see the pristine 50-unit fixture.
     c=v4.db()
     c.execute("UPDATE central_catalog SET price_usdt=?,stock=? WHERE id=?",
               (original_price,original_stock,pid))
     c.commit()
     c.close()
-    print("PASS: 50-pair purchase lock, repeated Admin +10 approvals, Level 2 slot expansion and allowance consumption")
+    print("PASS: 50-pair purchase lock, repeated System +10 approvals, Level 2 slot expansion and allowance consumption")
 
 
 def test_level2_workflow_reminder_goes_to_merchant():
@@ -1965,7 +1966,7 @@ def test_level2_workflow_reminder_goes_to_merchant():
     require(sent==1 and len(bot.sent)==1,"Level 2 merchant did not receive the pending-order reminder")
     msg=bot.sent[0]["kwargs"]["text"]
     require(bot.sent[0]["kwargs"]["chat_id"]==909,
-            "Level 2 workflow reminder was sent to Admin instead of the merchant")
+            "Level 2 workflow reminder was sent to System instead of the merchant")
     require("completing your current orders" in msg.lower() and "50" in msg,
             "Level 2 workflow reminder is missing its completion motivation")
     again=asyncio.run(v5.send_due_level2_workflow_reminders(bot,due_at))
@@ -1987,7 +1988,7 @@ def test_admin_shop_controls_and_search():
     sid=int(shop["id"])
     c.close()
 
-    # Admin can freeze and the shared order gate blocks purchases.
+    # System can freeze and the shared order gate blocks purchases.
     update,message,_=callback_update(999999,f"admshop:freeze:{sid}")
     asyncio.run(v5.admin_shop_callback(update,context()))
     c=v4.db()
@@ -2005,7 +2006,7 @@ def test_admin_shop_controls_and_search():
             "Enable did not restore the shop")
     c.close()
 
-    # Warning requires an Admin-entered reason and is consumed once by next successful order.
+    # Warning requires an System-entered reason and is consumed once by next successful order.
     admin_ctx=context()
     update,message,_=callback_update(999999,f"admshop:warn:{sid}")
     asyncio.run(v5.admin_shop_callback(update,admin_ctx))
@@ -2096,7 +2097,7 @@ def test_admin_shop_controls_and_search():
     c.close()
     require(tuple(updated_location)==("Rawalpindi","Punjab","Pakistan"),
             "Existing merchant location was not saved by Update Location")
-    print("PASS: Random public Shop IDs, Admin search, existing-shop location update, freeze/disable/enable/soft-delete controls and one-time warning")
+    print("PASS: Random public Shop IDs, System search, existing-shop location update, freeze/disable/enable/soft-delete controls and one-time warning")
 
 
 
@@ -2141,7 +2142,7 @@ def test_legacy_product_purchase_gate_after_50_pairs():
     asyncio.run(v5.admin_shop_callback(update,context()))
     allowed=run_legacy_buy()
     require(allowed and "Order #" in allowed[0]["text"],
-            "Legacy /buy route did not resume after Admin approval")
+            "Legacy /buy route did not resume after System approval")
     c=v4.db()
     remaining=int(c.execute(
         "SELECT remaining_units FROM merchant_extra_item_allowances WHERE shop_id=?",
@@ -2150,7 +2151,7 @@ def test_legacy_product_purchase_gate_after_50_pairs():
     c.commit()
     c.close()
     require(remaining==9,"Legacy /buy did not consume one approved unit")
-    print("PASS: Legacy /buy route also enforces 50-pair Admin approval and consumes allowance")
+    print("PASS: Legacy /buy route also enforces 50-pair System approval and consumes allowance")
 
 
 def test_automatic_excel_export():

@@ -302,7 +302,6 @@ async def buy(update,ctx):
         if int(shop["level"])==2 and int(p["level_required"])==2:
             # Enforce the admin-assigned catalogue range and sequential unlock on the server,
             # not only in the visible Telegram buttons (commands/crafted callbacks cannot bypass it).
-            setup(c)
             assigned_limit=c.execute(
                 "SELECT item_limit FROM merchant_level_item_limits WHERE shop_id=? AND level=2",
                 (int(shop["id"]),)).fetchone()

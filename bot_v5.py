@@ -2443,8 +2443,8 @@ async def admin_panel_callback(update,ctx):
             await central.admin_catalog(update,ctx)
             return
         elif action=="orders":
-            await q.message.reply_text("📦 ORDER MANAGEMENT\nUse /orders to view pending orders and Mark Delivered controls.\nUse /orderdone ORDER_ID or /orderreject ORDER_ID REASON when appropriate.",
-              reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ System Panel",callback_data="adm:home")]]))
+            await central.orders(update,ctx)
+            return
         elif action=="levels":
             level_rows=c.execute("SELECT level,activation_usdt,product_target,profit_min,profit_max FROM level_settings ORDER BY level").fetchall()
             body="🎚 LEVEL SETTINGS\n\n"+("\n".join(

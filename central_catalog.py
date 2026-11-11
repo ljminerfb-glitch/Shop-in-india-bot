@@ -580,12 +580,10 @@ async def orders(update,ctx,show_filled=False):
     for r in rows:
         buttons=[]
         if not show_filled:
-            buttons=[[InlineKeyboardButton("✅ Mark Fulfilled",callback_data=f"cc:fulfill:{r['id']}")]]
+            buttons=[[InlineKeyboardButton("✅ Mark Fulfilled",callback_data=f"cc:fulfill:{r['id']}"),
+                      InlineKeyboardButton("✅ Filled Orders History",callback_data="cc:filled")]]
             if r["purchase_type"]=="central_purchase_debit":
-                buttons[0].append(InlineKeyboardButton("↩️ Refund + Restock",callback_data=f"cc:refund:{r['id']}"))
-        buttons.append([InlineKeyboardButton(
-            "📦 Manage Central Orders" if show_filled else "✅ Filled Orders History",
-            callback_data="cc:orders" if show_filled else "cc:filled")])
+                buttons.append([InlineKeyboardButton("↩️ Refund + Restock",callback_data=f"cc:refund:{r['id']}")])
         buttons.append([InlineKeyboardButton("⬅️ Central Catalogue",callback_data="adm:central"),
                         InlineKeyboardButton("🏠 System Control Center",callback_data="adm:home")])
         await update.effective_message.reply_text(

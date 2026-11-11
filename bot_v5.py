@@ -1288,8 +1288,8 @@ async def send_due_level2_workflow_reminders(bot, now_dt=None):
         # unlike the separate Admin-only shop-growth notification.
         c.execute("""INSERT OR IGNORE INTO merchant_l2_workflow_reminders(shop_id,next_at)
             SELECT s.id,? FROM shops s
-            JOIN merchant_pair_progress p ON p.shop_id=s.id
-            WHERE s.level>=2 AND p.completed_count<50
+            LEFT JOIN merchant_pair_progress p ON p.shop_id=s.id
+            WHERE s.level=2 AND COALESCE(p.completed_count,0)<50
               AND EXISTS (SELECT 1 FROM central_inventory i
                           WHERE i.shop_id=s.id AND i.remaining_quantity>0)""",
             (_motivation_stamp(current+timedelta(hours=1)),))
@@ -1297,8 +1297,8 @@ async def send_due_level2_workflow_reminders(bot, now_dt=None):
         due=c.execute("""SELECT s.id,s.owner_id,s.shop_name,p.completed_count
             FROM merchant_l2_workflow_reminders r
             JOIN shops s ON s.id=r.shop_id
-            JOIN merchant_pair_progress p ON p.shop_id=s.id
-            WHERE r.next_at<=? AND s.level>=2 AND p.completed_count<50
+            LEFT JOIN merchant_pair_progress p ON p.shop_id=s.id
+            WHERE r.next_at<=? AND s.level=2 AND COALESCE(p.completed_count,0)<50
               AND EXISTS (SELECT 1 FROM central_inventory i
                           WHERE i.shop_id=s.id AND i.remaining_quantity>0)
             ORDER BY r.next_at LIMIT 100""",(current_stamp,)).fetchall()

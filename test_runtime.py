@@ -1817,8 +1817,17 @@ def test_50_pair_purchase_gate_and_admin_approval():
     c.execute("""INSERT INTO shops(owner_id,shop_name,status,created_at,level)
                  VALUES(707,'Allowance Test Shop','approved',?,2)""",(v4.now(),))
     sid=int(c.execute("SELECT id FROM shops WHERE owner_id=707 ORDER BY id DESC LIMIT 1").fetchone()[0])
+    # Simulate all 50 legacy Level 2 catalogue products already purchased.
+    base_rows=c.execute(
+        "SELECT id FROM central_catalog WHERE active=1 AND level_required=2 AND product_key LIKE 'level2_%' ORDER BY id"
+    ).fetchall()
+    require(len(base_rows)==50,"Original Level 2 catalogue must remain exactly 50 products")
+    c.executemany("""INSERT INTO central_orders
+        (catalog_id,buyer_shop_id,buyer_owner_id,quantity,unit_price_usdt,total_usdt,status,created_at)
+        VALUES(?,?,?,1,1,1,'paid',?)""",
+        [(int(x["id"]),sid,707,v4.now()) for x in base_rows])
     product=c.execute(
-        "SELECT id,price_usdt,stock FROM central_catalog WHERE active=1 AND level_required=2 ORDER BY id LIMIT 1"
+        "SELECT id,price_usdt,stock FROM central_catalog WHERE active=1 AND level_required=2 AND product_key LIKE 'mobile_phone_%' ORDER BY id LIMIT 1"
     ).fetchone()
     pid=int(product["id"])
     original_price=float(product["price_usdt"])
@@ -1846,11 +1855,9 @@ def test_50_pair_purchase_gate_and_admin_approval():
     item_limit=c.execute(
         "SELECT item_limit FROM merchant_level_item_limits WHERE shop_id=? AND level=2",
         (sid,)).fetchone()[0]
-    active_l2=int(c.execute(
-        "SELECT COUNT(*) FROM central_catalog WHERE active=1 AND level_required=2").fetchone()[0])
     c.close()
     require(tuple(allowance)==(10,10),"Admin approval did not grant exactly 10 extra purchase units")
-    require(int(item_limit)==active_l2+10,"Admin approval did not unlock 10 additional Level 2 product slots")
+    require(int(item_limit)==60,"Admin approval did not unlock the first 10 new mobile SKUs after the original 50")
 
     # A second approval stacks, rather than overwriting, both allowances.
     update,_,_=callback_update(999999,f"admshop:approve10:{sid}")
@@ -1864,7 +1871,7 @@ def test_50_pair_purchase_gate_and_admin_approval():
         (sid,)).fetchone()[0])
     c.close()
     require(tuple(allowance)==(20,20),"Repeated Admin approval did not stack the 10-unit allowance")
-    require(item_limit==active_l2+20,"Repeated Admin approval did not add another 10 product slots")
+    require(item_limit==70,"Repeated Admin approval did not add another 10 mobile SKU slots")
 
     purchased=run_central_buy(707,pid,1)
     require(purchased and "Purchase successful" in purchased[0]["text"],

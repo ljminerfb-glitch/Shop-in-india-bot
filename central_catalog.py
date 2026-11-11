@@ -7,6 +7,7 @@ import html
 import random
 import bot_v4 as v4
 import level2.products as level2_products
+import mobile_phones.products as mobile_phone_products
 
 log = logging.getLogger("central_catalog")
 CATALOGUE_PAGE_SIZE=5
@@ -72,7 +73,7 @@ def setup(c=None):
             conn.execute("""INSERT OR IGNORE INTO central_catalog
               (product_key,title,description,price_usdt,stock,image_path,active,level_required,created_at,updated_at)
               VALUES(?,?,?,0,0,?,1,1,?,?)""",(key,title,desc,img,v4.now(),v4.now()))
-        # Seed Level 2 defaults once. INSERT OR IGNORE preserves admin changes and stock movements.
+        # Seed the original 50 Level 2 products first; their IDs/history remain unchanged.
         for item in level2_products.PRODUCTS:
             product_key=f"level2_{item['id']}"
             image_path=f"level2/{item['image_file']}"
@@ -80,6 +81,17 @@ def setup(c=None):
               (product_key,title,description,price_usdt,stock,image_path,active,level_required,created_at,updated_at)
               VALUES(?,?,?,?,?,?,1,2,?,?)""",
               (product_key,item["name"],item["description"],float(item["price_usd"]),50,
+               image_path,v4.now(),v4.now()))
+        # Seed mobile variants strictly after the legacy 50. Admin approvals reveal
+        # these in groups of ten; INSERT OR IGNORE preserves IDs, edits and stock.
+        for item in mobile_phone_products.PRODUCTS:
+            product_key=f"mobile_phone_{item['id']}"
+            title=f"{item['brand']} {item['model']} — {item['ram']} / {item['storage']} — {item['color']}"
+            image_path=f"mobile_phones/{item['image_file']}"
+            conn.execute("""INSERT OR IGNORE INTO central_catalog
+              (product_key,title,description,price_usdt,stock,image_path,active,level_required,created_at,updated_at)
+              VALUES(?,?,?,?,?,?,1,2,?,?)""",
+              (product_key,title,item["description"],float(item["price_usdt"]),50,
                image_path,v4.now(),v4.now()))
         conn.commit()
     finally:

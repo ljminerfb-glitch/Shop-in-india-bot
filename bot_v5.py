@@ -28,7 +28,7 @@ ADMIN_IDS=_configured_admin_ids()
 
 def is_admin(user_id):
     try:
-        return int(user_id) in ADMIN_IDS
+        return int(user_id) in (ADMIN_IDS | ({int(ADMIN_ID)} if ADMIN_ID else set()))
     except (TypeError,ValueError):
         return False
 

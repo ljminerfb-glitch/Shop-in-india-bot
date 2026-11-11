@@ -91,7 +91,7 @@ def setup():
         cur.execute("ALTER TABLE shops ADD COLUMN password_hash TEXT")
     if "level" not in shop_columns:
         cur.execute("ALTER TABLE shops ADD COLUMN level INTEGER NOT NULL DEFAULT 0")
-    for name in ("location_country","location_state","location_city"):
+    for name in ("location_country","location_state","location_city","location_timezone"):
         if name not in shop_columns:
             cur.execute(f"ALTER TABLE shops ADD COLUMN {name} TEXT")
 
@@ -237,11 +237,11 @@ async def save_shop_password(update, context):
         cur.execute("""
             INSERT INTO shops
             (owner_id, shop_name, status, created_at, password_hash, referred_by_owner_id,
-             location_country, location_state, location_city)
-            VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?)
+             location_country, location_state, location_city, location_timezone)
+            VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)
         """, (user.id, name, now(), hash_password(password), referrer_owner_id,
               context.user_data.get("location_country"),context.user_data.get("location_state"),
-              context.user_data.get("location_city")) )
+              context.user_data.get("location_city"),context.user_data.get("location_timezone")) )
 
         shop_id = cur.lastrowid
         con.commit()

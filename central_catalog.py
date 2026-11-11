@@ -1145,14 +1145,14 @@ async def list_inventory(update,ctx):
             f"Owned: <b>{int(r['remaining_quantity'])}</b>  •  Already listed: <b>{int(r['listed'])}</b>\n"
             f"Free to list: <b>{free}</b>\n"
             + (f"Purchase orders: <b>{int(r['shop_purchase_orders'])}</b> • Items bought: <b>{int(r['shop_units_bought'])}</b>\n"
-               f"Items sold: <b>{int(r['shop_units_sold'])}</b>\n" if item_level==2 else "")
+               f"Items sold: <b>{int(r['shop_units_sold'])}</b>\n" if item_level>=2 else "")
             + "\n"
             "<b>PRICE & PROFIT</b>\n"
             f"Your cost: {unit_cost:g} USDT / item\n"
-            + (f"Resale margin: {low_profit/unit_cost*100:.2f}%–{high_profit/unit_cost*100:.2f}% (random per Level 2 listing)\n"
-               if item_level==2 and unit_cost else f"Resale price: {price:g} USDT / item\n")
+            + (f"Resale margin: {low_profit/unit_cost*100:.2f}%–{high_profit/unit_cost*100:.2f}% (Level {item_level})\n"
+               if item_level>=2 and unit_cost else f"Resale price: {price:g} USDT / item\n")
             + (f"💚 <b>Expected profit: +{low_profit:g} to +{high_profit:g} USDT / sold item</b>\n"
-               if item_level==2 else f"💚 <b>Expected profit: +{low_profit:g} USDT / sold item</b>\n")
+               if item_level>=2 else f"💚 <b>Expected profit: +{low_profit:g} USDT / sold item</b>\n")
             + (f"🟢 Listed stock potential: <b>+{listed_profit_low:g} USDT</b>\n"
                f"🟢 Free stock potential: <b>+{free_profit_low:g} USDT</b>\n"
                if item_level==1 else

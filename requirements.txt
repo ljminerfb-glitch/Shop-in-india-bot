@@ -1,3 +1,4 @@
 python-telegram-bot==21.10
 openpyxl>=3.1,<4
 gspread>=6,<7
+timezonefinder>=9.2,<10

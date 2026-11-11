@@ -233,6 +233,7 @@ async def admin_catalog(update,ctx):
             [InlineKeyboardButton("🟦 LEVEL 1",callback_data="ccadminlevel:1")],
             [InlineKeyboardButton("🟩 LEVEL 2 — 50 PRODUCTS",callback_data="ccadminlevel:2")],
             [InlineKeyboardButton("📦 Manage Central Orders",callback_data="cc:orders")],
+            [InlineKeyboardButton("✅ Filled Orders History",callback_data="cc:filled")],
             [InlineKeyboardButton("⬅️ System Panel",callback_data="adm:home")]]),
         parse_mode="HTML")
 
@@ -544,35 +545,47 @@ def consume_extra_purchase_units(c, shop_id, owner_id, quantity):
         return False, "🔒 Approved purchase units changed. Please try again."
     return True, None
 
-async def orders(update,ctx):
+async def orders(update,ctx,show_filled=False):
     if not v4.admin(update.effective_user.id): return
     from telegram import InlineKeyboardMarkup, InlineKeyboardButton
     c=v4.db()
+    order_status="fulfilled" if show_filled else "paid"
     rows=c.execute("""SELECT o.id,o.buyer_owner_id,o.buyer_shop_id,o.quantity,o.total_usdt,o.status,o.created_at,p.title,
       (SELECT entry_type FROM ledger l WHERE l.transaction_id=o.id AND l.owner_id=o.buyer_owner_id
        AND l.entry_type IN ('central_purchase_debit','resale_purchase_debit') ORDER BY l.id LIMIT 1) purchase_type
-      FROM central_orders o JOIN central_catalog p ON p.id=o.catalog_id ORDER BY o.id DESC LIMIT 50""").fetchall()
-    listings=c.execute("""SELECT l.id,l.owner_id,l.shop_id,l.remaining_quantity,l.ask_price_usdt,
+      FROM central_orders o JOIN central_catalog p ON p.id=o.catalog_id
+      WHERE o.status=? ORDER BY o.id DESC LIMIT 50""",(order_status,)).fetchall()
+    listings=[] if show_filled else c.execute("""SELECT l.id,l.owner_id,l.shop_id,l.remaining_quantity,l.ask_price_usdt,
       p.title,s.shop_name FROM resale_listings l
       JOIN central_catalog p ON p.id=l.catalog_id JOIN shops s ON s.id=l.shop_id
       WHERE l.status='active' AND l.remaining_quantity>0
       ORDER BY l.id DESC LIMIT 50""").fetchall()
     c.close()
-    # Keep the overview short. Truncating a long HTML string at an arbitrary
-    # character can cut through <code>/<b> tags and makes Telegram reject it.
+    heading="<b>✅ FILLED ORDERS HISTORY</b>" if show_filled else "<b>📦 MANAGE CENTRAL ORDERS</b>"
+    description=("Completed orders are kept here for your records. They will not appear in the active orders list."
+                 if show_filled else
+                 "Only paid, unfulfilled original orders are shown here. Filled orders are kept in the separate history.")
     orders_text=(
-        "<b>📦 MANAGE CENTRAL ORDERS</b>\n━━━━━━━━━━━━━━━━━━\n"
-        "<i>Original catalogue orders are shown below. Merchant-listed stock is available "
-        "for direct System approval with an automatic 2% bonus on the listed amount.</i>\n"
+        f"{heading}\n━━━━━━━━━━━━━━━━━━\n"
+        f"<i>{description}</i>\n"
         f"Original catalogue orders: <b>{len(rows)}</b>"
     )
-    await update.effective_message.reply_text(orders_text,parse_mode="HTML")
+    top_buttons=[[InlineKeyboardButton(
+        "📦 Manage Central Orders" if show_filled else "✅ Filled Orders History",
+        callback_data="cc:orders" if show_filled else "cc:filled")],
+        [InlineKeyboardButton("⬅️ Central Catalogue",callback_data="adm:central"),
+         InlineKeyboardButton("🏠 System Control Center",callback_data="adm:home")]]
+    await update.effective_message.reply_text(
+        orders_text,reply_markup=InlineKeyboardMarkup(top_buttons),parse_mode="HTML")
     for r in rows:
         buttons=[]
-        if r["status"]=="paid":
+        if not show_filled:
             buttons=[[InlineKeyboardButton("✅ Mark Fulfilled",callback_data=f"cc:fulfill:{r['id']}")]]
             if r["purchase_type"]=="central_purchase_debit":
                 buttons[0].append(InlineKeyboardButton("↩️ Refund + Restock",callback_data=f"cc:refund:{r['id']}"))
+        buttons.append([InlineKeyboardButton(
+            "📦 Manage Central Orders" if show_filled else "✅ Filled Orders History",
+            callback_data="cc:orders" if show_filled else "cc:filled")])
         buttons.append([InlineKeyboardButton("⬅️ Central Catalogue",callback_data="adm:central"),
                         InlineKeyboardButton("🏠 System Control Center",callback_data="adm:home")])
         await update.effective_message.reply_text(
@@ -582,6 +595,10 @@ async def orders(update,ctx):
             f"Amount: <b>{float(r['total_usdt']):g} USDT</b>\n"
             f"Created: <code>{html.escape(str(r['created_at']))}</code>",
             reply_markup=InlineKeyboardMarkup(buttons),parse_mode="HTML")
+    if show_filled:
+        if not rows:
+            await update.effective_message.reply_text("No filled orders have been recorded yet.")
+        return
     await update.effective_message.reply_text(
         "<b>🏷️ MERCHANT-LISTED ORDERS</b>\nListed amount + 2% automatic bonus. Approve to purchase all available quantity.",
         parse_mode="HTML")
@@ -645,6 +662,8 @@ async def admin_callback(update,ctx):
     action=parts[1]
     if action=="orders":
         await orders(update,ctx); return
+    if action=="filled":
+        await orders(update,ctx,show_filled=True); return
     if action=="view":
         pid=int(parts[2]); c=v4.db()
         row=c.execute("SELECT * FROM central_catalog WHERE id=?",(pid,)).fetchone(); c.close()

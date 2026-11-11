@@ -45,6 +45,7 @@ def ensure_schema(db_path=None):
                 ("location_country", "TEXT"),
                 ("location_state", "TEXT"),
                 ("location_city", "TEXT"),
+                ("location_timezone", "TEXT"),
                 ("control_status", "TEXT NOT NULL DEFAULT 'active'"),
                 ("control_note", "TEXT"),
                 ("next_order_warning", "INTEGER NOT NULL DEFAULT 0"),
@@ -89,6 +90,19 @@ def ensure_schema(db_path=None):
                 ("created_at", "TEXT"),
                 ("updated_at", "TEXT"),
             ])
+
+        conn.execute("""CREATE TABLE IF NOT EXISTS merchant_pair_progress (
+            shop_id INTEGER PRIMARY KEY, owner_id INTEGER NOT NULL,
+            completed_count INTEGER NOT NULL DEFAULT 0 CHECK(completed_count BETWEEN 0 AND 50),
+            reached_at TEXT, reset_at TEXT, cycle_started_at TEXT, updated_at TEXT NOT NULL)
+        """)
+        conn.execute("""CREATE TABLE IF NOT EXISTS merchant_pair_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, source_type TEXT NOT NULL,
+            source_order_id INTEGER NOT NULL, shop_id INTEGER NOT NULL,
+            owner_id INTEGER NOT NULL, quantity INTEGER NOT NULL,
+            created_at TEXT NOT NULL, UNIQUE(source_type,source_order_id))
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_pair_progress_due ON merchant_pair_progress(completed_count,reset_at)")
 
         conn.execute("""CREATE TABLE IF NOT EXISTS owner_wallets (
             owner_id INTEGER PRIMARY KEY, network TEXT NOT NULL, address TEXT NOT NULL,

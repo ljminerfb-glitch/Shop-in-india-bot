@@ -300,6 +300,22 @@ async def buy(update,ctx):
         if not p or float(p["price_usdt"])<=0:
             c.rollback(); await update.effective_message.reply_text("Product unavailable. Admin has not set its USDT price yet."); return
         if int(shop["level"])==2 and int(p["level_required"])==2:
+            # Enforce the admin-assigned catalogue range and sequential unlock on the server,
+            # not only in the visible Telegram buttons (commands/crafted callbacks cannot bypass it).
+            setup(c)
+            assigned_limit=c.execute(
+                "SELECT item_limit FROM merchant_level_item_limits WHERE shop_id=? AND level=2",
+                (int(shop["id"]),)).fetchone()
+            level_products=c.execute(
+                "SELECT id FROM central_catalog WHERE active=1 AND level_required=2 ORDER BY id").fetchall()
+            if assigned_limit is not None:
+                level_products=level_products[:max(0,int(assigned_limit["item_limit"]))]
+            assigned_ids=[int(x["id"]) for x in level_products]
+            if pid not in assigned_ids:
+                c.rollback()
+                await update.effective_message.reply_text(
+                    "🔒 This product is outside the Level 2 item limit assigned to your shop by Admin.")
+                return
             prior=c.execute("SELECT COUNT(*) FROM central_orders WHERE buyer_shop_id=? AND catalog_id=?",
                             (shop["id"],pid)).fetchone()[0]
             if int(prior)>0:
@@ -307,6 +323,16 @@ async def buy(update,ctx):
                 await update.effective_message.reply_text(
                     "🔒 This Level 2 product has already been purchased by your shop. "
                     "Each Level 2 catalogue product can be purchased only once.")
+                return
+            purchased_ids={int(x[0]) for x in c.execute(
+                "SELECT DISTINCT catalog_id FROM central_orders WHERE buyer_shop_id=?",
+                (int(shop["id"]),)).fetchall()}
+            next_product=next((product_id for product_id in assigned_ids if product_id not in purchased_ids),None)
+            if pid!=next_product:
+                c.rollback()
+                await update.effective_message.reply_text(
+                    "⏳ Please complete the currently unlocked Level 2 product first. "
+                    "The next product unlocks only after a successful purchase.")
                 return
         if int(p["stock"])<qty:
             c.rollback(); await update.effective_message.reply_text(f"Insufficient central stock. Available: {p['stock']}"); return

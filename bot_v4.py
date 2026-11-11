@@ -222,6 +222,29 @@ async def buy(update,ctx):
         allowed, buyer_warning=shop_order_gate(c,buyer["id"])
         if not allowed:
             c.rollback(); await update.message.reply_text(buyer_warning); return
+        pair=c.execute(
+            "SELECT completed_count FROM merchant_pair_progress WHERE shop_id=? AND owner_id=?",
+            (int(buyer["id"]),int(update.effective_user.id))).fetchone()
+        completed=int(pair["completed_count"] or 0) if pair else 0
+        if completed>=50:
+            allowance=c.execute(
+                "SELECT remaining_units FROM merchant_extra_item_allowances WHERE shop_id=?",
+                (int(buyer["id"]),)).fetchone()
+            remaining=int(allowance["remaining_units"] or 0) if allowance else 0
+            if remaining<qty:
+                c.rollback()
+                await update.message.reply_text(
+                    "🔒 Your 50/50 completed-pair limit has been reached. "
+                    f"Admin approval is required for more purchases. Approved units remaining: {remaining}.")
+                return
+            changed=c.execute(
+                "UPDATE merchant_extra_item_allowances SET remaining_units=remaining_units-?,updated_at=? "
+                "WHERE shop_id=? AND remaining_units>=?",
+                (qty,now(),int(buyer["id"]),qty))
+            if changed.rowcount!=1:
+                c.rollback()
+                await update.message.reply_text("🔒 Approved purchase units changed. Please try again.")
+                return
         p=c.execute("""SELECT p.*,s.owner_id,s.status seller_status,s.level seller_level,s.control_status seller_control
                        FROM products p JOIN shops s ON s.id=p.shop_id WHERE p.id=? AND p.active=1""",(pid,)).fetchone()
         if not p or p["stock"]<qty or p["shop_id"]==buyer["id"]:

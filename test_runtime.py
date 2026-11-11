@@ -611,34 +611,30 @@ def test_level2_catalogue_and_purchase_flow():
     require(product_card_ids(admin_ctx.bot.sent[before:])==ids[5:10],
             "Admin Level 2 Next 5 did not show products 6–10")
 
-    # A Level 2 dashboard offers both catalogues and keeps Level 1 pagination available.
+    # A Level 2 merchant sees only Level 2; Level 1 is hidden and callback-blocked.
     menu_update,menu_message,_=callback_update(303,"m:market")
     menu_ctx=context()
     asyncio.run(v5.menu_callback(menu_update,menu_ctx))
     menu_callbacks=callback_data(menu_message.replies[0])
-    require("cclevel:1" in menu_callbacks and "cclevel:2" in menu_callbacks,
-            "Level 2 merchant catalogue menu does not show both Level 1 and Level 2")
+    require("cclevel:2" in menu_callbacks and "cclevel:1" not in menu_callbacks,
+            "Level 2 merchant menu must hide the Level 1 catalogue")
 
     l1_rows=v4.db().execute(
         "SELECT id,title,price_usdt,stock FROM central_catalog WHERE active=1 AND level_required=1 ORDER BY id"
     ).fetchall()
-    require(len(l1_rows)>=10,"Level 1 catalogue fixture should contain multiple pages")
-    l1_ids=[int(row["id"]) for row in l1_rows]
-    l1_pid=l1_ids[0]
+    require(bool(l1_rows),"Level 1 catalogue fixture is missing")
+    l1_pid=int(l1_rows[0]["id"])
     l1_title=str(l1_rows[0]["title"])
     lower_ctx=context()
-    lower_update,_,_=callback_update(303,"cclevel:1")
+    lower_update,_,lower_query=callback_update(303,"cclevel:1")
     asyncio.run(cc.owner_level_callback(lower_update,lower_ctx))
-    require(product_card_ids(lower_ctx.bot.sent)==l1_ids[:5],
-            "Level 2 merchant could not open the first five Level 1 products")
-    lower_nav=next(x for x in lower_ctx.bot.sent if "ccpage:1:1" in sent_callback_data(x))
-    require("PAGE 1/3" in sent_text(lower_nav),
-            "Level 2 merchant Level 1 catalogue pagination is missing")
-    before_lower_page=len(lower_ctx.bot.sent)
-    lower_next,_,_=callback_update(303,"ccpage:1:1")
-    asyncio.run(cc.owner_catalog_page_callback(lower_next,lower_ctx))
-    require(product_card_ids(lower_ctx.bot.sent[before_lower_page:])==l1_ids[5:10],
-            "Level 2 merchant could not paginate the Level 1 catalogue")
+    require(lower_query.answers and lower_query.answers[-1]["kwargs"].get("show_alert") is True
+            and not product_card_ids(lower_ctx.bot.sent),
+            "Level 2 merchant was able to open the hidden Level 1 catalogue")
+    page_update,_,page_query=callback_update(303,"ccpage:1:1")
+    asyncio.run(cc.owner_catalog_page_callback(page_update,context()))
+    require(page_query.answers and page_query.answers[-1]["kwargs"].get("show_alert") is True,
+            "Level 2 merchant could access a stale Level 1 page callback")
 
     owner_update,_,_=callback_update(303,"cclevel:2")
     owner_ctx=context()
@@ -683,30 +679,21 @@ def test_level2_catalogue_and_purchase_flow():
             "Level 2 product order/unit counters are incorrect after first purchase")
     c.close()
 
-    # Level 2 merchants can also buy Level 1 inventory, retaining its original +0.8 USDT margin.
+    # Level 2 merchants cannot buy Level 1 products through direct commands either.
     c=v4.db()
     l1_before=int(c.execute("SELECT stock FROM central_catalog WHERE id=?",(l1_pid,)).fetchone()[0])
     c.close()
     l1_replies=run_central_buy(303,l1_pid,1)
-    require(any("Purchase successful" in x["text"] for x in l1_replies),
-            f"Level 2 merchant could not buy a Level 1 catalogue product: {l1_replies!r}")
+    require(any("Product unavailable" in x["text"] for x in l1_replies),
+            f"Level 2 merchant bypassed the Level 1 purchase restriction: {l1_replies!r}")
     c=v4.db()
     l1_after=int(c.execute("SELECT stock FROM central_catalog WHERE id=?",(l1_pid,)).fetchone()[0])
-    require(l1_after==l1_before-1,"Level 1 stock did not decrease after Level 2 merchant purchase")
-    l1_inventory=c.execute(
-        "SELECT i.*,p.level_required FROM central_inventory i JOIN central_catalog p ON p.id=i.catalog_id "
-        "WHERE i.owner_id=303 AND i.catalog_id=? AND i.remaining_quantity=1 ORDER BY i.id DESC LIMIT 1",
-        (l1_pid,)
-    ).fetchone()
-    require(l1_inventory is not None and int(l1_inventory["level_required"])==1,
-            "Level 2 merchant's Level 1 purchase was not saved as Level 1 inventory")
-    l1_listing=c.execute(
-        "SELECT * FROM resale_listings WHERE inventory_id=? AND status='active'",(l1_inventory["id"],)
-    ).fetchone()
-    require(l1_listing is not None and abs(float(l1_listing["ask_price_usdt"])-3.3)<1e-8,
-            "Level 2 merchant's Level 1 purchase did not retain Level 1 +0.8 resale margin")
-    l1_listing_id=int(l1_listing["id"])
+    require(l1_after==l1_before,"Blocked Level 1 purchase changed catalogue stock")
+    require(c.execute("SELECT COUNT(*) FROM central_orders WHERE buyer_shop_id=? AND catalog_id=?",
+                      (v4.shop_for(303)["id"],l1_pid)).fetchone()[0]==0,
+            "Blocked Level 1 purchase created a purchase order")
     c.close()
+    l1_listing_id=None
     stock_screen_ctx=context()
     stock_screen_update,stock_screen_message,_=callback_update(303,"rs:listmenu")
     asyncio.run(cc.resale_callback(stock_screen_update,stock_screen_ctx))

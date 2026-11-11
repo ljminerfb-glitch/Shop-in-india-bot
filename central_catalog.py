@@ -212,7 +212,7 @@ def catalogue_text(c):
       for r in rows)
 
 async def admin_catalog(update,ctx):
-    if update.effective_user.id != v4.ADMIN_ID:
+    if not v4.admin(update.effective_user.id):
         await update.effective_message.reply_text("Admin only."); return
     from telegram import InlineKeyboardMarkup, InlineKeyboardButton
     await update.effective_message.reply_text(
@@ -297,7 +297,7 @@ async def _send_admin_level_page(update,ctx,level=1,page=0):
 
 async def admin_level_callback(update,ctx):
     q=update.callback_query
-    if q.from_user.id != v4.ADMIN_ID:
+    if not v4.admin(q.from_user.id):
         await safe_callback_answer(q,"Admin only",show_alert=True); return
     try:
         level=int(q.data.split(":")[1])
@@ -310,7 +310,7 @@ async def admin_level_callback(update,ctx):
 
 async def admin_catalog_page_callback(update,ctx):
     q=update.callback_query
-    if q.from_user.id != v4.ADMIN_ID:
+    if not v4.admin(q.from_user.id):
         await safe_callback_answer(q,"Admin only",show_alert=True); return
     try:
         parts=q.data.split(":")
@@ -328,7 +328,7 @@ async def admin_catalog_page_callback(update,ctx):
 
 
 async def set_price(update,ctx):
-    if update.effective_user.id != v4.ADMIN_ID: return
+    if not v4.admin(update.effective_user.id): return
     if len(ctx.args)!=2:
         await update.effective_message.reply_text("Usage: /centralprice PRODUCT_ID USDT_PRICE"); return
     try:
@@ -346,7 +346,7 @@ async def set_price(update,ctx):
     await update.effective_message.reply_text(f"Updated #{pid} {row['title']}: {old:g} → {price:g} USDT.")
 
 async def set_stock(update,ctx):
-    if update.effective_user.id != v4.ADMIN_ID: return
+    if not v4.admin(update.effective_user.id): return
     if len(ctx.args)!=2:
         await update.effective_message.reply_text("Usage: /centralstock PRODUCT_ID QUANTITY"); return
     try:
@@ -363,7 +363,7 @@ async def set_stock(update,ctx):
     await update.effective_message.reply_text(f"Stock updated for product #{pid}." if cur.rowcount else "Central product not found.")
 
 async def set_active(update,ctx):
-    if update.effective_user.id != v4.ADMIN_ID: return
+    if not v4.admin(update.effective_user.id): return
     if len(ctx.args)!=2 or ctx.args[1].lower() not in ("on","off"):
         await update.effective_message.reply_text("Usage: /centralactive PRODUCT_ID on|off"); return
     try: pid=int(ctx.args[0])
@@ -533,7 +533,7 @@ def consume_extra_purchase_units(c, shop_id, owner_id, quantity):
     return True, None
 
 async def orders(update,ctx):
-    if update.effective_user.id != v4.ADMIN_ID: return
+    if not v4.admin(update.effective_user.id): return
     from telegram import InlineKeyboardMarkup, InlineKeyboardButton
     c=v4.db()
     rows=c.execute("""SELECT o.id,o.buyer_owner_id,o.buyer_shop_id,o.quantity,o.total_usdt,o.status,o.created_at,p.title,
@@ -564,7 +564,7 @@ async def orders(update,ctx):
 
 async def admin_photo(update,ctx):
     """Persist an Admin-uploaded Telegram photo as the central catalogue image."""
-    if update.effective_user.id != v4.ADMIN_ID:
+    if not v4.admin(update.effective_user.id):
         ctx.user_data.pop("central_admin_photo",None); return
     pending=ctx.user_data.get("central_admin_photo")
     if not pending: return
@@ -595,7 +595,7 @@ async def admin_photo(update,ctx):
 async def admin_callback(update,ctx):
     from telegram import InlineKeyboardMarkup, InlineKeyboardButton
     q=update.callback_query
-    if q.from_user.id != v4.ADMIN_ID:
+    if not v4.admin(q.from_user.id):
         await q.answer("Admin only",show_alert=True); return
     await q.answer()
     parts=q.data.split(":")
@@ -942,7 +942,7 @@ def resale_setup(c=None):
 
 async def list_inventory(update,ctx):
     from telegram import InlineKeyboardMarkup, InlineKeyboardButton
-    if update.effective_user.id==v4.ADMIN_ID: return
+    if v4.admin(update.effective_user.id): return
     shop=v4.shop_for(update.effective_user.id)
     if not shop or shop["status"]!="approved" or int(shop["level"]) not in (1,2):
         await update.effective_message.reply_text("<b>🔒 APPROVED LEVEL REQUIRED</b>\nYour shop must be approved and active at Level 1 or Level 2.",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Dashboard",callback_data="m:dashboard")]]),parse_mode="HTML"); return
@@ -1060,7 +1060,7 @@ async def resale_callback(update,ctx):
         except Exception: log.exception("Admin listing notification failed")
         return
     if action=="reject":
-        if q.from_user.id!=v4.ADMIN_ID: await safe_callback_answer(q, "Admin only",show_alert=True); return
+        if not v4.admin(q.from_user.id): await safe_callback_answer(q, "Admin only",show_alert=True); return
         lid=int(parts[2])
         c=v4.db()
         listing=c.execute("SELECT owner_id,status FROM resale_listings WHERE id=?",(lid,)).fetchone()
@@ -1074,7 +1074,7 @@ async def resale_callback(update,ctx):
             "The seller will receive this reason. Type CANCEL to stop.")
         return
     if action=="review":
-        if q.from_user.id!=v4.ADMIN_ID: await safe_callback_answer(q, "Admin only",show_alert=True); return
+        if not v4.admin(q.from_user.id): await safe_callback_answer(q, "Admin only",show_alert=True); return
         lid=int(parts[2]); c=v4.db()
         r=c.execute("""SELECT l.*,p.title,s.shop_name FROM resale_listings l JOIN central_catalog p ON p.id=l.catalog_id JOIN shops s ON s.id=l.shop_id WHERE l.id=?""",(lid,)).fetchone(); c.close()
         if not r: await safe_callback_answer(q, "Listing not found",show_alert=True); return
@@ -1190,7 +1190,7 @@ async def resale_callback(update,ctx):
 
 async def admin_resale_text(update,ctx):
     data=ctx.user_data.get("admin_resale_offer")
-    if not data or update.effective_user.id!=v4.ADMIN_ID: return False
+    if not data or not v4.admin(update.effective_user.id): return False
     raw=(update.message.text or "").strip()
     if raw.lower()=="cancel":
         ctx.user_data.pop("admin_resale_offer",None); await update.message.reply_text("Offer cancelled.",reply_markup=__import__('telegram').InlineKeyboardMarkup([[__import__('telegram').InlineKeyboardButton("⬅️ Admin Panel",callback_data="adm:home")]])); return True
@@ -1229,7 +1229,7 @@ async def admin_resale_text(update,ctx):
 
 async def admin_resale_market(update,ctx):
     from telegram import InlineKeyboardMarkup, InlineKeyboardButton
-    if update.effective_user.id!=v4.ADMIN_ID: return
+    if not v4.admin(update.effective_user.id): return
     resale_setup(); c=v4.db()
     rows=c.execute("""SELECT l.id,l.owner_id,l.shop_id,l.remaining_quantity,l.ask_price_usdt,p.title,s.shop_name FROM resale_listings l JOIN central_catalog p ON p.id=l.catalog_id JOIN shops s ON s.id=l.shop_id WHERE l.status='active' AND l.remaining_quantity>0 ORDER BY l.id DESC LIMIT 50""").fetchall(); c.close()
     await update.effective_message.reply_text(

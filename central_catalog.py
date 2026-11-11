@@ -907,7 +907,7 @@ async def owner_catalog_page_callback(update,ctx):
     q=update.callback_query
     shop=v4.shop_for(q.from_user.id)
     if not shop or shop["status"]!="approved" or int(shop["level"]) not in (1,2,3,4,5):
-        await safe_callback_answer(q,"Approved Level 1 or Level 2 shop required",show_alert=True); return
+        await safe_callback_answer(q,"Approved shop at the matching level required",show_alert=True); return
     try:
         parts=q.data.split(":")
         if len(parts)==2:  # legacy Level 1 page callback
@@ -1190,7 +1190,7 @@ async def resale_callback(update,ctx):
                 (inv_id,q.from_user.id)).fetchone()
             if not inv: c.rollback(); await safe_callback_answer(q, "Inventory not found",show_alert=True); return
             seller_shop=c.execute("SELECT id,owner_id,status,level FROM shops WHERE id=?",(inv["shop_id"],)).fetchone()
-            if not seller_shop or int(seller_shop["owner_id"])!=q.from_user.id or seller_shop["status"]!="approved" or int(seller_shop["level"])<int(inv["level_required"]):
+            if not seller_shop or int(seller_shop["owner_id"])!=q.from_user.id or seller_shop["status"]!="approved" or int(seller_shop["level"])!=int(inv["level_required"]):
                 c.rollback(); await safe_callback_answer(q,"Inventory level does not match your approved shop",show_alert=True); return
             listed=c.execute("SELECT COALESCE(SUM(remaining_quantity),0) FROM resale_listings WHERE inventory_id=? AND status='active'",(inv_id,)).fetchone()[0]
             qty=int(inv["remaining_quantity"])-int(listed)
@@ -1258,7 +1258,7 @@ async def resale_callback(update,ctx):
     if action=="market":
         shop=v4.shop_for(q.from_user.id)
         if not shop or shop["status"]!="approved" or int(shop["level"]) not in (1,2,3,4,5):
-            await safe_callback_answer(q, "Approved Level 1 or Level 2 shop required",show_alert=True); return
+            await safe_callback_answer(q, "Approved shop at the matching level required",show_alert=True); return
         level=int(shop["level"])
         c=v4.db()
         rows=c.execute("""SELECT l.id,l.remaining_quantity,l.ask_price_usdt,p.title,s.shop_name
@@ -1292,7 +1292,7 @@ async def resale_callback(update,ctx):
     if action=="buy":
         shop=v4.shop_for(q.from_user.id)
         if not shop or shop["status"]!="approved" or int(shop["level"]) not in (1,2,3,4,5):
-            await safe_callback_answer(q, "Approved Level 1 or Level 2 shop required",show_alert=True); return
+            await safe_callback_answer(q, "Approved shop at the matching level required",show_alert=True); return
         buyer_level=int(shop["level"])
         lid,qty=int(parts[2]),int(parts[3])
         minimum_quantity={1:1,2:1,3:12,4:24,5:36}[buyer_level]
@@ -1321,7 +1321,7 @@ async def resale_callback(update,ctx):
                     await q.message.reply_text(buyer_warning)
                 return
             seller_shop=c.execute("SELECT status,level,control_status FROM shops WHERE id=?",(l["shop_id"],)).fetchone()
-            if not seller_shop or seller_shop["status"]!="approved" or str(seller_shop["control_status"] or "active").lower()!="active" or int(seller_shop["level"])<listing_level:
+            if not seller_shop or seller_shop["status"]!="approved" or str(seller_shop["control_status"] or "active").lower()!="active" or int(seller_shop["level"])!=listing_level:
                 c.rollback(); await safe_callback_answer(q, "Only approved merchants with this level or higher can sell here",show_alert=True); return
             total=round(float(l["ask_price_usdt"])*qty,6); bal=balance(c,q.from_user.id)
             if bal+1e-9<total: c.rollback(); await safe_callback_answer(q, "Insufficient USDT balance",show_alert=True); return

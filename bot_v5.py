@@ -2472,123 +2472,6 @@ async def audit_callback(update,ctx):
         log.exception("Audit screen failed")
         await q.message.reply_text("Audit log could not be loaded.")
 
-async def admin_orders(update,ctx):
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text("System only.")
-        return
-    c=v4.db()
-    rows=c.execute("""SELECT o.id,o.product_id,o.quantity,o.total_amount,o.status,
-                             p.title,o.buyer_owner_id,o.seller_owner_id,
-                             bs.shop_name AS buyer_shop,ss.shop_name AS seller_shop
-                      FROM v4_orders o
-                      JOIN products p ON p.id=o.product_id
-                      JOIN shops bs ON bs.id=o.buyer_shop_id
-                      JOIN shops ss ON ss.id=o.seller_shop_id
-                      WHERE o.status NOT IN ('delivered','completed','rejected')
-                      ORDER BY o.id DESC LIMIT 25""").fetchall()
-    c.close()
-    if not rows:
-        await update.message.reply_text("No orders awaiting delivery.")
-        return
-    for r in rows:
-        kb=InlineKeyboardMarkup([[InlineKeyboardButton("✅ Mark Delivered",callback_data=f"order:delivered:{r['id']}")]])
-        await update.message.reply_text(
-            f"🛒 ORDER #{r['id']}\n{r['title']} × {r['quantity']}\n"
-            f"Buyer: {r['buyer_shop']} (ID {r['buyer_owner_id']})\n"
-            f"Seller: {r['seller_shop']} (ID {r['seller_owner_id']})\n"
-            f"Total: INR ₹{r['total_amount']:.2f}\nStatus: {r['status']}\n\n"
-            "Supplier se delivery confirm hone ke baad hi Delivered click karein.",
-            reply_markup=kb)
-
-async def delivered_callback(update,ctx):
-    q=update.callback_query
-    if not is_admin(q.from_user.id):
-        await q.answer("System only",show_alert=True)
-        return
-    await q.answer()
-    try:
-        oid=int(q.data.rsplit(":",1)[1])
-    except (ValueError,IndexError):
-        await q.message.reply_text("Invalid order.")
-        return
-    c=v4.db()
-    try:
-        c.execute("BEGIN IMMEDIATE")
-        order=c.execute("SELECT * FROM v4_orders WHERE id=?",(oid,)).fetchone()
-        if not order:
-            c.rollback()
-            await q.message.reply_text("Order not found.")
-            return
-        if order["status"] in ("delivered","completed","rejected"):
-            c.rollback()
-            await q.message.reply_text(f"Order #{oid} is already {order['status']}.")
-            return
-        c.execute("UPDATE v4_orders SET status='delivered',completed_at=?,updated_at=? WHERE id=?",
-                  (v4.now(),v4.now(),oid))
-        c.execute("""INSERT INTO ledger(transaction_id,shop_id,owner_id,entry_type,amount,currency,note,created_at)
-                     VALUES(?,?,?,'sale_credit',?,'INR',?,?)""",
-                  (oid,order["seller_shop_id"],order["seller_owner_id"],order["seller_amount"],
-                   f"Delivered order #{oid}",v4.now()))
-        c.execute("""INSERT INTO admin_audit(admin_id,owner_id,action,details,created_at)
-                     VALUES(?,?,?,?,?)""",
-                  (ADMIN_ID,order["seller_owner_id"],"order_delivered",f"Order #{oid}",v4.now()))
-        c.commit()
-    except Exception:
-        c.rollback()
-        log.exception("Mark delivered failed")
-        await q.message.reply_text("Could not update order. No delivery credit was recorded.")
-        return
-    finally:
-        c.close()
-    await q.message.reply_text(
-        f"✅ Order #{oid} marked DELIVERED.\n"
-        f"Seller credit recorded: INR ₹{float(order['seller_amount']):.2f}")
-    for uid in {int(order["buyer_owner_id"]),int(order["seller_owner_id"])}:
-        try:
-            await ctx.bot.send_message(uid,
-                f"📦 Order #{oid} status: DELIVERED. "
-                + (f"Your sale credit is INR ₹{float(order['seller_amount']):.2f}."
-                   if uid==int(order["seller_owner_id"]) else ""))
-        except Exception:
-            log.exception("Delivered notification failed")
-
-async def addproduct(update,ctx):
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text("System only."); return
-    raw=" ".join(ctx.args)
-    # Syntax: /addproduct SHOP_ID PRICE STOCK LEVEL Title | Description
-    try:
-        head,body=raw.split(" ",4)[0:4],None
-        parts=raw.split(maxsplit=4)
-        if len(parts)!=5: raise ValueError()
-        shop_id,price,stock,level=int(parts[0]),float(parts[1]),int(parts[2]),int(parts[3])
-        title_desc=parts[4]
-        if "|" not in title_desc: raise ValueError()
-        title,description=[x.strip() for x in title_desc.split("|",1)]
-        if not title or not description or price<=0 or stock<0 or level not in range(1,6): raise ValueError()
-    except Exception:
-        await update.message.reply_text("Usage:\n/addproduct SHOP_ID PRICE STOCK LEVEL Title | Full description"); return
-    c=v4.db()
-    shop=c.execute("SELECT id,owner_id,status FROM shops WHERE id=?",(shop_id,)).fetchone()
-    if not shop or shop["status"]!="approved":
-        c.close(); await update.message.reply_text("Approved seller shop ID not found."); return
-    cols={r["name"] for r in c.execute("PRAGMA table_info(products)").fetchall()}
-    required={"shop_id","title","description","price","currency","active","stock"}
-    if not required.issubset(cols):
-        c.close(); await update.message.reply_text("Products table schema mismatch; no product added."); return
-    fields=["shop_id","title","description","price","currency","active","stock"]
-    vals=[shop_id,title,description,price,"INR",1,stock]
-    if "level_required" in cols: fields.append("level_required"); vals.append(level)
-    if "created_at" in cols: fields.append("created_at"); vals.append(v4.now())
-    if "updated_at" in cols: fields.append("updated_at"); vals.append(v4.now())
-    marks=",".join("?" for _ in fields)
-    cur=c.execute(f"INSERT INTO products ({','.join(fields)}) VALUES ({marks})",vals)
-    pid=cur.lastrowid
-    c.commit(); c.close()
-    await update.message.reply_text(f"Product published by System. ID #{pid}\n{title}\nINR {price:,.2f} | Stock {stock} | Required level L{level}")
-    try: await ctx.bot.send_message(shop["owner_id"],f"System added a marketplace product to your shop: #{pid} {title}")
-    except Exception: pass
-
 async def support_command(update,ctx):
     await update.message.reply_text(
         "💬 SHOP IN INDIA SUPPORT\n\n"
@@ -2604,8 +2487,6 @@ async def help_command(update,ctx):
             "/setlevel — Configure levels\n"
 
             "/setfee — Update platform fee\n"
-            "/orderdone — Mark an order delivered\n"
-            "/orderreject — Reject an order\n"
             "/verifywallet — Verify owner wallet\n"
             "/help — This help"
         )

@@ -197,8 +197,7 @@ def record_completed_pairs(c, shop_id, owner_id, quantity, source_type, source_o
             reset_at=_pair_reset_timestamp(reached_at,timezone_name)
         except Exception:
             log.exception("Could not calculate merchant pair reset time for shop %s",shop_id)
-    if row:
-        c.execute("""UPDATE merchant_pair_progress
+    if row:        c.execute("""UPDATE merchant_pair_progress
             SET completed_count=?,reached_at=CASE WHEN ?=50 THEN ? ELSE reached_at END,
                 reset_at=CASE WHEN ?=50 THEN ? ELSE reset_at END,updated_at=?
             WHERE shop_id=?""",(new_count,new_count,reached_at,new_count,reset_at,now,int(shop_id)))
@@ -397,8 +396,7 @@ async def buy(update,ctx):
         await update.effective_message.reply_text("Approved Level 1 or Level 2 shop required for this catalogue."); return
     try:
         pid=int(ctx.args[0]); qty=int(ctx.args[1])
-        if pid<1 or qty<1 or qty>1000: raise ValueError()
-        if int(shop["level"])==1 and qty>1:
+        if pid<1 or qty<1 or qty>1000: raise ValueError()        if int(shop["level"])==1 and qty>1:
             await update.effective_message.reply_text(
                 "🔒 Level 1 purchase limit: you can buy only 1 item per order. "
                 "Upgrade to Level 2 to purchase multiple items.")
@@ -546,74 +544,103 @@ def consume_extra_purchase_units(c, shop_id, owner_id, quantity):
     return True, None
 
 async def orders(update,ctx,show_filled=False):
-    if not v4.admin(update.effective_user.id): return
+    """Show every original order and merchant resale listing in separate Telegram messages.
+
+    Separate cards prevent Telegram's message-size limit from hiding resale actions
+    when many original orders are pending.
+    """
+    if not v4.admin(update.effective_user.id):
+        return
     from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+
     c=v4.db()
-    order_status="fulfilled" if show_filled else "paid"
-    rows=c.execute("""SELECT o.id,o.buyer_owner_id,o.buyer_shop_id,o.quantity,o.total_usdt,o.status,o.created_at,p.title,
-      (SELECT entry_type FROM ledger l WHERE l.transaction_id=o.id AND l.owner_id=o.buyer_owner_id
-       AND l.entry_type IN ('central_purchase_debit','resale_purchase_debit') ORDER BY l.id LIMIT 1) purchase_type
-      FROM central_orders o JOIN central_catalog p ON p.id=o.catalog_id
-      WHERE o.status=? ORDER BY o.id DESC LIMIT 50""",(order_status,)).fetchall()
-    listings=[] if show_filled else c.execute("""SELECT l.id,l.owner_id,l.shop_id,l.remaining_quantity,l.ask_price_usdt,
-      p.title,s.shop_name FROM resale_listings l
-      JOIN central_catalog p ON p.id=l.catalog_id JOIN shops s ON s.id=l.shop_id
-      WHERE l.status='active' AND l.remaining_quantity>0
-      ORDER BY l.id DESC LIMIT 50""").fetchall()
-    c.close()
-
-    heading="<b>✅ FILLED ORDERS HISTORY</b>" if show_filled else "<b>📦 CENTRAL ORDERS + MERCHANT RESALE</b>"
-    lines=[heading,"━━━━━━━━━━━━━━━━━━"]
-    keyboard=[]
-    included_orders=0
-    included_listings=0
-
-    if rows:
-        lines.append("<b>📦 ORIGINAL ORDERS</b>")
-        for r in rows:
-            card=(f"\n<b>Order #{r['id']} — {html.escape(str(r['status']).upper())}</b>\n"
-                  f"{html.escape(str(r['title']))} × {int(r['quantity'])}\n"
-                  f"Owner: <code>{int(r['buyer_owner_id'])}</code> • Shop: #{int(r['buyer_shop_id'])}\n"
-                  f"Amount: <b>{float(r['total_usdt']):g} USDT</b>")
-            if len("\n".join(lines))+len(card)>3650: break
-            lines.append(card); included_orders+=1
-            if not show_filled:
-                keyboard.append([
-                    InlineKeyboardButton("✅ Mark Fulfilled",callback_data=f"cc:fulfill:{r['id']}"),
-                    InlineKeyboardButton("✅ Filled Orders History",callback_data="cc:filled")])
-                if r["purchase_type"]=="central_purchase_debit":
-                    keyboard.append([InlineKeyboardButton("↩️ Refund + Restock",callback_data=f"cc:refund:{r['id']}")])
+    try:
+        order_status="fulfilled" if show_filled else "paid"
+        rows=c.execute("""SELECT o.id,o.buyer_owner_id,o.buyer_shop_id,o.quantity,o.total_usdt,o.status,o.created_at,p.title,
+          (SELECT entry_type FROM ledger l WHERE l.transaction_id=o.id AND l.owner_id=o.buyer_owner_id
+           AND l.entry_type IN ('central_purchase_debit','resale_purchase_debit') ORDER BY l.id LIMIT 1) purchase_type
+          FROM central_orders o JOIN central_catalog p ON p.id=o.catalog_id
+          WHERE o.status=? ORDER BY o.id DESC LIMIT 50""",(order_status,)).fetchall()
+        listings=[] if show_filled else c.execute("""SELECT l.id,l.owner_id,l.shop_id,l.remaining_quantity,l.ask_price_usdt,
+          p.title,s.shop_name FROM resale_listings l
+          JOIN central_catalog p ON p.id=l.catalog_id JOIN shops s ON s.id=l.shop_id
+          WHERE l.status='active' AND l.remaining_quantity>0
+          ORDER BY l.id DESC LIMIT 50""").fetchall()
+    finally:
+        c.close()
 
     if show_filled:
-        if not rows: lines.append("\nNo filled orders have been recorded yet.")
-        keyboard.append([InlineKeyboardButton("📦 Manage Central Orders",callback_data="cc:orders")])
-    else:
-        lines.append("\n<b>🏷️ MERCHANT RESALE ORDERS</b>")
-        if not listings: lines.append("No active merchant resale listings.")
-        for r in listings:
-            listed=float(r["ask_price_usdt"])
-            profit=round(listed*0.02,6)
-            payout=round(listed+profit,6)
-            qty=int(r["remaining_quantity"])
-            card=(f"\n<b>Resale #{r['id']} — {html.escape(str(r['title']))}</b>\n"
-                  f"Merchant: {html.escape(str(r['shop_name']))} • Shop #{r['shop_id']}\n"
-                  f"Available: <b>{qty}</b> • Listed: <b>{listed:g} USDT/item</b>\n"
-                  f"<b>💚 2% PROFIT BONUS: +{profit:.6f} USDT/item</b>\n"
-                  f"Merchant receives: <b>{payout:g} USDT/item</b> • Total: <b>{payout*qty:.6f} USDT</b>")
-            if len("\n".join(lines))+len(card)>3650: break
-            lines.append(card); included_listings+=1
-            keyboard.append([
-                InlineKeyboardButton("✅ APPROVE + BUY (2% PROFIT)",callback_data=f"cc:approve_listing:{r['id']}"),
-                InlineKeyboardButton("❌ Reject",callback_data=f"rs:reject:{r['id']}")])
+        await update.effective_message.reply_text(
+            "<b>✅ FILLED ORDERS HISTORY</b>\n━━━━━━━━━━━━━━━━━━\n"
+            + (f"Showing {len(rows)} completed original order(s)." if rows else "No filled orders have been recorded yet."),
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("📦 Manage Central Orders",callback_data="cc:orders")],
+                [InlineKeyboardButton("🏠 System Control Center",callback_data="adm:home")]
+            ]),parse_mode="HTML")
+        for r in rows:
+            await update.effective_message.reply_text(
+                f"<b>✅ ORIGINAL ORDER #{r['id']} — FULFILLED</b>\n"
+                f"{html.escape(str(r['title']))} × {int(r['quantity'])}\n"
+                f"Owner: <code>{int(r['buyer_owner_id'])}</code> • Shop: #{int(r['buyer_shop_id'])}\n"
+                f"Amount: <b>{float(r['total_usdt']):g} USDT</b>",
+                parse_mode="HTML")
+        return
 
-        if included_orders<len(rows) or included_listings<len(listings):
-            lines.append("\n<i>Some records are not shown because Telegram has a message-size limit. Refresh to view the latest records.</i>")
-        keyboard.append([InlineKeyboardButton("🔄 Refresh Orders",callback_data="cc:orders")])
-
-    keyboard.append([InlineKeyboardButton("⬅️ Central Catalogue",callback_data="adm:central"),
-                     InlineKeyboardButton("🏠 System Control Center",callback_data="adm:home")])
     await update.effective_message.reply_text(
-        "\n".join(lines),reply_markup=InlineKeyboardMarkup(keyboard),parse_mode="HTML")
+        "<b>📦 CENTRAL ORDERS &amp; RESALE MANAGEMENT</b>\n━━━━━━━━━━━━━━━━━━\n"
+        f"<b>ORIGINAL ORDERS:</b> {len(rows)} pending\n"
+        f"<b>FILLED ORDERS HISTORY:</b> available below\n"
+        f"<b>MERCHANT RESALE ORDERS:</b> {len(listings)} active\n"
+        "Each order is shown in its own message so no action buttons are hidden.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Filled Orders History",callback_data="cc:filled")],
+            [InlineKeyboardButton("🔄 Refresh Orders",callback_data="cc:orders")],
+            [InlineKeyboardButton("⬅️ Central Catalogue",callback_data="adm:central"),
+             InlineKeyboardButton("🏠 System Control Center",callback_data="adm:home")]
+        ]),parse_mode="HTML")
+
+    if rows:
+        await update.effective_message.reply_text("<b>📦 ORIGINAL ORDERS</b>",parse_mode="HTML")
+        for r in rows:
+            keyboard=[
+                [InlineKeyboardButton("✅ Mark Fulfilled",callback_data=f"cc:fulfill:{r['id']}")]
+            ]
+            if r["purchase_type"]=="central_purchase_debit":
+                keyboard.append([InlineKeyboardButton("↩️ Refund + Restock",callback_data=f"cc:refund:{r['id']}")])
+            keyboard.append([InlineKeyboardButton("✅ Filled Orders History",callback_data="cc:filled")])
+            await update.effective_message.reply_text(
+                f"<b>ORIGINAL ORDER #{r['id']} — {html.escape(str(r['status']).upper())}</b>\n"
+                f"{html.escape(str(r['title']))} × {int(r['quantity'])}\n"
+                f"Owner: <code>{int(r['buyer_owner_id'])}</code> • Shop: #{int(r['buyer_shop_id'])}\n"
+                f"Amount: <b>{float(r['total_usdt']):g} USDT</b>",
+                reply_markup=InlineKeyboardMarkup(keyboard),parse_mode="HTML")
+    else:
+        await update.effective_message.reply_text("<b>📦 ORIGINAL ORDERS</b>\nNo pending original orders.",parse_mode="HTML")
+
+    await update.effective_message.reply_text(
+        f"<b>🏷️ MERCHANT RESALE ORDERS</b>\n"
+        f"{len(listings)} active merchant listing(s).",
+        parse_mode="HTML")
+    if not listings:
+        await update.effective_message.reply_text("No active merchant resale listings.")
+    for r in listings:
+        listed=float(r["ask_price_usdt"])
+        bonus=round(listed*0.02,6)
+        payout=round(listed+bonus,6)
+        qty=int(r["remaining_quantity"])
+        await update.effective_message.reply_text(
+            f"<b>MERCHANT RESALE ORDER #{r['id']}</b>\n"
+            f"<b>{html.escape(str(r['title']))}</b>\n"
+            f"Merchant: {html.escape(str(r['shop_name']))} • Shop #{r['shop_id']}\n"
+            f"Available: <b>{qty}</b> item(s)\n"
+            f"Listed price: <b>{listed:g} USDT/item</b>\n"
+            f"<b>💚 2% PROFIT BONUS: +{bonus:.6f} USDT/item</b>\n"
+            f"Merchant receives: <b>{payout:.6f} USDT/item</b>\n"
+            f"Total payout: <b>{payout*qty:.6f} USDT</b>",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("✅ APPROVE + BUY (2% BONUS)",callback_data=f"cc:approve_listing:{r['id']}"),
+                InlineKeyboardButton("❌ REJECT",callback_data=f"rs:reject:{r['id']}")
+            ]]),parse_mode="HTML")
 
 
 async def admin_photo(update,ctx):
@@ -797,8 +824,7 @@ async def admin_callback(update,ctx):
                     WHERE order_id=? AND owner_id=? AND shop_id=? ORDER BY id LIMIT 1""",
                     (oid,order["buyer_owner_id"],order["buyer_shop_id"])).fetchone()
                 if not inventory or int(inventory["remaining_quantity"])!=int(order["quantity"]):
-                    c.rollback()
-                    await q.message.reply_text(
+                    c.rollback()                    await q.message.reply_text(
                         "Refund blocked: some or all items have already been resold or used. "
                         "No wallet, inventory, listing, or catalogue stock was changed.")
                     return
@@ -997,8 +1023,7 @@ async def show_owner_level_products(update,ctx,shop,page=0,track_visit=True,leve
     if level==1:
         await ctx.bot.send_message(
             update.effective_chat.id,
-            f"<b>PAGE {page+1}/{last_page+1}</b> • Products {start+1 if total else 0}–{min(start+CATALOGUE_PAGE_SIZE,total)} of {total}",
-            reply_markup=_catalogue_page_keyboard(
+            f"<b>PAGE {page+1}/{last_page+1}</b> • Products {start+1 if total else 0}–{min(start+CATALOGUE_PAGE_SIZE,total)} of {total}",            reply_markup=_catalogue_page_keyboard(
                 page,total,f"ccpage:{level}",
                 "⬅️ Back to My Products","m:products","m:dashboard"),
             parse_mode="HTML")
@@ -1197,8 +1222,7 @@ async def resale_callback(update,ctx):
         await safe_callback_answer(q)
         await q.message.reply_text(
             f"✍️ Enter the rejection reason for resale listing #{lid}. "
-            "The seller will receive this reason. Type CANCEL to stop.")
-        return
+            "The seller will receive this reason. Type CANCEL to stop.")        return
     if action=="review":
         if not v4.admin(q.from_user.id): await safe_callback_answer(q, "System only",show_alert=True); return
         lid=int(parts[2]); c=v4.db()

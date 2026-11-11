@@ -341,7 +341,6 @@ def test_central_purchase_and_auto_listing():
     replies = run_central_buy(101, pid, 2)
     require(any("Purchase successful" in x["text"] for x in replies), "Level 2 central purchase did not succeed")
     c = v4.db()
-    c.execute("UPDATE shops SET level=1 WHERE owner_id=101")
     c.commit()
     require(c.execute("SELECT stock FROM central_catalog WHERE id=?", (pid,)).fetchone()[0] == 3,
             "Central shared stock was not reduced")
@@ -431,7 +430,7 @@ def test_seller_market_screen(listing_id):
             "Seller Marketplace did not show the seller's latest Telegram profile photo")
     require(len(message.replies) >= 1, "Seller Marketplace did not render the USDT resale screen")
     first = message.replies[0]
-    require("OTHER ELIGIBLE MERCHANT LISTINGS (LEVEL 1–1)" in first["text"], "Other Level 1 resale section missing")
+    require("OTHER ELIGIBLE MERCHANT LISTINGS (LEVEL 1–2)" in first["text"], "Other Level 1 resale section missing")
     require("Price: <b>3.3 USDT / item</b>" in first["text"], "Seller Marketplace price is wrong")
     require(first["kwargs"].get("parse_mode") == "HTML", "Seller Marketplace is not using Telegram HTML")
     buttons = callback_data(first)

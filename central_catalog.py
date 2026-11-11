@@ -65,6 +65,9 @@ def setup(c=None):
           item_limit INTEGER NOT NULL CHECK(item_limit >= 0),
           updated_at TEXT NOT NULL, updated_by INTEGER NOT NULL,
           PRIMARY KEY(shop_id, level))""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS merchant_extra_item_allowances (
+          shop_id INTEGER PRIMARY KEY, remaining_units INTEGER NOT NULL DEFAULT 0,
+          total_approved_units INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL)""")
         for key,title,desc,img in PRODUCTS:
             conn.execute("""INSERT OR IGNORE INTO central_catalog
               (product_key,title,description,price_usdt,stock,image_path,active,level_required,created_at,updated_at)
@@ -383,6 +386,10 @@ async def buy(update,ctx):
         allowed, buyer_warning=v4.shop_order_gate(c,shop["id"])
         if not allowed:
             c.rollback(); await update.effective_message.reply_text(buyer_warning); return
+        purchase_allowed,purchase_message=consume_extra_purchase_units(
+            c,shop["id"],update.effective_user.id,qty)
+        if not purchase_allowed:
+            c.rollback(); await update.effective_message.reply_text(purchase_message); return
         p=c.execute("SELECT * FROM central_catalog WHERE id=? AND active=1 AND level_required>=1 AND level_required<=?",(pid,int(shop["level"]))).fetchone()
         if not p or float(p["price_usdt"])<=0:
             c.rollback(); await update.effective_message.reply_text("Product unavailable. Admin has not set its USDT price yet."); return
@@ -482,6 +489,31 @@ async def buy(update,ctx):
 
 def balance_after_text(total, before):
     return f"{max(0.0, before-total):.6f}".rstrip("0").rstrip(".")
+
+def consume_extra_purchase_units(c, shop_id, owner_id, quantity):
+    """At 50 completed resale pairs, require and consume Admin-approved units atomically."""
+    qty=max(1,int(quantity))
+    progress=c.execute(
+        "SELECT completed_count FROM merchant_pair_progress WHERE shop_id=? AND owner_id=?",
+        (int(shop_id),int(owner_id))).fetchone()
+    completed=int(progress["completed_count"] or 0) if progress else 0
+    if completed<50:
+        return True, None
+    allowance=c.execute(
+        "SELECT remaining_units FROM merchant_extra_item_allowances WHERE shop_id=?",
+        (int(shop_id),)).fetchone()
+    remaining=int(allowance["remaining_units"] or 0) if allowance else 0
+    if remaining<qty:
+        return False, (
+            "🔒 Your 50/50 completed-pair limit has been reached. "
+            f"Admin approval is required for more purchases. Approved units remaining: {remaining}.")
+    changed=c.execute(
+        "UPDATE merchant_extra_item_allowances SET remaining_units=remaining_units-?,updated_at=? "
+        "WHERE shop_id=? AND remaining_units>=?",
+        (qty,v4.now(),int(shop_id),qty))
+    if changed.rowcount!=1:
+        return False, "🔒 Approved purchase units changed. Please try again."
+    return True, None
 
 async def orders(update,ctx):
     if update.effective_user.id != v4.ADMIN_ID: return
@@ -1104,6 +1136,10 @@ async def resale_callback(update,ctx):
                 c.rollback(); await safe_callback_answer(q, "Only approved merchants with this level or higher can sell here",show_alert=True); return
             total=round(float(l["ask_price_usdt"])*qty,6); bal=balance(c,q.from_user.id)
             if bal+1e-9<total: c.rollback(); await safe_callback_answer(q, "Insufficient USDT balance",show_alert=True); return
+            purchase_allowed,purchase_message=consume_extra_purchase_units(
+                c,shop["id"],q.from_user.id,qty)
+            if not purchase_allowed:
+                c.rollback(); await safe_callback_answer(q,purchase_message,show_alert=True); return
             changed=c.execute("UPDATE resale_listings SET remaining_quantity=remaining_quantity-?,status=CASE WHEN remaining_quantity-?=0 THEN 'sold' ELSE status END WHERE id=? AND status='active' AND remaining_quantity>=?",(qty,qty,lid,qty))
             if changed.rowcount != 1:
                 c.rollback(); await safe_callback_answer(q, "Listing stock changed. Please refresh the market.",show_alert=True); return

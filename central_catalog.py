@@ -544,104 +544,75 @@ def consume_extra_purchase_units(c, shop_id, owner_id, quantity):
         return False, "🔒 Approved purchase units changed. Please try again."
     return True, None
 
-async def orders(update,ctx,show_filled=False):
-    """Show every original order and merchant resale listing in separate Telegram messages.
-
-    Separate cards prevent Telegram's message-size limit from hiding resale actions
-    when many original orders are pending.
-    """
+async def orders(update,ctx,view="menu"):
+    """Render a single five-option System Orders menu and its selected section."""
     if not v4.admin(update.effective_user.id):
         return
     from telegram import InlineKeyboardMarkup, InlineKeyboardButton
-
+    q=update.callback_query
     c=v4.db()
     try:
-        order_status="fulfilled" if show_filled else "paid"
-        rows=c.execute("""SELECT o.id,o.buyer_owner_id,o.buyer_shop_id,o.quantity,o.total_usdt,o.status,o.created_at,p.title,
+        paid_rows=c.execute("""SELECT o.id,o.buyer_owner_id,o.buyer_shop_id,o.quantity,o.total_usdt,o.status,p.title,
           (SELECT entry_type FROM ledger l WHERE l.transaction_id=o.id AND l.owner_id=o.buyer_owner_id
            AND l.entry_type IN ('central_purchase_debit','resale_purchase_debit') ORDER BY l.id LIMIT 1) purchase_type
           FROM central_orders o JOIN central_catalog p ON p.id=o.catalog_id
-          WHERE o.status=? ORDER BY o.id DESC LIMIT 50""",(order_status,)).fetchall()
-        listings=[] if show_filled else c.execute("""SELECT l.id,l.owner_id,l.shop_id,l.remaining_quantity,l.ask_price_usdt,
+          WHERE o.status='paid' ORDER BY o.id DESC LIMIT 50""").fetchall()
+        filled_rows=c.execute("""SELECT o.id,o.buyer_owner_id,o.buyer_shop_id,o.quantity,o.total_usdt,p.title
+          FROM central_orders o JOIN central_catalog p ON p.id=o.catalog_id
+          WHERE o.status='fulfilled' ORDER BY o.id DESC LIMIT 50""").fetchall()
+        listings=c.execute("""SELECT l.id,l.owner_id,l.shop_id,l.remaining_quantity,l.ask_price_usdt,
           p.title,s.shop_name FROM resale_listings l
           JOIN central_catalog p ON p.id=l.catalog_id JOIN shops s ON s.id=l.shop_id
           WHERE l.status='active' AND l.remaining_quantity>0
           ORDER BY l.id DESC LIMIT 50""").fetchall()
     finally:
         c.close()
-
-    if show_filled:
-        await update.effective_message.reply_text(
-            "<b>✅ FILLED ORDERS HISTORY</b>\n━━━━━━━━━━━━━━━━━━\n"
-            + (f"Showing {len(rows)} completed original order(s)." if rows else "No filled orders have been recorded yet."),
+    back=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ BACK TO ORDERS MENU",callback_data="cc:orders")],
+                               [InlineKeyboardButton("🏠 SYSTEM CONTROL CENTER",callback_data="adm:home")]])
+    if view=="menu":
+        await q.message.edit_text(
+            "<b>📦 SYSTEM ORDERS</b>\n━━━━━━━━━━━━━━━━━━\n"
+            f"Original orders: <b>{len(paid_rows)}</b> pending\n"
+            f"Filled history: <b>{len(filled_rows)}</b>\n"
+            f"Merchant resale orders: <b>{len(listings)}</b> active\n\nSelect one option:",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("📦 Manage Central Orders",callback_data="cc:orders")],
-                [InlineKeyboardButton("🏠 System Control Center",callback_data="adm:home")]
+                [InlineKeyboardButton("📦 ORIGINAL ORDERS",callback_data="cc:original")],
+                [InlineKeyboardButton("✅ MARK FULFILLED",callback_data="cc:mark")],
+                [InlineKeyboardButton("📜 FILLED ORDERS HISTORY",callback_data="cc:filled")],
+                [InlineKeyboardButton("🏷️ MERCHANT RESALE ORDERS",callback_data="cc:resale")],
+                [InlineKeyboardButton("💚 APPROVE + BUY / ❌ REJECT",callback_data="cc:resale_actions")]
             ]),parse_mode="HTML")
-        for r in rows:
-            await update.effective_message.reply_text(
-                f"<b>✅ ORIGINAL ORDER #{r['id']} — FULFILLED</b>\n"
-                f"{html.escape(str(r['title']))} × {int(r['quantity'])}\n"
-                f"Owner: <code>{int(r['buyer_owner_id'])}</code> • Shop: #{int(r['buyer_shop_id'])}\n"
-                f"Amount: <b>{float(r['total_usdt']):g} USDT</b>",
-                parse_mode="HTML")
         return
-
-    await update.effective_message.reply_text(
-        "<b>📦 CENTRAL ORDERS &amp; RESALE MANAGEMENT</b>\n━━━━━━━━━━━━━━━━━━\n"
-        f"<b>ORIGINAL ORDERS:</b> {len(rows)} pending\n"
-        f"<b>FILLED ORDERS HISTORY:</b> available below\n"
-        f"<b>MERCHANT RESALE ORDERS:</b> {len(listings)} active\n"
-        "Each order is shown in its own message so no action buttons are hidden.",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ Filled Orders History",callback_data="cc:filled")],
-            [InlineKeyboardButton("🔄 Refresh Orders",callback_data="cc:orders")],
-            [InlineKeyboardButton("⬅️ Central Catalogue",callback_data="adm:central"),
-             InlineKeyboardButton("🏠 System Control Center",callback_data="adm:home")]
-        ]),parse_mode="HTML")
-
-    if rows:
-        await update.effective_message.reply_text("<b>📦 ORIGINAL ORDERS</b>",parse_mode="HTML")
-        for r in rows:
-            keyboard=[
-                [InlineKeyboardButton("✅ Mark Fulfilled",callback_data=f"cc:fulfill:{r['id']}")]
-            ]
+    if view=="original":
+        await q.message.edit_text("<b>📦 ORIGINAL ORDERS</b>\n━━━━━━━━━━━━━━━━━━\n"+(f"{len(paid_rows)} pending original order(s)." if paid_rows else "No pending original orders."),reply_markup=back,parse_mode="HTML")
+        for r in paid_rows:
+            await q.message.reply_text(f"<b>ORIGINAL ORDER #{r['id']} — PAID</b>\n{html.escape(str(r['title']))} × {int(r['quantity'])}\nOwner: <code>{int(r['buyer_owner_id'])}</code> • Shop: #{int(r['buyer_shop_id'])}\nAmount: <b>{float(r['total_usdt']):g} USDT</b>",parse_mode="HTML")
+        return
+    if view=="mark":
+        await q.message.edit_text("<b>✅ MARK FULFILLED</b>\n━━━━━━━━━━━━━━━━━━\n"+("Choose an original order to mark fulfilled:" if paid_rows else "No pending original orders."),reply_markup=back,parse_mode="HTML")
+        for r in paid_rows:
+            keyboard=[[InlineKeyboardButton("✅ MARK THIS ORDER FULFILLED",callback_data=f"cc:fulfill:{r['id']}")]]
             if r["purchase_type"]=="central_purchase_debit":
-                keyboard.append([InlineKeyboardButton("↩️ Refund + Restock",callback_data=f"cc:refund:{r['id']}")])
-            keyboard.append([InlineKeyboardButton("✅ Filled Orders History",callback_data="cc:filled")])
-            await update.effective_message.reply_text(
-                f"<b>ORIGINAL ORDER #{r['id']} — {html.escape(str(r['status']).upper())}</b>\n"
-                f"{html.escape(str(r['title']))} × {int(r['quantity'])}\n"
-                f"Owner: <code>{int(r['buyer_owner_id'])}</code> • Shop: #{int(r['buyer_shop_id'])}\n"
-                f"Amount: <b>{float(r['total_usdt']):g} USDT</b>",
-                reply_markup=InlineKeyboardMarkup(keyboard),parse_mode="HTML")
-    else:
-        await update.effective_message.reply_text("<b>📦 ORIGINAL ORDERS</b>\nNo pending original orders.",parse_mode="HTML")
-
-    await update.effective_message.reply_text(
-        f"<b>🏷️ MERCHANT RESALE ORDERS</b>\n"
-        f"{len(listings)} active merchant listing(s).",
-        parse_mode="HTML")
-    if not listings:
-        await update.effective_message.reply_text("No active merchant resale listings.")
-    for r in listings:
-        listed=float(r["ask_price_usdt"])
-        bonus=round(listed*0.02,6)
-        payout=round(listed+bonus,6)
-        qty=int(r["remaining_quantity"])
-        await update.effective_message.reply_text(
-            f"<b>MERCHANT RESALE ORDER #{r['id']}</b>\n"
-            f"<b>{html.escape(str(r['title']))}</b>\n"
-            f"Merchant: {html.escape(str(r['shop_name']))} • Shop #{r['shop_id']}\n"
-            f"Available: <b>{qty}</b> item(s)\n"
-            f"Listed price: <b>{listed:g} USDT/item</b>\n"
-            f"<b>💚 2% PROFIT BONUS: +{bonus:.6f} USDT/item</b>\n"
-            f"Merchant receives: <b>{payout:.6f} USDT/item</b>\n"
-            f"Total payout: <b>{payout*qty:.6f} USDT</b>",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("✅ APPROVE + BUY (2% BONUS)",callback_data=f"cc:approve_listing:{r['id']}"),
-                InlineKeyboardButton("❌ REJECT",callback_data=f"rs:reject:{r['id']}")
-            ]]),parse_mode="HTML")
+                keyboard.append([InlineKeyboardButton("↩️ REFUND + RESTOCK",callback_data=f"cc:refund:{r['id']}")])
+            await q.message.reply_text(f"<b>ORIGINAL ORDER #{r['id']}</b>\n{html.escape(str(r['title']))} × {int(r['quantity'])}\nOwner: <code>{int(r['buyer_owner_id'])}</code> • Shop: #{int(r['buyer_shop_id'])}\nAmount: <b>{float(r['total_usdt']):g} USDT</b>",reply_markup=InlineKeyboardMarkup(keyboard),parse_mode="HTML")
+        return
+    if view=="filled":
+        await q.message.edit_text("<b>📜 FILLED ORDERS HISTORY</b>\n━━━━━━━━━━━━━━━━━━\n"+(f"{len(filled_rows)} completed original order(s)." if filled_rows else "No filled orders have been recorded yet."),reply_markup=back,parse_mode="HTML")
+        for r in filled_rows:
+            await q.message.reply_text(f"<b>✅ ORIGINAL ORDER #{r['id']} — FULFILLED</b>\n{html.escape(str(r['title']))} × {int(r['quantity'])}\nOwner: <code>{int(r['buyer_owner_id'])}</code> • Shop: #{int(r['buyer_shop_id'])}\nAmount: <b>{float(r['total_usdt']):g} USDT</b>",parse_mode="HTML")
+        return
+    if view in ("resale","resale_actions"):
+        title="<b>🏷️ MERCHANT RESALE ORDERS</b>" if view=="resale" else "<b>💚 RESALE APPROVAL / REJECTION</b>"
+        await q.message.edit_text(title+"\n━━━━━━━━━━━━━━━━━━\n"+(f"{len(listings)} active merchant listing(s)." if listings else "No active merchant resale listings."),reply_markup=back,parse_mode="HTML")
+        for r in listings:
+            listed=float(r["ask_price_usdt"]); bonus=round(listed*0.02,6); payout=round(listed+bonus,6); qty=int(r["remaining_quantity"])
+            caption=(f"<b>MERCHANT RESALE ORDER #{r['id']}</b>\n<b>{html.escape(str(r['title']))}</b>\nMerchant: {html.escape(str(r['shop_name']))} • Shop #{r['shop_id']}\nAvailable: <b>{qty}</b> item(s)\nListed price: <b>{listed:g} USDT/item</b>\n<b>💚 2% PROFIT BONUS: +{bonus:.6f} USDT/item</b>\nMerchant receives: <b>{payout:.6f} USDT/item</b>\nTotal payout: <b>{payout*qty:.6f} USDT</b>")
+            keyboard=None
+            if view=="resale_actions":
+                keyboard=InlineKeyboardMarkup([[InlineKeyboardButton("✅ APPROVE + BUY (2% BONUS)",callback_data=f"cc:approve_listing:{r['id']}"),InlineKeyboardButton("❌ REJECT",callback_data=f"rs:reject:{r['id']}")]])
+            await q.message.reply_text(caption,reply_markup=keyboard,parse_mode="HTML")
+        return
+    await q.message.edit_text("Unknown Orders section.",reply_markup=back)
 
 
 async def admin_photo(update,ctx):
@@ -683,9 +654,17 @@ async def admin_callback(update,ctx):
     parts=q.data.split(":")
     action=parts[1]
     if action=="orders":
-        await orders(update,ctx); return
+        await orders(update,ctx,"menu"); return
+    if action=="original":
+        await orders(update,ctx,"original"); return
+    if action=="mark":
+        await orders(update,ctx,"mark"); return
     if action=="filled":
-        await orders(update,ctx,show_filled=True); return
+        await orders(update,ctx,"filled"); return
+    if action=="resale":
+        await orders(update,ctx,"resale"); return
+    if action=="resale_actions":
+        await orders(update,ctx,"resale_actions"); return
     if action=="view":
         pid=int(parts[2]); c=v4.db()
         row=c.execute("SELECT * FROM central_catalog WHERE id=?",(pid,)).fetchone(); c.close()

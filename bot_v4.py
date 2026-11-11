@@ -21,7 +21,18 @@ def db():
     c.row_factory=sqlite3.Row
     c.execute("PRAGMA foreign_keys=ON")
     return c
-def admin(uid): return uid == ADMIN_ID
+def admin(uid):
+    """True when uid belongs to the primary or an additional configured admin."""
+    try:
+        uid=int(uid)
+    except (TypeError,ValueError):
+        return False
+    configured={ADMIN_ID} if ADMIN_ID else set()
+    for raw_id in os.getenv("ADMIN_IDS","").split(","):
+        raw_id=raw_id.strip()
+        if raw_id.isdigit() and int(raw_id)>0:
+            configured.add(int(raw_id))
+    return uid in configured
 
 def usdt_inr_rate(c=None):
     own = c is None

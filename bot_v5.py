@@ -1166,7 +1166,6 @@ async def menu_callback(update,ctx):
                 reply_markup=profile_kb
             )
     elif action=="support":
-        from telegram import InlineKeyboardMarkup, InlineKeyboardButton
         await q.message.reply_text(
             "<b>💬 CUSTOMER SUPPORT</b>\n━━━━━━━━━━━━━━━━━━\n"
             "For help with registration, payments, shop approval or account issues, contact our customer support team.",

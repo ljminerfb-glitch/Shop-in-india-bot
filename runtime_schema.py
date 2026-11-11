@@ -192,6 +192,25 @@ def ensure_schema(db_path=None):
         conn.execute("""CREATE TABLE IF NOT EXISTS platform_settings (
             setting_key TEXT PRIMARY KEY, setting_value TEXT NOT NULL,
             updated_by INTEGER, updated_at TEXT)""")
+        # One-time requested reset: start every existing merchant at 0/50.
+        # Keep all pair events, orders, inventory, wallet and ledger history intact.
+        reset_key = "migration_pair_progress_reset_all_20261111"
+        reset_done = conn.execute(
+            "SELECT 1 FROM platform_settings WHERE setting_key=?", (reset_key,)
+        ).fetchone()
+        if not reset_done:
+            now_utc = "strftime('%Y-%m-%dT%H:%M:%SZ','now')"
+            if "shops" in {r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'")}:
+                conn.execute(f"""INSERT OR IGNORE INTO merchant_pair_progress
+                    (shop_id,owner_id,completed_count,reached_at,reset_at,cycle_started_at,updated_at)
+                    SELECT id,owner_id,0,NULL,NULL,{now_utc},{now_utc} FROM shops""")
+            conn.execute(f"""UPDATE merchant_pair_progress
+                SET completed_count=0,reached_at=NULL,reset_at=NULL,
+                    cycle_started_at={now_utc},updated_at={now_utc}""")
+            conn.execute(
+                "INSERT INTO platform_settings(setting_key,setting_value) VALUES(?, 'done')",
+                (reset_key,))
         conn.execute("""CREATE TABLE IF NOT EXISTS ledger (
             id INTEGER PRIMARY KEY AUTOINCREMENT, transaction_id INTEGER,
             shop_id INTEGER NOT NULL, owner_id INTEGER NOT NULL, entry_type TEXT NOT NULL,

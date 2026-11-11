@@ -2076,6 +2076,15 @@ def test_legacy_product_purchase_gate_after_50_pairs():
     c.execute("""INSERT INTO merchant_pair_progress
         (shop_id,owner_id,completed_count,cycle_started_at,updated_at)
         VALUES(?,?,50,?,?)""",(buyer_shop,808,v4.now(),v4.now()))
+    # This legacy-route test also satisfies the new mobile unlock prerequisite:
+    # all original 50 Level 2 catalogue items have already been purchased.
+    base_catalog=c.execute(
+        "SELECT id FROM central_catalog WHERE level_required=2 AND product_key LIKE 'level2_%' ORDER BY id"
+    ).fetchall()
+    c.executemany("""INSERT INTO central_orders
+        (catalog_id,buyer_shop_id,buyer_owner_id,quantity,unit_price_usdt,total_usdt,status,created_at)
+        VALUES(?,?,?,1,1,1,'paid',?)""",
+        [(int(x["id"]),buyer_shop,808,v4.now()) for x in base_catalog])
     c.commit()
     c.close()
 

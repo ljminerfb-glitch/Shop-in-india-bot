@@ -58,6 +58,11 @@ def setup(c=None):
         conn.execute("""CREATE TABLE IF NOT EXISTS catalogue_visits (
           owner_id INTEGER PRIMARY KEY, visits INTEGER NOT NULL DEFAULT 0,
           last_seen TEXT NOT NULL)""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS merchant_level_item_limits (
+          shop_id INTEGER NOT NULL, level INTEGER NOT NULL,
+          item_limit INTEGER NOT NULL CHECK(item_limit >= 0),
+          updated_at TEXT NOT NULL, updated_by INTEGER NOT NULL,
+          PRIMARY KEY(shop_id, level))""")
         for key,title,desc,img in PRODUCTS:
             conn.execute("""INSERT OR IGNORE INTO central_catalog
               (product_key,title,description,price_usdt,stock,image_path,active,level_required,created_at,updated_at)
@@ -625,12 +630,16 @@ async def show_owner_level_products(update,ctx,shop,page=0,track_visit=True,leve
             FROM central_catalog p WHERE p.active=1 AND p.level_required=? ORDER BY p.id
         """,(shop["id"],shop["id"],shop["id"],level)).fetchall()
         settings=c.execute("SELECT profit_min,profit_max FROM level_settings WHERE level=?",(level,)).fetchone()
+        limit_row=c.execute("SELECT item_limit FROM merchant_level_item_limits WHERE shop_id=? AND level=?",
+                            (int(shop["id"]),level)).fetchone()
         c.commit()
     finally: c.close()
+    if limit_row is not None:
+        rows=rows[:max(0,int(limit_row["item_limit"]))]
     total=len(rows)
     if level==2:
-        # Level 2 is a one-at-a-time unlock flow: show only the first product
-        # this shop has not bought yet. A successful purchase advances it.
+        # Admin-assigned Level 2 products unlock strictly one at a time.
+        # A successful paid purchase is the only event that reveals the next item.
         purchased_count=sum(1 for row in rows if int(row["already_purchased"]))
         page_rows=[next((row for row in rows if not int(row["already_purchased"])),None)]
         page_rows=[row for row in page_rows if row is not None]
@@ -655,7 +664,8 @@ async def show_owner_level_products(update,ctx,shop,page=0,track_visit=True,leve
     if level==2 and not page_rows:
         await ctx.bot.send_message(
             update.effective_chat.id,
-            "<b>🎉 LEVEL 2 CATALOGUE COMPLETED</b>\nYou have purchased all currently active Level 2 products.",
+            ("<b>🎉 LEVEL 2 ASSIGNED ITEMS COMPLETED</b>\n"
+             f"You have purchased all {total} products assigned by Admin."),
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ My Products",callback_data="m:products"),InlineKeyboardButton("🏠 Dashboard",callback_data="m:dashboard")]]),
             parse_mode="HTML")
     for p in page_rows:

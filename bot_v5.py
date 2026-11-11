@@ -2478,6 +2478,36 @@ async def support_command(update,ctx):
         "Registration, login, shop approval, deposits, withdrawals ya account issue ke liye System se rabta karein."
     )
 
+async def history_command(update,ctx):
+    shop=v4.shop_for(update.effective_user.id)
+    if not shop:
+        await update.message.reply_text("Approved merchant account required.")
+        return
+    c=v4.db()
+    try:
+        ledger=c.execute("""SELECT entry_type,amount,note,created_at FROM ledger
+            WHERE owner_id=? AND currency='USDT' ORDER BY id DESC LIMIT 20""",
+            (update.effective_user.id,)).fetchall()
+        payments=c.execute("""SELECT payment_type,amount,status,created_at FROM payment_history
+            WHERE owner_id=? AND currency='USDT' ORDER BY id DESC LIMIT 10""",
+            (update.effective_user.id,)).fetchall()
+        withdrawals=c.execute("""SELECT amount,status,created_at FROM withdrawals
+            WHERE owner_id=? AND currency='USDT' ORDER BY id DESC LIMIT 10""",
+            (update.effective_user.id,)).fetchall()
+    finally:
+        c.close()
+    body="<b>📜 USDT ACCOUNT HISTORY</b>\\n━━━━━━━━━━━━━━━━━━\\n"
+    body+="\\n<b>Wallet activity</b>\\n"+(
+        "\\n".join(f"{html.escape(str(r['entry_type']))}: {float(r['amount']):.6f} USDT • {html.escape(str(r['note'] or ''))}"
+                    for r in ledger) if ledger else "No wallet activity.")
+    body+="\\n\\n<b>Deposits and level payments</b>\\n"+(
+        "\\n".join(f"{html.escape(str(r['payment_type']))}: {float(r['amount']):.6f} USDT • {html.escape(str(r['status']))}"
+                    for r in payments) if payments else "No payment records.")
+    body+="\\n\\n<b>Withdrawals</b>\\n"+(
+        "\\n".join(f"{float(r['amount']):.6f} USDT • {html.escape(str(r['status']))}"
+                    for r in withdrawals) if withdrawals else "No withdrawal records.")
+    await update.message.reply_text(body[:4000],parse_mode="HTML",reply_markup=back_dashboard_kb())
+
 async def help_command(update,ctx):
     if is_admin(update.effective_user.id):
         body = (
@@ -2532,7 +2562,7 @@ def main():
     for cmd,fn in [("help",help_command),("support",support_command),("admin",admin_panel),("verifywallet",v3.verify_wallet),
 ("setlevel",v4.setlevel),("setfee",v4.setfee),
       
-      ("orders",central.orders),("history",v4.history),("levels",levels),("centralcatalog",central.admin_catalog),("centralprice",central.set_price),("centralstock",central.set_stock),("centralactive",central.set_active),("centralorders",central.orders),("centralbuy",central.buy)]:
+      ("orders",central.orders),("history",history_command),("levels",levels),("centralcatalog",central.admin_catalog),("centralprice",central.set_price),("centralstock",central.set_stock),("centralactive",central.set_active),("centralorders",central.orders),("centralbuy",central.buy)]:
         app.add_handler(CommandHandler(cmd,fn))
     app.add_handler(CallbackQueryHandler(approved_callback,pattern=r"^(approve|reject):[0-9]+$"))
     app.add_handler(CallbackQueryHandler(level_callback,pattern=r"^lv:[1-5]$"))

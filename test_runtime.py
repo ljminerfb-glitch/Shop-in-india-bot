@@ -1887,6 +1887,41 @@ def test_50_pair_purchase_gate_and_admin_approval():
     print("PASS: 50-pair purchase lock, repeated Admin +10 approvals, Level 2 slot expansion and allowance consumption")
 
 
+def test_level2_workflow_reminder_goes_to_merchant():
+    c=v4.db()
+    c.execute("""INSERT INTO shops(owner_id,shop_name,status,created_at,level)
+                 VALUES(909,'Level Two Reminder Shop','approved',?,2)""",(v4.now(),))
+    sid=int(c.execute("SELECT id FROM shops WHERE owner_id=909 ORDER BY id DESC LIMIT 1").fetchone()[0])
+    product=c.execute("SELECT id FROM central_catalog WHERE active=1 AND level_required=2 LIMIT 1").fetchone()
+    require(product is not None,"Level 2 catalogue fixture is missing")
+    c.execute("""INSERT INTO central_inventory
+        (owner_id,shop_id,catalog_id,order_id,quantity,remaining_quantity,unit_cost_usdt,status,created_at)
+        VALUES(?,?,?,?,1,1,1,'owned',?)""",
+        (909,sid,int(product["id"]),990909,v4.now()))
+    c.commit()
+    c.close()
+
+    bot=FakeBot()
+    due_at=v5._motivation_now()+v5.timedelta(hours=2)
+    sent=asyncio.run(v5.send_due_level2_workflow_reminders(bot,due_at))
+    require(sent==1 and len(bot.sent)==1,"Level 2 merchant did not receive the pending-order reminder")
+    msg=bot.sent[0]["kwargs"]["text"]
+    require(bot.sent[0]["kwargs"]["chat_id"]==909,
+            "Level 2 workflow reminder was sent to Admin instead of the merchant")
+    require("complete your current orders" in msg.lower() and "50" in msg,
+            "Level 2 workflow reminder is missing its completion motivation")
+    again=asyncio.run(v5.send_due_level2_workflow_reminders(bot,due_at))
+    require(again==0 and len(bot.sent)==1,"Level 2 merchant received duplicate reminder before the next daily interval")
+
+    c=v4.db()
+    c.execute("DELETE FROM merchant_l2_workflow_reminders WHERE shop_id=?",(sid,))
+    c.execute("DELETE FROM central_inventory WHERE shop_id=?",(sid,))
+    c.execute("DELETE FROM shops WHERE id=?",(sid,))
+    c.commit()
+    c.close()
+    print("PASS: Level 2 pending-order reminder is sent to merchant once per 24 hours")
+
+
 def test_admin_shop_controls_and_search():
     c=v4.db()
     shop=c.execute("SELECT id FROM shops WHERE owner_id=101 ORDER BY id DESC LIMIT 1").fetchone()
@@ -2096,6 +2131,7 @@ def main():
     test_automatic_excel_export()
     test_admin_shop_controls_and_search()
     test_50_pair_purchase_gate_and_admin_approval()
+    test_level2_workflow_reminder_goes_to_merchant()
     # Each shop screen fetches the current profile image again rather than retaining an old photo ID.
     avatar_bot=FakeBot()
     asyncio.run(v5.send_shop_profile(avatar_bot,101,101,"Shop card"))

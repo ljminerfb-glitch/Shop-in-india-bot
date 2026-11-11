@@ -1911,7 +1911,7 @@ def test_level2_workflow_reminder_goes_to_merchant():
     msg=bot.sent[0]["kwargs"]["text"]
     require(bot.sent[0]["kwargs"]["chat_id"]==909,
             "Level 2 workflow reminder was sent to Admin instead of the merchant")
-    require("complete your current orders" in msg.lower() and "50" in msg,
+    require("completing your current orders" in msg.lower() and "50" in msg,
             "Level 2 workflow reminder is missing its completion motivation")
     again=asyncio.run(v5.send_due_level2_workflow_reminders(bot,due_at))
     require(again==0 and len(bot.sent)==1,"Level 2 merchant received duplicate reminder before the next daily interval")

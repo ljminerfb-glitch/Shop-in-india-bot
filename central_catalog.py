@@ -415,6 +415,11 @@ async def buy(update,ctx):
                 "SELECT id FROM central_catalog WHERE active=1 AND level_required=2 ORDER BY id").fetchall()
             if assigned_limit is not None:
                 level_products=level_products[:max(0,int(assigned_limit["item_limit"]))]
+            else:
+                # Existing merchants default to the original 50 only. Mobile SKUs
+                # require an explicit Admin-approved item-limit expansion.
+                level_products=[x for x in level_products if str(c.execute(
+                    "SELECT product_key FROM central_catalog WHERE id=?",(int(x["id"]),)).fetchone()[0]).startswith("level2_")]
             assigned_ids=[int(x["id"]) for x in level_products]
             if pid not in assigned_ids:
                 c.rollback()
@@ -792,6 +797,9 @@ async def show_owner_level_products(update,ctx,shop,page=0,track_visit=True,leve
     finally: c.close()
     if limit_row is not None:
         rows=rows[:max(0,int(limit_row["item_limit"]))]
+    elif level==2:
+        # No explicit Admin grant means exactly the original 50 Level 2 products.
+        rows=[row for row in rows if str(row["product_key"]).startswith("level2_")]
     total=len(rows)
     if level==2:
         # Admin-assigned Level 2 products unlock strictly one at a time.

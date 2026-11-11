@@ -2007,6 +2007,50 @@ def test_admin_shop_controls_and_search():
 
 
 
+def test_legacy_product_purchase_gate_after_50_pairs():
+    c=v4.db()
+    seller=c.execute("SELECT id FROM shops WHERE owner_id=101 ORDER BY id DESC LIMIT 1").fetchone()
+    c.execute("""INSERT INTO shops(owner_id,shop_name,status,created_at,level)
+                 VALUES(606,'Legacy Gate Buyer','approved',?,2)""",(v4.now(),))
+    buyer_shop=int(c.execute("SELECT id FROM shops WHERE owner_id=606 ORDER BY id DESC LIMIT 1").fetchone()[0])
+    cur=c.execute("""INSERT INTO products
+        (shop_id,title,description,price,currency,active,stock,level_required,created_at,updated_at)
+        VALUES(?,?,? ,50,'INR',1,5,2,?,?)""",
+        (int(seller["id"]),"Legacy Gate Test Product","Temporary isolated test product",v4.now(),v4.now()))
+    product_id=int(cur.lastrowid)
+    c.execute("""INSERT INTO merchant_pair_progress
+        (shop_id,owner_id,completed_count,cycle_started_at,updated_at)
+        VALUES(?,?,50,?,?)""",(buyer_shop,606,v4.now(),v4.now()))
+    c.commit()
+    c.close()
+
+    def run_legacy_buy():
+        update,message=message_update(606,"")
+        ctx=context()
+        ctx.args=[str(product_id),"1"]
+        asyncio.run(v4.buy(update,ctx))
+        return message.replies
+
+    blocked=run_legacy_buy()
+    require(blocked and "50/50" in blocked[0]["text"],
+            "Legacy /buy route bypassed the 50-pair purchase lock")
+
+    update,_,_=callback_update(999999,f"admshop:approve10:{buyer_shop}")
+    asyncio.run(v5.admin_shop_callback(update,context()))
+    allowed=run_legacy_buy()
+    require(allowed and "Order #" in allowed[0]["text"],
+            "Legacy /buy route did not resume after Admin approval")
+    c=v4.db()
+    remaining=int(c.execute(
+        "SELECT remaining_units FROM merchant_extra_item_allowances WHERE shop_id=?",
+        (buyer_shop,)).fetchone()[0])
+    c.execute("DELETE FROM products WHERE id=?",(product_id,))
+    c.commit()
+    c.close()
+    require(remaining==9,"Legacy /buy did not consume one approved unit")
+    print("PASS: Legacy /buy route also enforces 50-pair Admin approval and consumes allowance")
+
+
 def test_automatic_excel_export():
     import openpyxl
     export_dir = Path(TMP.name) / "exports"
@@ -2078,6 +2122,7 @@ def main():
     test_usdt_balance_reconciliation()
     test_referral_registration_and_bonuses()
     test_admin_rejection_reasons()
+    test_legacy_product_purchase_gate_after_50_pairs()
     print("PASS: All isolated Telegram-handler end-to-end tests completed.")
 
 

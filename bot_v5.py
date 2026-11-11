@@ -189,11 +189,11 @@ async def location_handler(update,ctx):
             c.close()
         ctx.user_data.pop("state",None)
         await update.message.reply_text(
-            "<b>✅ SHOP LOCATION UPDATED</b>\\n"
-            f"City: <b>{html.escape(place['city'])}</b>\\n"
-            f"State/Province: <b>{html.escape(place['state'])}</b>\\n"
-            f"Country: <b>{html.escape(place['country'])}</b>\\n"
-            f"Local timezone: <code>{html.escape(location_timezone)}</code>\\n\\n"
+            "<b>✅ SHOP LOCATION UPDATED</b>\n"
+            f"City: <b>{html.escape(place['city'])}</b>\n"
+            f"State/Province: <b>{html.escape(place['state'])}</b>\n"
+            f"Country: <b>{html.escape(place['country'])}</b>\n"
+            f"Local timezone: <code>{html.escape(location_timezone)}</code>\n\n"
             "Your exact GPS coordinates are not saved.",
             parse_mode="HTML",reply_markup=ReplyKeyboardRemove())
         return

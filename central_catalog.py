@@ -269,6 +269,31 @@ def _catalogue_page_keyboard(page,total,prefix,back_label,back_callback,dashboar
     return InlineKeyboardMarkup(rows)
 
 
+async def _send_catalog_product_photo(bot, chat_id, product, caption, reply_markup):
+    """Prefer the latest admin-uploaded photo, then fall back to the repository image."""
+    keys=product.keys() if hasattr(product,"keys") else ()
+    file_id=product["image_file_id"] if "image_file_id" in keys else None
+    if file_id:
+        try:
+            await bot.send_photo(chat_id,photo=file_id,caption=caption[:1024],
+                                 reply_markup=reply_markup,parse_mode="HTML")
+            return True
+        except Exception:
+            log.warning("Stored Telegram product photo unavailable; trying repository image",
+                        exc_info=True)
+    image_name=product["image_path"] if "image_path" in keys else None
+    image_path=Path(__file__).resolve().parent/(image_name or "")
+    if image_path.is_file():
+        try:
+            with image_path.open("rb") as photo:
+                await bot.send_photo(chat_id,photo=photo,caption=caption[:1024],
+                                     reply_markup=reply_markup,parse_mode="HTML")
+            return True
+        except Exception:
+            log.exception("Repository product image could not be sent")
+    return False
+
+
 async def _send_admin_level_page(update,ctx,level=1,page=0):
     from telegram import InlineKeyboardMarkup, InlineKeyboardButton
     level=int(level)
@@ -285,26 +310,26 @@ async def _send_admin_level_page(update,ctx,level=1,page=0):
     start=page*CATALOGUE_PAGE_SIZE
     page_rows=rows[start:start+CATALOGUE_PAGE_SIZE]
     q=update.callback_query
-    product_buttons=[
-        [InlineKeyboardButton(f"🛍 #{p['id']} — {str(p['title'])[:45]}",callback_data=f"cc:view:{p['id']}")]
-        for p in page_rows
-    ]
-    product_buttons.append([
-        InlineKeyboardButton("⬅️ Back to Levels",callback_data="adm:central"),
-        InlineKeyboardButton("🏠 Dashboard",callback_data="adm:home")
-    ])
     await q.message.reply_text(
         f"<b>🛠 LEVEL {level} PRODUCT MANAGEMENT</b>\n━━━━━━━━━━━━━━━━━━\n"
-        f"Select any product to open its full edit screen.\n"
+        f"Product photos and management buttons are shown below.\n"
         f"Showing {start+1 if total else 0}–{min(start+CATALOGUE_PAGE_SIZE,total)} of {total} products.",
-        reply_markup=InlineKeyboardMarkup(product_buttons),parse_mode="HTML")
-    await ctx.bot.send_message(
-        q.message.chat_id,
-        f"<b>PAGE {page+1}/{last_page+1}</b> • Products {start+1 if total else 0}–{min(start+CATALOGUE_PAGE_SIZE,total)} of {total}",
         reply_markup=_catalogue_page_keyboard(
             page,total,("ccadminpage" if level==1 else f"ccadminpage:{level}"),
             "⬅️ Back to Levels","adm:central","adm:home"),
         parse_mode="HTML")
+    for product in page_rows:
+        caption=(f"<b>🛍 #{int(product['id'])} {html.escape(str(product['title']))}</b>\n"
+                 f"Level: <b>{level}</b> • Price: <b>{float(product['price_usdt'] or 0):g} USDT</b>\n"
+                 f"Stock: <b>{int(product['stock'] or 0)}</b> • "
+                 f"Status: <b>{'ACTIVE' if product['active'] else 'OFF'}</b>")
+        keyboard=InlineKeyboardMarkup([[
+            InlineKeyboardButton("🛠 Manage Product",callback_data=f"cc:view:{int(product['id'])}")
+        ]])
+        sent=await _send_catalog_product_photo(ctx.bot,q.message.chat_id,product,caption,keyboard)
+        if not sent:
+            await ctx.bot.send_message(q.message.chat_id,caption+"\n⚠️ Product photo unavailable.",
+                                       reply_markup=keyboard,parse_mode="HTML")
 
 
 async def admin_level_callback(update,ctx):
@@ -692,18 +717,9 @@ async def admin_callback(update,ctx):
                  f"Stock: <b>{int(row['stock'])}</b>\n"
                  f"Level: <b>{int(row['level_required'])}</b>\n"
                  f"Status: <b>{'🟢 ACTIVE' if row['active'] else '🔴 OFF'}</b>")
-        image_path=Path(__file__).resolve().parent/(row["image_path"] or "")
-        try:
-            if image_path.is_file():
-                with image_path.open("rb") as photo:
-                    await q.message.reply_photo(photo=photo,caption=caption[:1024],reply_markup=kb,parse_mode="HTML")
-            elif row["image_file_id"]:
-                await q.message.reply_photo(photo=row["image_file_id"],caption=caption[:1024],reply_markup=kb,parse_mode="HTML")
-            else:
-                await q.message.reply_text(caption+"\n⚠️ Product photo unavailable.",reply_markup=kb,parse_mode="HTML")
-        except Exception:
-            log.exception("Could not send product management screen")
-            await q.message.reply_text(caption,reply_markup=kb,parse_mode="HTML")
+        sent=await _send_catalog_product_photo(ctx.bot,q.message.chat_id,row,caption,kb)
+        if not sent:
+            await q.message.reply_text(caption+"\n⚠️ Product photo unavailable.",reply_markup=kb,parse_mode="HTML")
         return
     if action=="resetphoto":
         pid=int(parts[2]); conn=v4.db()
@@ -1032,18 +1048,10 @@ async def show_owner_level_products(update,ctx,shop,page=0,track_visit=True,leve
             InlineKeyboardButton("⬅️ Back to My Products",callback_data="m:products"),
             InlineKeyboardButton("🏠 Dashboard",callback_data="m:dashboard")])
         kb=InlineKeyboardMarkup(buttons)
-        image_path=Path(__file__).resolve().parent/(p["image_path"] or "")
-        try:
-            if p["image_file_id"]:
-                await ctx.bot.send_photo(update.effective_chat.id,photo=p["image_file_id"],caption=caption[:1024],reply_markup=kb,parse_mode="HTML")
-            elif image_path.is_file():
-                with image_path.open("rb") as photo:
-                    await ctx.bot.send_photo(update.effective_chat.id,photo=photo,caption=caption[:1024],reply_markup=kb,parse_mode="HTML")
-            else:
-                await ctx.bot.send_message(update.effective_chat.id,caption+"\n⚠️ Product photo unavailable.",reply_markup=kb,parse_mode="HTML")
-        except Exception:
-            log.exception("Could not send catalogue item")
-            await ctx.bot.send_message(update.effective_chat.id,caption,reply_markup=kb,parse_mode="HTML")
+        sent=await _send_catalog_product_photo(ctx.bot,update.effective_chat.id,p,caption,kb)
+        if not sent:
+            await ctx.bot.send_message(update.effective_chat.id,caption+"\n⚠️ Product photo unavailable.",
+                                       reply_markup=kb,parse_mode="HTML")
     if level!=2:
         await ctx.bot.send_message(
             update.effective_chat.id,

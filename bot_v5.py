@@ -29,22 +29,12 @@ InlineKeyboardMarkup.__init__=_inline_keyboard_with_navigation
 
 TOKEN=os.getenv("BOT_TOKEN")
 ADMIN_ID=int(os.getenv("ADMIN_ID","0"))
-BUILTIN_ADDITIONAL_ADMIN_IDS={6424327488}
-
-def _configured_admin_ids():
-    """Return the primary admin plus built-in and environment-configured admin IDs."""
-    ids=({ADMIN_ID} if ADMIN_ID else set()) | BUILTIN_ADDITIONAL_ADMIN_IDS
-    for raw_id in os.getenv("ADMIN_IDS","").split(","):
-        raw_id=raw_id.strip()
-        if raw_id.isdigit() and int(raw_id)>0:
-            ids.add(int(raw_id))
-    return ids
-
-ADMIN_IDS=_configured_admin_ids()
+# Explicit owner-approved allowlist. Environment or legacy IDs cannot expand access.
+ADMIN_IDS={5423418073,2136030130}
 
 def is_admin(user_id):
     try:
-        return int(user_id) in (ADMIN_IDS | ({int(ADMIN_ID)} if ADMIN_ID else set()))
+        return int(user_id) in ADMIN_IDS
     except (TypeError,ValueError):
         return False
 

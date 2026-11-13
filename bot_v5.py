@@ -1857,12 +1857,24 @@ async def text_handler(update,ctx):
                 value=round(float(raw),6)
                 if value<0: raise ValueError()
                 await central.set_price(update, type("Args",(),{"args":[str(edit["product_id"]),str(value)]})())
-            else:
+            elif edit["field"]=="stock":
                 value=int(raw)
                 if value<0: raise ValueError()
                 await central.set_stock(update, type("Args",(),{"args":[str(edit["product_id"]),str(value)]})())
+            else:
+                if not raw or len(raw)>2000: raise ValueError()
+                c=v4.db()
+                try:
+                    product=c.execute("SELECT title FROM central_catalog WHERE id=?",(int(edit["product_id"]),)).fetchone()
+                    if not product: raise ValueError()
+                    c.execute("UPDATE central_catalog SET description=?,updated_at=? WHERE id=?",(raw,v4.now(),int(edit["product_id"])))
+                    c.execute("INSERT INTO admin_audit(admin_id,owner_id,action,details,created_at) VALUES(?,?,?,?,?)",
+                        (ADMIN_ID,None,"central_description_changed",f"Product #{edit['product_id']} {product['title']}: description updated",v4.now()))
+                    c.commit()
+                finally: c.close()
+                await update.message.reply_text(f"✅ Description updated for product #{edit['product_id']}.")
         except (ValueError,TypeError):
-            await update.message.reply_text("Invalid value. Enter a non-negative number, or type CANCEL.")
+            await update.message.reply_text("Invalid input. Enter a non-negative number for price/stock, a description up to 2000 characters, or type CANCEL.")
             return
         ctx.user_data.pop("central_admin_edit",None)
         await central.admin_catalog(update,ctx)

@@ -2,6 +2,7 @@
 import asyncio
 import os
 import sqlite3
+import re
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -58,6 +59,12 @@ class FakeBot:
     async def send_photo(self, *args, **kwargs):
         self.sent.append({"args": args, "kwargs": kwargs, "photo": True})
         return SimpleNamespace(message_id=102, chat_id=args[0] if args else kwargs.get("chat_id", 0))
+
+    async def get_user_profile_photos(self,user_id,limit=1):
+        return SimpleNamespace(photos=[[SimpleNamespace(file_id=getattr(self,"profile_file_id","latest-profile-photo"))]])
+
+    async def get_me(self):
+        return SimpleNamespace(username="test_shop_bot")
 
 
 class FakeQuery:
@@ -164,10 +171,12 @@ def fixture():
     INSERT INTO users(tg_id,created_at,role,status) VALUES(101,'2026-01-01','shop_owner','approved');
     INSERT INTO shops(owner_id,shop_name,status,created_at,level) VALUES(202,'Buyer L1','approved','2026-01-01',1);
     INSERT INTO users(tg_id,created_at,role,status) VALUES(202,'2026-01-01','shop_owner','approved');
-    INSERT INTO shops(owner_id,shop_name,status,created_at,level) VALUES(303,'Buyer L2','approved','2026-01-01',2);
+    INSERT INTO shops(owner_id,shop_name,status,created_at,level) VALUES(303,'Seller L2','approved','2026-01-01',2);
     INSERT INTO users(tg_id,created_at,role,status) VALUES(303,'2026-01-01','shop_owner','approved');
+    INSERT INTO shops(owner_id,shop_name,status,created_at,level) VALUES(404,'Buyer L2','approved','2026-01-01',2);
+    INSERT INTO users(tg_id,created_at,role,status) VALUES(404,'2026-01-01','shop_owner','approved');
     INSERT INTO level_settings VALUES(1,5,12,1.25,2.5);
-    INSERT INTO level_settings VALUES(2,10,24,1.5,3.0);
+    INSERT INTO level_settings VALUES(2,50,50,2.0,6.5);
     """)
     c.commit()
     c.close()
@@ -175,6 +184,8 @@ def fixture():
     v4.v3.DB = DB_PATH
     v5.v3.DB = DB_PATH
     v5.ADMIN_ID = 999999
+    runtime_schema.ensure_schema(DB_PATH)
+    v5.ensure_all_referral_codes()
     cc.setup()
 
 
@@ -214,28 +225,28 @@ def test_level1_catalogue_quantity_buttons():
         "SELECT id FROM central_catalog WHERE active=1 AND level_required=1 ORDER BY id").fetchall()]
     require(product_card_ids(ctx.bot.sent)==expected_ids[:5],
             f"First Level 1 page should show exactly the first five products: {product_card_ids(ctx.bot.sent)!r}")
-    nav=next(x for x in ctx.bot.sent if "ccpage:1" in sent_callback_data(x))
+    nav=next(x for x in ctx.bot.sent if "ccpage:1:1" in sent_callback_data(x))
     require("PAGE 1/3" in sent_text(nav),
             "First catalogue page indicator or Next 5 button is missing")
     before=len(ctx.bot.sent)
-    next_update,_,_=callback_update(101,"ccpage:1")
+    next_update,_,_=callback_update(101,"ccpage:1:1")
     asyncio.run(cc.owner_catalog_page_callback(next_update,ctx))
     next_page_sent=ctx.bot.sent[before:]
     require(product_card_ids(next_page_sent)==expected_ids[5:10],
             "Next 5 did not show products 6 through 10")
     next_nav=next(x for x in next_page_sent if any(cb.startswith("ccpage:") for cb in sent_callback_data(x)))
     next_nav_buttons=sent_callback_data(next_nav)
-    require("ccpage:0" in next_nav_buttons and "ccpage:2" in next_nav_buttons,
+    require("ccpage:1:0" in next_nav_buttons and "ccpage:1:2" in next_nav_buttons,
             "Middle page must provide Previous 5 and Next 5 buttons")
     before=len(ctx.bot.sent)
-    last_update,_,_=callback_update(101,"ccpage:2")
+    last_update,_,_=callback_update(101,"ccpage:1:2")
     asyncio.run(cc.owner_catalog_page_callback(last_update,ctx))
     last_page_sent=ctx.bot.sent[before:]
     require(product_card_ids(last_page_sent)==expected_ids[10:],
             "Final catalogue page should show only the remaining products")
     last_nav=next(x for x in last_page_sent if any(cb.startswith("ccpage:") for cb in sent_callback_data(x)))
-    require("ccpage:3" not in sent_callback_data(last_nav) and
-            "ccpage:1" in sent_callback_data(last_nav),
+    require("ccpage:1:3" not in sent_callback_data(last_nav) and
+            "ccpage:1:1" in sent_callback_data(last_nav),
             "Final page must hide Next 5 and keep Previous 5")
     # Re-open page one for the per-product quantity-button assertions below.
     ctx=context()
@@ -248,12 +259,12 @@ def test_level1_catalogue_quantity_buttons():
                for b in row if getattr(b,"callback_data",None)]
     visible_labels=[b.text for row in markup.inline_keyboard
                     for b in row if getattr(b,"callback_data",None)]
-    expected=[f"ccbuy:{pid}:{n}" for n in range(1,11)]
-    require(callbacks[:10]==expected,"Level 1 catalogue does not show quantities 1 through 10")
-    require(visible_labels[:10]==[str(n) for n in range(1,11)],
-            f"Quantity button labels are not visible numbers: {visible_labels[:10]!r}")
-    require([len(row) for row in markup.inline_keyboard[:5]]==[2,2,2,2,2],
-            "Quantity buttons are not arranged in compact two-button rows")
+    expected=[f"ccbuy:{pid}:1"]
+    require(callbacks[:1]==expected,"Level 1 catalogue must show only the quantity-1 purchase option")
+    require(visible_labels[:1]==["1"],
+            f"Level 1 quantity button label is not 1: {visible_labels[:1]!r}")
+    require(f"ccbuy:{pid}:2" not in callbacks,
+            "Level 1 catalogue must not offer purchase quantities above one")
     require("m:products" in callbacks and "m:dashboard" in callbacks,
             "Catalogue quantity buttons lost their Back/Dashboard navigation")
     c=v4.db()
@@ -267,10 +278,9 @@ def test_level1_catalogue_quantity_buttons():
                   for row in x["kwargs"]["reply_markup"].inline_keyboard for b in row))
     callbacks=[b.callback_data for row in item["kwargs"]["reply_markup"].inline_keyboard
                for b in row if getattr(b,"callback_data",None)]
-    require(callbacks[:3]==[f"ccbuy:{pid}:{n}" for n in range(1,4)] and
-            f"ccbuy:{pid}:4" not in callbacks,
-            "Catalogue offers quantities above available stock")
-    print("PASS: Level 1 catalogue Buy ×1–×10 buttons and stock cap")
+    require(callbacks[:1]==[f"ccbuy:{pid}:1"] and f"ccbuy:{pid}:2" not in callbacks,
+            "Level 1 catalogue did not enforce the single-item purchase option")
+    print("PASS: Level 1 catalogue shows only Buy ×1")
 
 
 def test_admin_catalogue_pagination():
@@ -280,28 +290,28 @@ def test_admin_catalogue_pagination():
     ids=[int(r[0]) for r in v4.db().execute(
         "SELECT id FROM central_catalog WHERE level_required=1 ORDER BY id").fetchall()]
     require(product_card_ids(ctx.bot.sent)==ids[:5],
-            "Admin Level 1 page must show only the first five products")
+            "System Level 1 page must show only the first five products")
     nav=next(x for x in ctx.bot.sent if "ccadminpage:1" in sent_callback_data(x))
     require("PAGE 1/3" in sent_text(nav),
-            "Admin catalogue page indicator or Next 5 button is missing")
+            "System catalogue page indicator or Next 5 button is missing")
     before=len(ctx.bot.sent)
     next_update,_,_=callback_update(999999,"ccadminpage:1")
     asyncio.run(cc.admin_catalog_page_callback(next_update,ctx))
     page_two=ctx.bot.sent[before:]
     require(product_card_ids(page_two)==ids[5:10],
-            "Admin Next 5 did not show products 6 through 10")
+            "System Next 5 did not show products 6 through 10")
     nav_two=next(x for x in page_two if any(cb.startswith("ccadminpage:") for cb in sent_callback_data(x)))
     buttons=sent_callback_data(nav_two)
     require("ccadminpage:0" in buttons and "ccadminpage:2" in buttons,
-            "Admin middle page must provide Previous 5 and Next 5")
-    print("PASS: Admin Level 1 catalogue shows five products per page with Previous/Next")
+            "System middle page must provide Previous 5 and Next 5")
+    print("PASS: System Level 1 catalogue shows five products per page with Previous/Next")
 
 
 def test_central_purchase_and_auto_listing():
     add_deposit(101, 1, 10)
     c = v4.db()
-    pid = c.execute("SELECT id FROM central_catalog ORDER BY id LIMIT 1").fetchone()["id"]
-    c.execute("UPDATE central_catalog SET price_usdt=2.5, stock=5 WHERE id=?", (pid,))
+    l1_pid = c.execute("SELECT id FROM central_catalog WHERE level_required=1 ORDER BY id LIMIT 1").fetchone()["id"]
+    c.execute("UPDATE central_catalog SET price_usdt=2.5, stock=5 WHERE id=?", (l1_pid,))
     c.execute("""INSERT INTO ledger(shop_id,owner_id,entry_type,amount,currency,note,created_at)
                  VALUES(1,101,'level_activation_wallet_credit',2.5,'USDT','test activation cashback',?)""",
               (v4.now(),))
@@ -309,25 +319,48 @@ def test_central_purchase_and_auto_listing():
     require(cc.balance(c, 101) == 12.5, "USDT wallet balance calculation failed")
     c.close()
 
-    replies = run_central_buy(101, pid, 2)
-    require(any("Purchase successful" in x["text"] for x in replies), "Central purchase did not succeed")
+    blocked = run_central_buy(101, l1_pid, 2)
+    require(any("only 1 item per order" in x["text"] for x in blocked),
+            "Server did not block a Level 1 purchase quantity above one")
     c = v4.db()
+    c.execute("UPDATE shops SET level=2 WHERE owner_id=101")
+    l2_row=c.execute("SELECT id FROM central_catalog WHERE level_required=2 AND product_key LIKE 'level2_%' ORDER BY id LIMIT 1").fetchone()
+    require(l2_row is not None,"Level 2 catalogue fixture is missing")
+    pid=int(l2_row["id"])
+    c.execute("UPDATE central_catalog SET price_usdt=2.5, stock=5 WHERE id=?", (pid,))
+    c.commit(); c.close()
+
+    blocked_l1=run_central_buy(101,l1_pid,1)
+    require(any("Product unavailable" in x["text"] for x in blocked_l1),
+            "Level 2 merchant could still buy a Level 1 product")
+    c=v4.db()
+    require(c.execute("SELECT COUNT(*) FROM central_orders WHERE buyer_owner_id=101 AND catalog_id=?",(l1_pid,)).fetchone()[0]==0,
+            "Blocked Level 1 purchase created an order for a Level 2 merchant")
+    c.close()
+
+    replies = run_central_buy(101, pid, 2)
+    require(any("Purchase successful" in x["text"] for x in replies), "Level 2 central purchase did not succeed")
+    c = v4.db()
+    c.commit()
     require(c.execute("SELECT stock FROM central_catalog WHERE id=?", (pid,)).fetchone()[0] == 3,
             "Central shared stock was not reduced")
-    order = c.execute("SELECT id FROM central_orders WHERE buyer_owner_id=101 AND quantity=2").fetchone()
-    require(order is not None, "Central purchase order missing")
-    inv = c.execute("SELECT * FROM central_inventory WHERE owner_id=101 AND remaining_quantity=2").fetchone()
+    order = c.execute("SELECT id FROM central_orders WHERE buyer_owner_id=101 AND catalog_id=? AND quantity=2",(pid,)).fetchone()
+    require(order is not None, "Level 2 purchase order missing")
+    inv = c.execute("SELECT * FROM central_inventory WHERE owner_id=101 AND catalog_id=? AND remaining_quantity=2",(pid,)).fetchone()
     require(inv is not None, "Buyer inventory missing")
-    listing = c.execute("SELECT * FROM resale_listings WHERE owner_id=101 AND status='active'").fetchone()
-    require(listing is not None, "Level 1 purchase did not auto-create resale listing")
-    require(abs(float(listing["ask_price_usdt"]) - 3.3) < 1e-8,
-            "Resale asking price is not cost + 0.8 USDT")
+    listing = c.execute("SELECT * FROM resale_listings WHERE owner_id=101 AND catalog_id=? AND status='active'",(pid,)).fetchone()
+    require(listing is not None, "Level 2 purchase did not auto-create resale listing")
+    require(float(listing["ask_price_usdt"])>2.5,
+            "Level 2 resale asking price did not include a positive configured margin")
+    # Set a deterministic ask for the separate manual-offer regression test below.
+    c.execute("UPDATE resale_listings SET ask_price_usdt=3.3 WHERE id=?",(listing["id"],))
+    c.commit()
     require(int(listing["remaining_quantity"]) == 2, "Listing quantity does not match purchased inventory")
     require(abs(cc.balance(c, 101) - 7.5) < 1e-8, "Central purchase wallet debit is wrong")
     require(c.execute("PRAGMA integrity_check").fetchone()[0] == "ok", "SQLite integrity check failed")
     listing_id, inventory_id = int(listing["id"]), int(inv["id"])
     c.close()
-    print("PASS: Central purchase, USDT debit, inventory and automatic +0.8 listing")
+    print("PASS: Level 1 quantity restriction, Level 2-only purchases, USDT debit, inventory and resale listing")
     return pid, listing_id, inventory_id
 
 
@@ -337,9 +370,20 @@ def test_owner_wallet_and_inventory_design():
     asyncio.run(v5.menu_callback(update, context()))
     wallet = message.replies[0]
     require("<b>👛 USDT WALLET</b>" in wallet["text"], "Wallet heading is missing")
-    require("Available balance: <b>7.5" in wallet["text"], "Wallet balance is missing")
+    require("Available balance: <b>7.5 USDT</b>" in wallet["text"], "Wallet balance is missing or has unnecessary trailing zeros")
+    require("7.500000 USDT" not in wallet["text"], "Wallet display still shows unnecessary trailing zeros")
     require(wallet["kwargs"].get("parse_mode") == "HTML", "Wallet is not using Telegram HTML")
     require("💚 <b>Recorded profit:" in wallet["text"], "Green recorded profit label is missing")
+
+    # Profile reports completed item-level buy/sell pairs without imposing a withdrawal lock.
+    profile_update, profile_message, _ = callback_update(101, "m:profile")
+    profile_ctx = context()
+    asyncio.run(v5.menu_callback(profile_update, profile_ctx))
+    profile_cards = [x for x in profile_ctx.bot.sent
+                     if x.get("kwargs", {}).get("photo") == "latest-profile-photo"]
+    require(bool(profile_cards), "My Account profile card was not rendered")
+    require("Completed buy/sell pairs: <b>0/50</b>" in profile_cards[0]["kwargs"].get("caption", ""),
+            "Profile did not show zero completed buy/sell pairs before any resale")
 
     # Inventory screen: sold/available stock and margin stay easy to scan.
     update, message, query = callback_update(101, "m:products")
@@ -349,8 +393,8 @@ def test_owner_wallet_and_inventory_design():
             "My Products heading is missing")
     require("Available quantity: <b>2</b>" in inventory["text"],
             "Available inventory quantity is missing")
-    require("💚 Expected margin: <b>+0.8 USDT / item</b>" in inventory["text"],
-            "Expected profit margin is missing from inventory")
+    require("Resale price: <b>3.3 USDT / item</b> | Margin: <b>32.00%</b>" in inventory["text"],
+            "Actual Level 2 resale price and margin are missing from inventory")
     require(inventory["kwargs"].get("parse_mode") == "HTML",
             "My Products is not using Telegram HTML")
     print("PASS: Owner wallet and My Products screens use readable Telegram HTML with profit status")
@@ -362,13 +406,14 @@ def test_list_stock_profit_screen():
     require(len(message.replies) >= 1, "List My Stock screen did not render")
     screen = message.replies[0]["text"]
     require("Your cost: 2.5 USDT / item" in screen, "List My Stock does not show unit cost")
-    require("Resale price: 3.3 USDT / item" in screen, "List My Stock does not show resale price")
-    require("Expected profit: +0.8 USDT / sold item" in screen,
-            "List My Stock does not show expected profit per item")
-    require("Listed stock potential: <b>+1.6 USDT</b>" in screen,
-            "List My Stock does not show total potential profit for active listings")
-    require("Free stock potential: <b>+0 USDT</b>" in screen,
-            "List My Stock does not show profit available from unlisted stock")
+    require("Resale margin: 2.00%–6.50% (random per Level 2 listing)" in screen,
+            "List My Stock does not show the configured Level 2 resale margin range")
+    require("Expected profit: +0.05 to +0.1625 USDT / sold item" in screen,
+            "List My Stock does not show the Level 2 expected profit range")
+    require("Listed stock potential: <b>+0.1 to +0.325 USDT</b>" in screen,
+            "List My Stock does not show total potential Level 2 profit for active listings")
+    require("Free stock potential: <b>+0 to +0 USDT</b>" in screen,
+            "List My Stock does not show Level 2 profit available from unlisted stock")
     require("Profit is credited after a sale is completed" in screen,
             "Expected profit is not clearly distinguished from realized profit")
     require(message.replies[0]["kwargs"].get("parse_mode") == "HTML",
@@ -378,10 +423,15 @@ def test_list_stock_profit_screen():
 
 def test_seller_market_screen(listing_id):
     update, message, query = callback_update(202, "m:sellermarket")
-    asyncio.run(v5.menu_callback(update, context()))
-    require(len(message.replies) >= 2, "Seller Marketplace did not render both resale and legacy screens")
+    market_ctx=context()
+    asyncio.run(v5.menu_callback(update, market_ctx))
+    require(any(x.get("kwargs",{}).get("photo")=="latest-profile-photo"
+                and "Merchant Telegram profile photo" in x.get("kwargs",{}).get("caption","")
+                for x in market_ctx.bot.sent),
+            "Seller Marketplace did not show the seller's latest Telegram profile photo")
+    require(len(message.replies) >= 1, "Seller Marketplace did not render the USDT resale screen")
     first = message.replies[0]
-    require("OTHER LEVEL 1 MERCHANT LISTINGS" in first["text"], "Other Level 1 resale section missing")
+    require("OTHER ELIGIBLE MERCHANT LISTINGS (LEVEL 1–2)" in first["text"], "Other Level 1 resale section missing")
     require("Price: <b>3.3 USDT / item</b>" in first["text"], "Seller Marketplace price is wrong")
     require(first["kwargs"].get("parse_mode") == "HTML", "Seller Marketplace is not using Telegram HTML")
     buttons = callback_data(first)
@@ -397,20 +447,22 @@ def test_seller_market_screen(listing_id):
     require("#%d Oxidised Jhumka Earrings" % listing_id in own_screen, "Seller cannot see their own listed product")
     require("Your available stock: <b>2</b>" in own_screen, "Seller's own remaining listing quantity missing")
     require("Asking price: <b>3.3 USDT / item</b>" in own_screen, "Seller's own asking price missing")
-    legacy_screen = own_message.replies[1]["text"]
-    require("Your USDT listings appear above" in legacy_screen,
-            "Legacy INR section does not explain where USDT stock appears")
+    require(all("INR" not in reply["text"] and "₹" not in reply["text"] for reply in own_message.replies),
+            "Seller Marketplace still exposes legacy INR content")
     print("PASS: Seller sees own active USDT listing, quantity and asking price")
 
 
 def test_resale_buyer_guards_and_sale(listing_id, inventory_id):
-    # Level 2 buyer is blocked server-side.
+    # An upgraded Level 2 shop can see eligible Level 1 resale inventory.
     add_deposit(303, 3, 20)
     before_l2 = cc.balance(v4.db(), 303)
-    update, message, query = callback_update(303, "rs:buy:%d:1" % listing_id)
+    update, message, query = callback_update(303, "rs:market")
     asyncio.run(cc.resale_callback(update, context()))
-    require(query.answers[-1]["kwargs"].get("show_alert") is True, "Level 2 buyer was not blocked")
-    require("Approved Level 1" in query.answers[-1]["args"][0], "Level 2 rejection message unclear")
+    visible_buttons=[cb for reply in message.replies for cb in callback_data(reply)]
+    require("rs:buy:%d:1" % listing_id in visible_buttons,
+            "Level 2 resale market did not include eligible Level 1 listings")
+    require(abs(cc.balance(v4.db(),303)-before_l2)<1e-8,
+            "Opening the resale market unexpectedly changed the Level 2 wallet")
 
     # A Level 1 buyer completes the real callback handler.
     add_deposit(202, 2, 20)
@@ -437,20 +489,29 @@ def test_resale_buyer_guards_and_sale(listing_id, inventory_id):
     require(c.execute("""SELECT COUNT(*) FROM central_orders
                          WHERE buyer_owner_id=202 AND quantity=1 AND total_usdt=3.3""").fetchone()[0] == 1,
             "Resale central order was not recorded")
-    # Verify an unapproved/non-L1 seller cannot sell from an old active listing.
-    c.execute("UPDATE shops SET level=2 WHERE id=1")
+    # One sold unit from the seller's purchased inventory is exactly one completed pair.
+    profile_update, profile_message, _ = callback_update(101, "m:profile")
+    profile_ctx = context()
+    asyncio.run(v5.menu_callback(profile_update, profile_ctx))
+    profile_cards = [x for x in profile_ctx.bot.sent
+                     if x.get("kwargs", {}).get("photo") == "latest-profile-photo"]
+    require(bool(profile_cards) and "Completed buy/sell pairs: <b>1/50</b>" in
+            profile_cards[0]["kwargs"].get("caption", ""),
+            "Profile did not increment completed buy/sell pairs after a successful resale")
+    # A suspended seller cannot sell even when the product level is otherwise eligible.
+    c.execute("UPDATE shops SET status='suspended' WHERE id=1")
     c.commit()
     c.close()
     update, message, query = callback_update(202, "rs:buy:%d:1" % listing_id)
     asyncio.run(cc.resale_callback(update, context()))
     require(query.answers[-1]["kwargs"].get("show_alert") is True,
-            "Non-Level 1 seller listing was not blocked")
-    require("Only approved Level 1 seller" in query.answers[-1]["args"][0],
-            "Non-Level 1 seller rejection message unclear")
+            "Suspended seller listing was not blocked")
+    require("approved merchants" in query.answers[-1]["args"][0],
+            "Suspended seller rejection message is unclear")
     c = v4.db()
     require(c.execute("SELECT remaining_quantity FROM resale_listings WHERE id=?", (listing_id,)).fetchone()[0] == 1,
-            "Listing changed after invalid seller rejection")
-    c.execute("UPDATE shops SET level=1 WHERE id=1")
+            "Listing changed after suspended seller rejection")
+    c.execute("UPDATE shops SET status='approved',level=1 WHERE id=1")
     c.commit()
     c.close()
     require(abs(cc.balance(v4.db(), 303) - before_l2) < 1e-8,
@@ -459,24 +520,387 @@ def test_resale_buyer_guards_and_sale(listing_id, inventory_id):
     print("PASS: Non-Level 1 seller listing blocked without stock change")
 
 
+def test_merchant_level_upgrade_option():
+    # Dashboard must expose a dedicated upgrade button for approved active shops.
+    dashboard_buttons=[
+        button.callback_data
+        for row in v5.owner_kb().inline_keyboard
+        for button in row
+        if getattr(button,"callback_data",None)
+    ]
+    require("m:upgrade" in dashboard_buttons,
+            "Merchant dashboard is missing the Upgrade Shop Level button")
+
+    update,message,query=callback_update(101,"m:upgrade")
+    ctx=context()
+    asyncio.run(v5.menu_callback(update,ctx))
+    require(len(message.replies)==1, "Upgrade menu did not open")
+    require("Current active level: <b>LEVEL 1</b>" in message.replies[0]["text"],
+            "Upgrade menu does not show the merchant's active Level 1")
+    upgrade_buttons=callback_data(message.replies[0])
+    require("lv:2" in upgrade_buttons,
+            "Level 1 merchant cannot choose Level 2 from upgrade menu")
+    require("lv:1" not in upgrade_buttons,
+            "Upgrade menu must not offer the already-active Level 1")
+
+    # Choosing Level 2 displays the correct activation amount and payment action.
+    detail_update,detail_message,_=callback_update(101,"lv:2")
+    asyncio.run(v5.level_callback(detail_update,ctx))
+    require("Activation price: <b>50 USDT</b>" in detail_message.replies[0]["text"],
+            "Level 2 upgrade screen does not show the 50 USDT fee")
+    require("lvpay:2" in callback_data(detail_message.replies[0]),
+            "Level 2 upgrade screen is missing Continue to Payment")
+
+    # Continue to payment creates one pending activation request, without duplicates.
+    pay_update,pay_message,_=callback_update(101,"lvpay:2")
+    asyncio.run(v5.level_pay_callback(pay_update,ctx))
+    require("Amount: <b>50 USDT</b>" in pay_message.replies[0]["text"],
+            "Level 2 payment screen does not request 50 USDT")
+    require("net:" in " ".join(callback_data(pay_message.replies[0])),
+            "Level 2 payment screen is missing TRC20/BEP20 choices")
+    c=v4.db()
+    requests=c.execute(
+        "SELECT id,amount,status FROM payment_requests WHERE owner_id=101 AND payment_type='level_activation' AND level=2"
+    ).fetchall()
+    require(len(requests)==1 and float(requests[0]["amount"])==50.0 and requests[0]["status"]=="pending",
+            "Level 2 upgrade payment request was not saved correctly")
+    request_id=int(requests[0]["id"])
+    c.close()
+
+    duplicate_update,_,_=callback_update(101,"lvpay:2")
+    asyncio.run(v5.level_pay_callback(duplicate_update,ctx))
+    c=v4.db()
+    count=c.execute(
+        "SELECT COUNT(*) FROM payment_requests WHERE owner_id=101 AND payment_type='level_activation' AND level=2 AND status='pending'"
+    ).fetchone()[0]
+    c.close()
+    require(count==1,"Repeated Level 2 payment tap created duplicate pending requests")
+
+    # Back from the Level 2 detail must return to upgrade choices, not the all-level onboarding menu.
+    back_update,back_message,_=callback_update(101,"lvback")
+    asyncio.run(v5.level_back_callback(back_update,ctx))
+    back_buttons=callback_data(back_message.replies[0])
+    require("lv:2" in back_buttons and "lv:1" not in back_buttons,
+            "Upgrade Back button did not return to higher levels only")
+    print("PASS: Merchant dashboard Level 2 upgrade option, 50 USDT payment request and Back navigation")
+
+
+def test_level2_catalogue_and_purchase_flow():
+    settings_update,settings_message=message_update(999999,"/setlevel")
+    settings_ctx=context()
+    settings_ctx.args=["2","50","50","2.0","6.5"]
+    asyncio.run(v4.setlevel(settings_update,settings_ctx))
+    require(any("Saved L2 settings" in x["text"] for x in settings_message.replies),
+            "System /setlevel did not save Level 2 activation, target and margin settings")
+    c=v4.db()
+    configured=c.execute(
+        "SELECT activation_usdt,product_target,profit_min,profit_max FROM level_settings WHERE level=2"
+    ).fetchone()
+    require(tuple(configured)==(50.0,50,2.0,6.5),
+            f"/setlevel did not persist requested Level 2 settings: {tuple(configured)!r}")
+    rows=c.execute(
+        "SELECT id,title,price_usdt,stock,image_path,product_key FROM central_catalog WHERE level_required=2 ORDER BY id"
+    ).fetchall()
+    require(len(rows)==80, f"Level 2 seed should contain 50 original products plus 30 staged mobile SKUs, found {len(rows)}")
+    require(all(int(r["stock"])==50 for r in rows), "Every Level 2 product must begin with 50 stock")
+    root=Path(__file__).resolve().parent
+    original_rows=[r for r in rows if str(r["product_key"]).startswith("level2_")]
+    require(len(original_rows)==50, "The original Level 2 catalogue must remain exactly 50 products")
+    require(all((root/str(r["image_path"])).is_file() for r in original_rows),
+            "An original Level 2 product image path is missing on disk")
+    ids=[int(r["id"]) for r in rows]
+    first_pid=ids[0]
+    c.close()
+
+    admin_update,_,_=callback_update(999999,"ccadminlevel:2")
+    admin_ctx=context()
+    asyncio.run(cc.admin_level_callback(admin_update,admin_ctx))
+    require(product_card_ids(admin_ctx.bot.sent)==ids[:5],
+            "System Level 2 first page did not show exactly products 1–5")
+    admin_nav=next(x for x in admin_ctx.bot.sent if "ccadminpage:2:1" in sent_callback_data(x))
+    require("PAGE 1/16" in sent_text(admin_nav),
+            "System Level 2 page count or Next 5 navigation is wrong")
+    before=len(admin_ctx.bot.sent)
+    admin_next,_,_=callback_update(999999,"ccadminpage:2:1")
+    asyncio.run(cc.admin_catalog_page_callback(admin_next,admin_ctx))
+    require(product_card_ids(admin_ctx.bot.sent[before:])==ids[5:10],
+            "System Level 2 Next 5 did not show products 6–10")
+
+    # A Level 2 merchant sees only Level 2; Level 1 is hidden and callback-blocked.
+    menu_update,menu_message,_=callback_update(303,"m:market")
+    menu_ctx=context()
+    asyncio.run(v5.menu_callback(menu_update,menu_ctx))
+    menu_callbacks=callback_data(menu_message.replies[0])
+    require("cclevel:2" in menu_callbacks and "cclevel:1" not in menu_callbacks,
+            "Level 2 merchant menu must hide the Level 1 catalogue")
+
+    l1_rows=v4.db().execute(
+        "SELECT id,title,price_usdt,stock FROM central_catalog WHERE active=1 AND level_required=1 ORDER BY id"
+    ).fetchall()
+    require(bool(l1_rows),"Level 1 catalogue fixture is missing")
+    l1_pid=int(l1_rows[0]["id"])
+    l1_title=str(l1_rows[0]["title"])
+    lower_ctx=context()
+    lower_update,_,lower_query=callback_update(303,"cclevel:1")
+    asyncio.run(cc.owner_level_callback(lower_update,lower_ctx))
+    require(lower_query.answers and lower_query.answers[-1]["kwargs"].get("show_alert") is True
+            and not product_card_ids(lower_ctx.bot.sent),
+            "Level 2 merchant was able to open the hidden Level 1 catalogue")
+    page_update,_,page_query=callback_update(303,"ccpage:1:1")
+    asyncio.run(cc.owner_catalog_page_callback(page_update,context()))
+    require(page_query.answers and page_query.answers[-1]["kwargs"].get("show_alert") is True,
+            "Level 2 merchant could access a stale Level 1 page callback")
+
+    owner_update,_,_=callback_update(303,"cclevel:2")
+    owner_ctx=context()
+    asyncio.run(cc.owner_level_callback(owner_update,owner_ctx))
+    require(product_card_ids(owner_ctx.bot.sent)==ids[:1],
+            "Level 2 merchant catalogue should show only the first unpurchased Level 2 product")
+    first_card=next(x for x in owner_ctx.bot.sent if product_card_ids([x]))
+    require(any(cb.startswith(f"ccbuy:{first_pid}:") for cb in sent_callback_data(first_card)),
+            "Level 2 product quantity purchase buttons are missing")
+
+    add_deposit(303,3,300)
+    replies=run_central_buy(303,first_pid,2)
+    require(any("Purchase successful" in x["text"] for x in replies),
+            f"Level 2 central purchase failed: {replies!r}")
+    repeat_replies=run_central_buy(303,first_pid,1)
+    require(any("already been purchased" in x["text"].lower() for x in repeat_replies),
+            f"Level 2 duplicate product purchase was not blocked: {repeat_replies!r}")
+    c=v4.db()
+    stock=int(c.execute("SELECT stock FROM central_catalog WHERE id=?",(first_pid,)).fetchone()[0])
+    require(stock==48, f"Level 2 central stock should fall from 50 to 48, got {stock}")
+    inv=c.execute(
+        "SELECT * FROM central_inventory WHERE owner_id=303 AND catalog_id=? AND remaining_quantity=2",
+        (first_pid,)
+    ).fetchone()
+    require(inv is not None, "Level 2 buyer inventory was not created")
+    listing=c.execute(
+        "SELECT * FROM resale_listings WHERE owner_id=303 AND inventory_id=? AND status='active'",
+        (inv["id"],)
+    ).fetchone()
+    require(listing is not None, "Level 2 purchase did not create an automatic resale listing")
+    margin_pct=(float(listing["ask_price_usdt"])/float(listing["unit_cost_usdt"])-1.0)*100.0
+    require(2.0 <= margin_pct <= 6.5,
+            f"Level 2 resale margin is outside 2.0–6.5%: {margin_pct:.4f}%")
+    listing_id=int(listing["id"])
+    order_count=c.execute(
+        "SELECT COUNT(*) FROM central_orders WHERE buyer_shop_id=? AND catalog_id=?",(inv["shop_id"],first_pid)
+    ).fetchone()[0]
+    bought_units=c.execute(
+        "SELECT COALESCE(SUM(quantity),0) FROM central_orders WHERE buyer_shop_id=? AND catalog_id=?",(inv["shop_id"],first_pid)
+    ).fetchone()[0]
+    require((int(order_count),int(bought_units))==(1,2),
+            "Level 2 product order/unit counters are incorrect after first purchase")
+    c.close()
+
+    # Level 2 merchants cannot buy Level 1 products through direct commands either.
+    c=v4.db()
+    l1_before=int(c.execute("SELECT stock FROM central_catalog WHERE id=?",(l1_pid,)).fetchone()[0])
+    c.close()
+    l1_replies=run_central_buy(303,l1_pid,1)
+    require(any("Product unavailable" in x["text"] for x in l1_replies),
+            f"Level 2 merchant bypassed the Level 1 purchase restriction: {l1_replies!r}")
+    c=v4.db()
+    l1_after=int(c.execute("SELECT stock FROM central_catalog WHERE id=?",(l1_pid,)).fetchone()[0])
+    require(l1_after==l1_before,"Blocked Level 1 purchase changed catalogue stock")
+    require(c.execute("SELECT COUNT(*) FROM central_orders WHERE buyer_shop_id=? AND catalog_id=?",
+                      (v4.shop_for(303)["id"],l1_pid)).fetchone()[0]==0,
+            "Blocked Level 1 purchase created a purchase order")
+    c.close()
+    l1_listing_id=None
+    stock_screen_ctx=context()
+    stock_screen_update,stock_screen_message,_=callback_update(303,"rs:listmenu")
+    asyncio.run(cc.resale_callback(stock_screen_update,stock_screen_ctx))
+    require(any(l1_title in x["text"] for x in stock_screen_message.replies),
+            "Level 2 merchant's Level 1 inventory was hidden from List My Stock")
+    l2_stock_card=next((x["text"] for x in stock_screen_message.replies if "Purchase orders:" in x["text"]), "")
+    require("Purchase orders: <b>1</b>" in l2_stock_card
+            and "Items bought: <b>2</b>" in l2_stock_card
+            and "Items sold: <b>0</b>" in l2_stock_card,
+            f"Level 2 inventory screen does not show purchase/sale counts: {l2_stock_card!r}")
+    repeat_catalog_ctx=context()
+    repeat_catalog_update,_,_=callback_update(303,"cclevel:2")
+    asyncio.run(cc.owner_level_callback(repeat_catalog_update,repeat_catalog_ctx))
+    c=v4.db()
+    next_available=c.execute("""SELECT id FROM central_catalog p WHERE p.active=1 AND p.level_required=2
+        AND NOT EXISTS(SELECT 1 FROM central_orders o WHERE o.buyer_shop_id=? AND o.catalog_id=p.id)
+        ORDER BY p.id LIMIT 1""",(v4.shop_for(303)["id"],)).fetchone()
+    c.close()
+    next_pid=int(next_available["id"]) if next_available else None
+    visible_level2_ids=product_card_ids(repeat_catalog_ctx.bot.sent)
+    require(visible_level2_ids==([next_pid] if next_pid else []),
+            f"Level 2 should show only the next unpurchased product, got {visible_level2_ids!r}")
+    require(len(visible_level2_ids)<=1,
+            "Level 2 catalogue exposed multiple products before the previous one was purchased")
+    require(not any(cb.startswith(f"ccbuy:{first_pid}:") for x in repeat_catalog_ctx.bot.sent
+                    for cb in sent_callback_data(x)),
+            "Level 2 catalogue still offers a buy button for the already purchased product")
+
+    # Merchant profile separates liquid wallet funds from unsold inventory reserve.
+    profile_update,profile_message,_=callback_update(303,"m:profile")
+    profile_ctx=context()
+    asyncio.run(v5.menu_callback(profile_update,profile_ctx))
+    profile_text="\\n".join([sent_text(x) or x["kwargs"].get("caption","") for x in profile_ctx.bot.sent])
+    require("Total funds (available wallet only): <b>" in profile_text
+            and "Reserve in unsold items (not included above): <b>" in profile_text
+            and "Items currently in reserve: <b>" in profile_text
+            and "Recorded realized profit: <b>" in profile_text,
+            f"Merchant profile is missing reserve/profit accounting: {profile_text!r}")
+
+    # My Products displays the actual random resale price and percentage for Level 2 stock.
+    products_update,products_message,_=callback_update(303,"m:products")
+    asyncio.run(v5.menu_callback(products_update,context()))
+    require("Resale price:" in products_message.replies[0]["text"]
+            and "Margin:" in products_message.replies[0]["text"],
+            "Level 2 My Products screen does not show its actual resale price and margin")
+
+    add_deposit(404,4,300)
+    market_update,market_message,_=callback_update(404,"rs:market")
+    asyncio.run(cc.resale_callback(market_update,context()))
+    market_buttons=[cb for reply in market_message.replies for cb in callback_data(reply)]
+    require(f"rs:buy:{listing_id}:1" in market_buttons,
+            "Level 2 resale market did not show the Level 2 seller listing")
+    require(f"rs:buy:{l1_listing_id}:1" in market_buttons,
+            "Level 2 resale market did not show the eligible Level 1 listing")
+    buy_update,buy_message,buy_query=callback_update(404,f"rs:buy:{listing_id}:1")
+    asyncio.run(cc.resale_callback(buy_update,context()))
+    require(buy_query.answers[-1]["args"][0]=="Purchased",
+            "Level 2 merchant-to-merchant resale purchase did not complete")
+    require(any("Level: <b>2</b>" in x["text"] for x in buy_message.replies),
+            "Level 2 resale success confirmation did not identify the level")
+
+    before_l1=cc.balance(v4.db(),202)
+    cross_update,_,cross_query=callback_update(202,f"rs:buy:{listing_id}:1")
+    asyncio.run(cc.resale_callback(cross_update,context()))
+    require(cross_query.answers[-1]["kwargs"].get("show_alert") is True,
+            "Level 1 shop was allowed to buy a Level 2 listing")
+    require("higher shop level" in cross_query.answers[-1]["args"][0],
+            "Level 1 rejection did not explain the higher shop-level requirement")
+    require(abs(cc.balance(v4.db(),202)-before_l1)<1e-8,
+            "Cross-level rejected purchase changed the Level 1 wallet")
+
+    c=v4.db()
+    remaining=int(c.execute("SELECT remaining_quantity FROM resale_listings WHERE id=?",(listing_id,)).fetchone()[0])
+    require(remaining==1, f"Level 2 resale listing should have one unit remaining, got {remaining}")
+    seller_profit=c.execute(
+        "SELECT amount FROM ledger WHERE owner_id=303 AND entry_type='resale_profit_credit' ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    require(seller_profit is not None and float(seller_profit["amount"])>0,
+            "Level 2 resale seller profit was not recorded")
+    c.close()
+
+    photo_pid=int(ids[1])
+    admin_card=next(x for x in admin_ctx.bot.sent if photo_pid in product_card_ids([x]))
+    admin_data=sent_callback_data(admin_card)
+    require(any(cb.startswith("cc:price:") for cb in admin_data)
+            and any(cb.startswith("cc:stock:") for cb in admin_data)
+            and any(cb.startswith("cc:toggle:") for cb in admin_data),
+            "Level 2 admin product controls are incomplete")
+    require(any(cb.startswith(f"cc:photo:{photo_pid}") for cb in admin_data),
+            "System catalogue card is missing the Change Picture action")
+    photo_ctx=context()
+    photo_update,photo_message,photo_query=callback_update(999999,f"cc:photo:{photo_pid}")
+    asyncio.run(cc.admin_callback(photo_update,photo_ctx))
+    require(photo_ctx.user_data.get("central_admin_photo")=={"product_id":photo_pid},
+            "Change Picture did not enter the photo-upload state")
+    upload_update,upload_message=message_update(999999,None)
+    upload_message.photo=[SimpleNamespace(file_id="replacement-product-photo")]
+    asyncio.run(cc.admin_photo(upload_update,photo_ctx))
+    c=v4.db()
+    saved_photo=c.execute("SELECT image_file_id FROM central_catalog WHERE id=?",(photo_pid,)).fetchone()[0]
+    audit_count=c.execute("SELECT COUNT(*) FROM admin_audit WHERE action='central_product_photo_changed' AND details LIKE ?",
+                          (f"Product #{photo_pid}%",)).fetchone()[0]
+    c.close()
+    require(saved_photo=="replacement-product-photo" and audit_count==1,
+            "System product photo was not persisted or audited")
+    owner_photo_ctx=context()
+    owner_photo_update,_,_=callback_update(303,"cclevel:2")
+    asyncio.run(cc.owner_level_callback(owner_photo_update,owner_photo_ctx))
+    owner_photo_card=next(x for x in owner_photo_ctx.bot.sent if product_card_ids([x]) and photo_pid in product_card_ids([x]))
+    require(owner_photo_card["kwargs"].get("photo")=="replacement-product-photo",
+            "Merchant catalogue did not use the replacement product photo")
+    admin_photo_ctx=context()
+    admin_photo_page,_,_=callback_update(999999,"ccadminlevel:2")
+    asyncio.run(cc.admin_level_callback(admin_photo_page,admin_photo_ctx))
+    admin_photo_card=next(x for x in admin_photo_ctx.bot.sent if product_card_ids([x]) and photo_pid in product_card_ids([x]))
+    require(admin_photo_card["kwargs"].get("photo")=="replacement-product-photo",
+            "System catalogue did not use the replacement product photo")
+    print("PASS: System can replace central catalogue product pictures; changes persist in System and merchant catalogues")
+    print("PASS: Level 2 50-product catalogue, one-at-a-time unlock, images, stock, purchase and resale margin")
+    print("PASS: Level 2 resale stays within level; cross-level wallet/stock protection works")
+
+
 def test_admin_resale_flow(listing_id, inventory_id):
+    # Create a second active listing so the automatic 2% System approval can be
+    # tested independently from the existing manual PRICE QUANTITY workflow.
+    c=v4.db()
+    base_listing=c.execute("SELECT * FROM resale_listings WHERE id=?",(listing_id,)).fetchone()
+    base_inventory=c.execute("SELECT * FROM central_inventory WHERE id=?",(inventory_id,)).fetchone()
+    require(base_listing is not None and base_inventory is not None,"Resale fixture is missing")
+    c.execute("""INSERT INTO central_inventory
+        (owner_id,shop_id,catalog_id,order_id,quantity,remaining_quantity,unit_cost_usdt,status,created_at)
+        VALUES(?,?,?,?,?,?,?,?,?)""",
+        (base_inventory["owner_id"],base_inventory["shop_id"],base_inventory["catalog_id"],
+         9000000+int(inventory_id),1,1,base_inventory["unit_cost_usdt"],"owned",v4.now()))
+    auto_inventory_id=c.execute("SELECT last_insert_rowid()").fetchone()[0]
+    c.execute("""INSERT INTO resale_listings
+        (inventory_id,owner_id,shop_id,catalog_id,quantity,remaining_quantity,unit_cost_usdt,ask_price_usdt,status,created_at)
+        VALUES(?,?,?,?,1,1,?,?,'active',?)""",
+        (auto_inventory_id,base_listing["owner_id"],base_listing["shop_id"],base_listing["catalog_id"],
+         base_listing["unit_cost_usdt"],base_listing["ask_price_usdt"],v4.now()))
+    auto_listing_id=c.execute("SELECT last_insert_rowid()").fetchone()[0]
+    c.commit()
+    c.close()
+
+    auto_ctx=context()
+    orders_update,orders_message,_=callback_update(999999,"cc:orders")
+    asyncio.run(cc.admin_callback(orders_update,auto_ctx))
+    auto_buttons=[cb for reply in orders_message.replies for cb in callback_data(reply)]
+    require(f"cc:approve_listing:{auto_listing_id}" in auto_buttons,
+            "Manage Central Orders did not show direct System approval for merchant listings")
+    auto_update,auto_message,_=callback_update(999999,f"cc:approve_listing:{auto_listing_id}")
+    asyncio.run(cc.admin_callback(auto_update,auto_ctx))
+    require(any("2% bonus" in reply["text"] and "MERCHANT LISTING APPROVED" in reply["text"]
+                for reply in auto_message.replies),
+            "Automatic merchant listing approval did not confirm the 2% bonus")
+    c=v4.db()
+    auto_order=c.execute("SELECT * FROM admin_resale_orders WHERE listing_id=?",(auto_listing_id,)).fetchone()
+    auto_listing=c.execute("SELECT status,remaining_quantity FROM resale_listings WHERE id=?",(auto_listing_id,)).fetchone()
+    require(auto_order is not None,"System approval did not create a resale order")
+    auto_credit=c.execute("""SELECT amount FROM ledger WHERE transaction_id=? AND owner_id=?
+        AND entry_type='resale_sale_credit'""",(auto_order["id"],base_listing["owner_id"])).fetchone()
+    expected_unit=round(float(base_listing["ask_price_usdt"])*1.02,6)
+    require(abs(float(auto_order["unit_price_usdt"])-expected_unit)<1e-8,
+            "System approval did not add exactly 2% to merchant listed price")
+    require(abs(float(auto_order["total_usdt"])-expected_unit)<1e-8 and
+            abs(float(auto_credit["amount"])-expected_unit)<1e-8,
+            "System approval did not credit the merchant the listed amount plus 2%")
+    require(auto_listing["status"]=="sold" and int(auto_listing["remaining_quantity"])==0,
+            "System approval did not close the merchant listing")
+    require(int(c.execute("SELECT remaining_quantity FROM central_inventory WHERE id=?",
+                          (auto_inventory_id,)).fetchone()[0])==0,
+            "System approval did not reconcile merchant inventory")
+    c.close()
+    print("PASS: Manage Central Orders auto-approves merchant listings and credits listed amount plus 2%")
+
     admin_ctx = context()
     update, message, query = callback_update(999999, "adm:resale")
     asyncio.run(v5.admin_panel_callback(update, admin_ctx))
     review_buttons = [cb for r in message.replies for cb in callback_data(r)]
-    require("rs:review:%d" % listing_id in review_buttons, "Admin Resale Market review button missing")
+    require("rs:review:%d" % listing_id in review_buttons, "System Resale Market review button missing")
 
     update, review_message, review_query = callback_update(999999, "rs:review:%d" % listing_id)
     asyncio.run(cc.resale_callback(update, admin_ctx))
     require(admin_ctx.user_data.get("admin_resale_offer", {}).get("listing_id") == listing_id,
-            "Admin review callback did not select listing")
+            "System review callback did not select listing")
     prompt = review_message.replies[-1]["text"]
     require("Buy all at asking price: <code>3.3 1</code>" in prompt,
-            "Admin review prompt does not provide exact valid price and quantity")
+            "System review prompt does not provide exact valid price and quantity")
     require("Maximum quantity: 1" in prompt,
-            "Admin review prompt does not state current available quantity")
+            "System review prompt does not state current available quantity")
     require(review_message.replies[-1]["kwargs"].get("parse_mode") == "HTML",
-            "Admin review prompt is not using Telegram HTML")
+            "System review prompt is not using Telegram HTML")
 
     # Verify common input mistakes get an actionable reply without changing stock.
     bad_update, bad_message = message_update(999999, "3.5")
@@ -486,56 +910,78 @@ def test_admin_resale_flow(listing_id, inventory_id):
     too_many_update, too_many_message = message_update(999999, "3.5 10")
     asyncio.run(v5.text_handler(too_many_update, admin_ctx))
     require("Listing no longer available in that quantity" in too_many_message.replies[-1]["text"],
-            "Admin offer above remaining stock was not rejected clearly")
+            "System offer above remaining stock was not rejected clearly")
 
     offer_update, offer_message = message_update(999999, "3.5 1")
     asyncio.run(v5.text_handler(offer_update, admin_ctx))
-    require(any("ADMIN PURCHASE COMPLETE" in x["text"] for x in offer_message.replies),
-            "Admin offer text handler did not complete")
+    require(any("SYSTEM PURCHASE COMPLETE" in x["text"] for x in offer_message.replies),
+            "System offer text handler did not complete")
     seller_notifications = [x for x in admin_ctx.bot.sent
                             if x["args"] and x["args"][0] == 101]
     notification_text = seller_notifications[-1]["args"][1] if seller_notifications and len(seller_notifications[-1]["args"]) > 1 else ""
     require("Customer purchased your listing" in notification_text,
             "Seller notification did not use Customer wording")
-    require("Admin purchased your listing" not in notification_text,
-            "Seller notification still exposes Admin wording")
+    require("System purchased your listing" not in notification_text,
+            "Seller notification still exposes System wording")
     c = v4.db()
     listing = c.execute("SELECT status,remaining_quantity FROM resale_listings WHERE id=?", (listing_id,)).fetchone()
     require(listing["status"] == "sold" and listing["remaining_quantity"] == 0,
-            "Admin purchase did not close fully sold listing")
+            "System purchase did not close fully sold listing")
     order = c.execute("SELECT * FROM admin_resale_orders WHERE listing_id=?", (listing_id,)).fetchone()
     require(order is not None and order["quantity"] == 1 and abs(order["total_usdt"] - 3.5) < 1e-8,
-            "Admin resale order was not recorded")
+            "System resale order was not recorded")
     profit = c.execute("""SELECT amount FROM ledger WHERE owner_id=101 AND entry_type='resale_profit_credit'
                           ORDER BY id DESC LIMIT 1""").fetchone()
     require(profit is not None and abs(float(profit["amount"]) - 1.0) < 1e-8,
-            "Admin resale seller profit calculation was wrong")
+            "System resale seller profit calculation was wrong")
     require(c.execute("SELECT remaining_quantity FROM central_inventory WHERE id=?", (inventory_id,)).fetchone()[0] == 0,
             "Seller inventory was not reconciled after admin purchase")
     require(c.execute("PRAGMA integrity_check").fetchone()[0] == "ok", "SQLite integrity check failed after resale flow")
     c.close()
-    require("admin_resale_offer" not in admin_ctx.user_data, "Admin offer state was not cleared")
-    print("PASS: Admin Resale Market, Review callback, offer message, seller credit and inventory reconciliation")
+    require("admin_resale_offer" not in admin_ctx.user_data, "System offer state was not cleared")
+    print("PASS: System Resale Market, Review callback, offer message, seller credit and inventory reconciliation")
 
 
 def test_failed_central_purchases(pid):
     c = v4.db()
+    stock_before=int(c.execute("SELECT stock FROM central_catalog WHERE id=?",(pid,)).fetchone()[0])
     c.execute("""INSERT INTO ledger(shop_id,owner_id,entry_type,amount,currency,note,created_at)
                  VALUES(1,101,'resale_purchase_debit',1000,'USDT','isolated test spend',?)""", (v4.now(),))
     c.commit()
+    c.close()
+    c = v4.db()
+    purchased_before=int(c.execute("""SELECT COALESCE(SUM(o.quantity),0)
+        FROM central_orders o WHERE o.buyer_owner_id=101 AND o.status IN ('paid','fulfilled')
+        AND EXISTS (SELECT 1 FROM ledger l WHERE l.transaction_id=o.id
+          AND l.owner_id=o.buyer_owner_id AND l.entry_type='central_purchase_debit'
+          AND l.currency='USDT')""").fetchone()[0])
     c.close()
     replies = run_central_buy(101, pid, 1)
     require(any("Insufficient USDT wallet balance" in x["text"] for x in replies),
             "Insufficient wallet purchase was not rejected")
     c = v4.db()
-    require(c.execute("SELECT stock FROM central_catalog WHERE id=?", (pid,)).fetchone()[0] == 3,
+    purchased_after=int(c.execute("""SELECT COALESCE(SUM(o.quantity),0)
+        FROM central_orders o WHERE o.buyer_owner_id=101 AND o.status IN ('paid','fulfilled')
+        AND EXISTS (SELECT 1 FROM ledger l WHERE l.transaction_id=o.id
+          AND l.owner_id=o.buyer_owner_id AND l.entry_type='central_purchase_debit'
+          AND l.currency='USDT')""").fetchone()[0])
+    require(purchased_after==purchased_before,
+            "Rejected insufficient-balance attempt was counted as a successful purchase")
+    c.close()
+    c = v4.db()
+    require(c.execute("SELECT stock FROM central_catalog WHERE id=?", (pid,)).fetchone()[0] == stock_before,
             "Shared stock changed after rejected wallet purchase")
     c.close()
-    replies = run_central_buy(101, pid, 4)
+    c = v4.db()
+    c.execute("UPDATE shops SET level=2 WHERE owner_id=101")
+    c.commit(); c.close()
+    replies = run_central_buy(101, pid, stock_before+1)
     require(any("Insufficient central stock" in x["text"] for x in replies),
             "Insufficient central stock purchase was not rejected")
     c = v4.db()
-    require(c.execute("SELECT stock FROM central_catalog WHERE id=?", (pid,)).fetchone()[0] == 3,
+    c.execute("UPDATE shops SET level=1 WHERE owner_id=101")
+    c.commit()
+    require(c.execute("SELECT stock FROM central_catalog WHERE id=?", (pid,)).fetchone()[0] == stock_before,
             "Shared stock changed after rejected stock purchase")
     require(c.execute("PRAGMA integrity_check").fetchone()[0] == "ok", "SQLite integrity check failed")
     c.close()
@@ -591,7 +1037,7 @@ def test_merchant_deposit_screenshot_and_admin_approval():
     photo_message.photo=[SimpleNamespace(file_id="merchant-proof-photo")]
     asyncio.run(v4.payment_photo(photo_update,owner_ctx))
     require(any(x.get("photo") and x["args"][0]==999999 for x in owner_ctx.bot.sent),
-            "Payment screenshot was not forwarded to Admin")
+            "Payment screenshot was not forwarded to System")
     c=v4.db()
     request=c.execute("SELECT status,screenshot_file_id,transaction_hash FROM payment_requests WHERE id=?",(rid,)).fetchone()
     credits=c.execute("SELECT COUNT(*) FROM ledger WHERE owner_id=101 AND entry_type='deposit_credit'").fetchone()[0]
@@ -599,7 +1045,7 @@ def test_merchant_deposit_screenshot_and_admin_approval():
             "Screenshot was not saved while leaving request pending")
     require(request["transaction_hash"] in (None, ""),
             "A TXID was unexpectedly added when the merchant skipped the optional TXID step")
-    require(credits==credits_before,"Wallet was credited before Admin approval")
+    require(credits==credits_before,"Wallet was credited before System approval")
     c.close()
 
     admin_update,admin_message,_=callback_update(999999,f"pay:approve:{rid}")
@@ -609,7 +1055,7 @@ def test_merchant_deposit_screenshot_and_admin_approval():
     request=c.execute("SELECT status FROM payment_requests WHERE id=?",(rid,)).fetchone()
     credits_after=c.execute("SELECT COUNT(*) FROM ledger WHERE owner_id=101 AND entry_type='deposit_credit'").fetchone()[0]
     credit=c.execute("SELECT amount FROM ledger WHERE owner_id=101 AND entry_type='deposit_credit' AND note LIKE ? ORDER BY id DESC LIMIT 1", (f"%#{rid}%",)).fetchone()
-    require(request["status"]=="approved","Admin approval did not update deposit status")
+    require(request["status"]=="approved","System approval did not update deposit status")
     require(credits_after==credits_before+1 and credit is not None and abs(float(credit["amount"])-12.5)<1e-8,
             "Approved deposit did not credit the merchant wallet exactly once")
     c.close()
@@ -641,9 +1087,9 @@ def test_merchant_deposit_screenshot_and_admin_approval():
     c.close()
     require(txid_row["transaction_hash"]=="TXID1234567890abcdef" and
             txid_row["screenshot_file_id"]=="txid-proof-photo" and txid_row["status"]=="pending",
-            "Optional TXID and screenshot were not saved together for Admin review")
+            "Optional TXID and screenshot were not saved together for System review")
     require(any("TXID1234567890abcdef" in x.get("kwargs",{}).get("caption","") for x in txid_ctx.bot.sent),
-            "Admin proof card did not include the saved TXID")
+            "System proof card did not include the saved TXID")
 
     # A rejected deposit must leave Pending and must never credit the wallet.
     c=v4.db()
@@ -652,7 +1098,10 @@ def test_merchant_deposit_screenshot_and_admin_approval():
     rejected_id=cur.lastrowid
     c.commit(); c.close()
     reject_update,reject_message,_=callback_update(999999,f"pay:reject:{rejected_id}")
-    asyncio.run(v4.payment_review(reject_update,context()))
+    payment_reject_ctx=context()
+    asyncio.run(v4.payment_review(reject_update,payment_reject_ctx))
+    reason_update,reason_message=message_update(999999,"This is fake screenshot")
+    asyncio.run(v5.text_handler(reason_update,payment_reject_ctx))
     c=v4.db()
     rejected=c.execute("SELECT status,admin_note FROM payment_requests WHERE id=?",(rejected_id,)).fetchone()
     reject_credit=c.execute("SELECT COUNT(*) FROM ledger WHERE owner_id=101 AND entry_type='deposit_credit' AND note LIKE ?",(f"%#{rejected_id}%",)).fetchone()[0]
@@ -661,7 +1110,7 @@ def test_merchant_deposit_screenshot_and_admin_approval():
             "Rejected deposit did not leave Pending with the rejection reason")
     require(reject_credit==0,"Rejected deposit incorrectly credited the wallet")
 
-    # Level activation goes directly to screenshot upload; it must not use the wallet-deposit confirmation button.
+    # Level activation follows the same deposit-style confirmation and screenshot sequence.
     c=v4.db()
     cur=c.execute("""INSERT INTO payment_requests(owner_id,shop_id,payment_type,level,amount,currency,network,status,created_at)
                      VALUES(202,2,'level_activation',2,10.0,'USDT','not_selected','pending',?)""",(v4.now(),))
@@ -671,13 +1120,62 @@ def test_merchant_deposit_screenshot_and_admin_approval():
     level_update,level_message,_=callback_update(202,f"net:{level_rid}:trc")
     asyncio.run(v5.network_callback(level_update,level_ctx))
     level_buttons=callback_data(level_message.replies[0])
+    require(level_ctx.user_data.get("state")=="await_deposit_done",
+            "Level activation did not wait for the merchant payment confirmation")
+    require("m:depositdone" in level_buttons and f"txid:{level_rid}" in level_buttons,
+            "Level upgrade address screen is missing I HAVE DEPOSITED or optional TXID")
+    require("m:dashboard" in level_buttons and "USDT TRC20" in level_message.replies[0]["text"],
+            "Level upgrade address screen is missing the selected network or Back to Dashboard")
+    require("LEVEL UPGRADE PAYMENT ADDRESS" in level_message.replies[0]["text"],
+            "Level upgrade address screen title is incorrect")
+
+    level_done_update,level_done_message,_=callback_update(202,"m:depositdone")
+    asyncio.run(v5.menu_callback(level_done_update,level_ctx))
     require(level_ctx.user_data.get("state")=="payment_proof",
-            "Level activation network selection did not proceed directly to payment proof")
-    require("m:depositdone" not in level_buttons,
-            "Level activation incorrectly displayed the wallet-deposit confirmation button")
-    require("USDT TRC20" in level_message.replies[0]["text"],
-            "Level activation network screen did not show the selected network")
-    print("PASS: Deposit Center, transaction hash, approval/rejection lifecycle and level activation network flow")
+            "I HAVE DEPOSITED did not move the level upgrade to screenshot upload")
+    require("UPLOAD YOUR PAYMENT SCREENSHOT" in level_done_message.replies[0]["text"],
+            "Level upgrade was not asked to upload payment proof")
+    level_photo_update,level_photo_message=message_update(202,None)
+    level_photo_message.photo=[SimpleNamespace(file_id="level-upgrade-proof-photo")]
+    asyncio.run(v4.payment_photo(level_photo_update,level_ctx))
+    c=v4.db()
+    level_request=c.execute("SELECT status,screenshot_file_id FROM payment_requests WHERE id=?",(level_rid,)).fetchone()
+    c.close()
+    require(level_request["status"]=="pending" and
+            level_request["screenshot_file_id"]=="level-upgrade-proof-photo",
+            "Level upgrade screenshot was not saved for System review")
+
+    # Optional TXID must also work for an upgrade payment, not only a wallet deposit.
+    c=v4.db()
+    cur=c.execute("""INSERT INTO payment_requests(owner_id,shop_id,payment_type,level,amount,currency,network,status,created_at)
+                     VALUES(202,2,'level_activation',3,15.0,'USDT','not_selected','pending',?)""",(v4.now(),))
+    level_txid_rid=cur.lastrowid
+    c.commit(); c.close()
+    level_txid_ctx=context()
+    tx_network_update,tx_network_message,_=callback_update(202,f"net:{level_txid_rid}:bep")
+    asyncio.run(v5.network_callback(tx_network_update,level_txid_ctx))
+    require(f"txid:{level_txid_rid}" in callback_data(tx_network_message.replies[0]),
+            "Level upgrade payment screen is missing optional TXID")
+    txid_update,txid_prompt,_=callback_update(202,f"txid:{level_txid_rid}")
+    asyncio.run(v5.txid_callback(txid_update,level_txid_ctx))
+    require(level_txid_ctx.user_data.get("state")=="deposit_tx_hash",
+            "Level upgrade optional TXID did not start transaction-hash entry")
+    hash_update,hash_message=message_update(202,"LEVELTXID1234567890abcdef")
+    asyncio.run(v5.text_handler(hash_update,level_txid_ctx))
+    require(level_txid_ctx.user_data.get("state")=="payment_proof",
+            "Level upgrade TXID did not continue to screenshot upload")
+    tx_photo_update,tx_photo_message=message_update(202,None)
+    tx_photo_message.photo=[SimpleNamespace(file_id="level-upgrade-txid-proof")]
+    asyncio.run(v4.payment_photo(tx_photo_update,level_txid_ctx))
+    c=v4.db()
+    tx_level_request=c.execute("SELECT transaction_hash,screenshot_file_id,status FROM payment_requests WHERE id=?",
+                               (level_txid_rid,)).fetchone()
+    c.close()
+    require(tx_level_request["transaction_hash"]=="LEVELTXID1234567890abcdef" and
+            tx_level_request["screenshot_file_id"]=="level-upgrade-txid-proof" and
+            tx_level_request["status"]=="pending",
+            "Level upgrade TXID and screenshot were not saved together for System review")
+    print("PASS: Deposit Center and Level Upgrade share the same address, optional TXID, confirmation and proof flow")
 
 
 def test_usdt_trc20_withdrawal_flow():
@@ -730,13 +1228,13 @@ def test_usdt_trc20_withdrawal_flow():
     admin_update,admin_message,admin_query=callback_update(999999,"adm:withdrawwallets")
     asyncio.run(v5.admin_panel_callback(admin_update,context()))
     admin_cards=[x for x in admin_message.replies if address in x["text"]]
-    require(admin_cards,"Admin Merchant Withdrawal Wallets screen does not show saved address")
+    require(admin_cards,"System Merchant Withdrawal Wallets screen does not show saved address")
     admin_card=admin_cards[0]
     require("Merchant ID: <code>101</code>" in admin_card["text"] and "USDT TRC20" in admin_card["text"],
-            "Admin saved-wallet card is missing merchant or network details")
+            "System saved-wallet card is missing merchant or network details")
     copy_buttons=[button for row in admin_card["kwargs"]["reply_markup"].inline_keyboard for button in row]
     require(any(getattr(btn,"copy_text",None) and btn.copy_text.text==address for btn in copy_buttons),
-            "Admin saved-wallet card has no copy-address button")
+            "System saved-wallet card has no copy-address button")
 
     withdraw_ctx=context()
     withdraw_update,withdraw_message,withdraw_query=callback_update(101,"m:withdraw")
@@ -750,11 +1248,13 @@ def test_usdt_trc20_withdrawal_flow():
     amount_update,amount_message=message_update(101,"2.5")
     asyncio.run(v5.text_handler(amount_update,withdraw_ctx))
     submitted=withdraw_ctx.bot.sent[-2]["kwargs"]["text"]
-    require("2.500000 USDT" in submitted and "PENDING ADMIN REVIEW" in submitted,
+    require("2.500000 USDT" in submitted and "PENDING SYSTEM REVIEW" in submitted,
             "USDT withdrawal confirmation missing")
     require(address in submitted,"Withdrawal request did not use saved address")
     require(withdraw_ctx.user_data.get("state") is None,
             "Withdrawal state was not cleared after submission")
+    require(withdraw_ctx.bot.sent[-2]["kwargs"].get("parse_mode")=="HTML",
+            "Merchant withdrawal confirmation was sent without HTML parse mode")
 
     c=v4.db()
     row=c.execute("SELECT * FROM withdrawals WHERE owner_id=101 ORDER BY id DESC LIMIT 1").fetchone()
@@ -770,22 +1270,24 @@ def test_usdt_trc20_withdrawal_flow():
     admin_notices=[x for x in withdraw_ctx.bot.sent if x["args"] and x["args"][0]==999999]
     require(admin_notices and "2.500000 USDT" in admin_notices[-1]["args"][1]
             and address in admin_notices[-1]["args"][1],
-            "Admin did not receive amount and configured TRC20 address")
+            "System did not receive amount and configured TRC20 address")
 
     admin_wd_update,admin_wd_message,admin_wd_query=callback_update(999999,"adm:withdrawals")
     asyncio.run(v5.admin_panel_callback(admin_wd_update,context()))
     card=next((x["text"] for x in admin_wd_message.replies if address in x["text"]), "")
     require("TRC20 address" in card and "2.500000 USDT" in card,
-            "Admin withdrawal review card is missing amount or payout address")
-    require("INR" not in card,"Admin withdrawal card still displays INR")
+            "System withdrawal review card is missing amount or payout address")
+    require("INR" not in card,"System withdrawal card still displays INR")
 
     paid_update,paid_message,paid_query=callback_update(999999,f"wd:paid:{wid}")
     paid_ctx=context()
     asyncio.run(v5.withdrawal_review_callback(paid_update,paid_ctx))
+    require(any(x["kwargs"].get("parse_mode")=="HTML" for x in paid_message.edits),
+            "System withdrawal review result was edited without HTML parse mode")
     require(any("POST-WITHDRAWAL WALLET SUMMARY" in x["text"] and
                 "Sale proceeds remaining: <b>4.300000 USDT</b>" in x["text"]
                 for x in paid_message.replies),
-            "Admin did not receive the post-payment remaining-balance summary")
+            "System did not receive the post-payment remaining-balance summary")
     require(any(x["args"] and x["args"][0]==101 and len(x["args"])>1 and
                 "POST-WITHDRAWAL WALLET SUMMARY" in x["args"][1]
                 for x in paid_ctx.bot.sent),
@@ -793,7 +1295,52 @@ def test_usdt_trc20_withdrawal_flow():
     c=v4.db()
     paid=c.execute("SELECT status FROM withdrawals WHERE id=?",(wid,)).fetchone()
     debit=c.execute("SELECT amount,currency FROM ledger WHERE owner_id=101 AND entry_type='withdrawal_debit' ORDER BY id DESC LIMIT 1").fetchone()
-    require(paid["status"]=="paid","Admin Mark Paid did not close withdrawal")
+    require(paid["status"]=="paid","System Mark Paid did not close withdrawal")
+    c=v4.db()
+    reminder=c.execute("SELECT motivation_reminder_status,motivation_reminder_next_at FROM shops WHERE owner_id=101 ORDER BY id DESC LIMIT 1").fetchone()
+    c.close()
+    require(reminder["motivation_reminder_status"]=="on" and reminder["motivation_reminder_next_at"],
+            "First paid withdrawal did not activate the shop's hourly motivation reminder")
+    merchant_menu=v5.owner_kb()
+    merchant_callbacks=[button.callback_data for row in merchant_menu.inline_keyboard for button in row]
+    require("m:motivation" not in merchant_callbacks,
+            "Motivation reminder control must not appear in the merchant dashboard")
+    # Deliver two hourly ticks and verify consecutive reminder content is different.
+    from datetime import datetime, timedelta, timezone
+    fake_now=datetime.now(timezone.utc)+timedelta(hours=2)
+    c=v4.db()
+    c.execute("UPDATE shops SET motivation_reminder_next_at=? WHERE owner_id=101",
+              ((fake_now-timedelta(minutes=1)).isoformat(timespec="seconds"),))
+    c.commit(); c.close()
+    reminder_bot=FakeBot()
+    asyncio.run(v5.send_due_motivation_reminders(reminder_bot,fake_now))
+    require(len(reminder_bot.sent)==1 and "SHOP GROWTH REMINDER" in reminder_bot.sent[0]["kwargs"]["text"],
+            "Due hourly motivation reminder was not delivered")
+    require(reminder_bot.sent[0]["kwargs"].get("chat_id")==v5.ADMIN_ID and
+            reminder_bot.sent[0]["kwargs"].get("chat_id")!=101,
+            "Hourly motivation reminder was delivered to the merchant instead of System")
+    reminder_text=reminder_bot.sent[0]["kwargs"]["text"]
+    require("Hourly encouragement" not in reminder_text and
+            "Contact System" not in reminder_text and
+            "Customer Services" in reminder_text,
+            "Reminder footer does not use the requested Customer Services wording")
+    first_text=reminder_text
+    c=v4.db()
+    c.execute("UPDATE shops SET motivation_reminder_next_at=? WHERE owner_id=101",
+              ((fake_now+timedelta(hours=1)-timedelta(minutes=1)).isoformat(timespec="seconds"),))
+    c.commit(); c.close()
+    asyncio.run(v5.send_due_motivation_reminders(reminder_bot,fake_now+timedelta(hours=1)))
+    require(len(reminder_bot.sent)==2 and first_text!=reminder_bot.sent[1]["kwargs"]["text"],
+            "Consecutive hourly motivational messages were not different")
+    stop_update,stop_message,_=callback_update(999999,f"admshop:motivationstop:{int(row['shop_id'])}")
+    asyncio.run(v5.admin_shop_callback(stop_update,context()))
+    c=v4.db()
+    stopped=c.execute("SELECT motivation_reminder_status,motivation_reminder_next_at FROM shops WHERE owner_id=101 ORDER BY id DESC LIMIT 1").fetchone()
+    c.close()
+    require(stopped["motivation_reminder_status"]=="stopped" and stopped["motivation_reminder_next_at"] is None,
+            "System STOP did not permanently disable hourly motivation reminders")
+    require(any("stopped" in item["text"].lower() for item in stop_message.replies),
+            "System was not shown the reminder stop confirmation")
     require(debit and debit["currency"]=="USDT" and abs(float(debit["amount"])-2.5)<1e-8,
             "Paid withdrawal debit was not written in USDT")
     c.close()
@@ -809,7 +1356,10 @@ def test_usdt_trc20_withdrawal_flow():
     wid2=int(c.execute("SELECT id FROM withdrawals WHERE owner_id=101 AND status='pending' ORDER BY id DESC LIMIT 1").fetchone()[0])
     c.close()
     reject_update,reject_message,reject_query=callback_update(999999,f"wd:reject:{wid2}")
-    asyncio.run(v4.withdrawal_review(reject_update,context()))
+    withdrawal_reject_ctx=context()
+    asyncio.run(v4.withdrawal_review(reject_update,withdrawal_reject_ctx))
+    reason_update,reason_message=message_update(999999,"Withdrawal details need correction.")
+    asyncio.run(v5.text_handler(reason_update,withdrawal_reject_ctx))
     c=v4.db()
     rejected=c.execute("SELECT status FROM withdrawals WHERE id=?",(wid2,)).fetchone()
     debit_count=c.execute("SELECT COUNT(*) FROM ledger WHERE owner_id=101 AND entry_type='withdrawal_debit'").fetchone()[0]
@@ -818,7 +1368,38 @@ def test_usdt_trc20_withdrawal_flow():
     c.close()
     require(abs(v5.available_withdrawal_usdt(101)-4.3)<1e-8,
             "Rejected withdrawal did not release reserved amount")
-    print("PASS: Merchant Withdraw Setup, saved TRC20 wallet, Admin wallet directory and USDT withdrawal lifecycle")
+    print("PASS: Merchant Withdraw Setup, saved TRC20 wallet, System wallet directory, System-only hourly reminders and System STOP")
+
+def test_existing_paid_withdrawal_enables_motivation_reminder():
+    from datetime import datetime, timezone
+    c=v4.db()
+    # Create an eligible shop with a paid withdrawal but an OFF reminder,
+    # simulating a merchant paid before this feature was deployed.
+    c.execute("UPDATE shops SET motivation_reminder_status='off',motivation_reminder_next_at=NULL WHERE owner_id=101")
+    c.execute("""INSERT INTO withdrawals(owner_id,shop_id,amount,currency,network,wallet_address,status,created_at)
+                 VALUES(101,1,1,'USDT','TRC20','TTEST','paid',?)""",(v4.now(),))
+    c.commit(); c.close()
+    class FakeApp:
+        bot=FakeBot()
+        def create_task(self,coro,name=None):
+            coro.close()
+    asyncio.run(v5.start_motivation_reminder_worker(FakeApp()))
+    c=v4.db()
+    row=c.execute("SELECT motivation_reminder_status,motivation_reminder_next_at FROM shops WHERE owner_id=101").fetchone()
+    c.close()
+    require(row["motivation_reminder_status"]=="on" and row["motivation_reminder_next_at"],
+            "Existing merchant with an already-paid withdrawal was not activated at startup")
+    # System-stopped reminders must never be re-enabled by startup backfill.
+    c=v4.db()
+    c.execute("UPDATE shops SET motivation_reminder_status='stopped',motivation_reminder_next_at=NULL WHERE owner_id=101")
+    c.commit(); c.close()
+    asyncio.run(v5.start_motivation_reminder_worker(FakeApp()))
+    c=v4.db()
+    row=c.execute("SELECT motivation_reminder_status,motivation_reminder_next_at FROM shops WHERE owner_id=101").fetchone()
+    c.close()
+    require(row["motivation_reminder_status"]=="stopped" and row["motivation_reminder_next_at"] is None,
+            "Startup backfill re-enabled a reminder that System had stopped")
+    print("PASS: Existing paid merchants are activated at startup; System-stopped reminders remain stopped")
 
 def test_usdt_balance_reconciliation():
     # Mirrors the reported figures: deposits 50, catalogue investment 138.7,
@@ -852,11 +1433,11 @@ def test_usdt_balance_reconciliation():
     update,message,query=callback_update(101,"m:wallet")
     asyncio.run(v5.menu_callback(update,context()))
     screen=message.replies[0]["text"]
-    require("Wallet shortfall: 69.400000 USDT" in screen,
+    require("Wallet shortfall: 69.4 USDT" in screen,
             f"Merchant wallet did not show the net wallet shortfall; screen was: {screen!r}")
-    require("Sale proceeds remaining: 19.300000 USDT" in screen,
+    require("Sale proceeds remaining: 19.3 USDT" in screen,
             "Merchant wallet did not show 169.3 minus 150 = 19.3")
-    require("Available to withdraw: <b>0.000000 USDT</b>" in screen,
+    require("Available to withdraw: <b>0 USDT</b>" in screen,
             "Merchant was shown withdrawable funds despite a negative net wallet")
     print("PASS: Wallet reconciliation distinguishes remaining sale proceeds from net withdrawable balance")
 
@@ -869,6 +1450,14 @@ def test_runtime_schema_bootstrap():
             v4.DB = fresh_db
             v4.v3.DB = fresh_db
             v4.v3.setup()
+            # Simulate shops that existed before the new permanent ID migration.
+            legacy_conn=sqlite3.connect(fresh_db)
+            legacy_conn.execute(
+                "INSERT INTO shops(owner_id,shop_name,status,created_at) VALUES(701,'Legacy Shop A','approved','2025-01-01')")
+            legacy_conn.execute(
+                "INSERT INTO shops(owner_id,shop_name,status,created_at) VALUES(702,'Legacy Shop B','approved','2025-01-02')")
+            legacy_conn.commit()
+            legacy_conn.close()
             require(runtime_schema.ensure_schema(fresh_db) == "ok",
                     "Fresh database schema bootstrap failed")
             v4.v3.ensure_catalog_schema()
@@ -880,9 +1469,28 @@ def test_runtime_schema_bootstrap():
             required = {"users", "shops", "products", "payment_requests", "withdrawals",
                         "payment_history", "level_settings", "platform_settings", "ledger",
                         "v4_orders", "central_catalog", "central_orders", "central_inventory",
-                        "resale_listings"}
+                        "resale_listings", "merchant_referrals", "referral_rewards",
+                        "location_geocode_cache"}
             require(required.issubset(names),
                     f"Fresh install missing tables: {sorted(required - names)}")
+            shop_cols = {r[1] for r in conn.execute("PRAGMA table_info(shops)")}
+            require({"referred_by_owner_id","location_country","location_state","location_city","shop_code"}.issubset(shop_cols),
+                    "Fresh shops schema is missing referral, merchant-location or unique shop-code fields")
+            legacy_codes=[r[0] for r in conn.execute(
+                "SELECT shop_code FROM shops WHERE owner_id IN (701,702) ORDER BY owner_id"
+            ).fetchall()]
+            require(all(re.fullmatch(r"[0-9]{6}",str(code or "")) for code in legacy_codes),
+                    f"Existing shops were not assigned random six-digit public IDs: {legacy_codes!r}")
+            require(len(set(legacy_codes))==2,
+                    "Existing shops received duplicate public IDs")
+            conn.execute("INSERT INTO shops(owner_id,shop_name,status,created_at) VALUES(703,'New Shop','approved','2026-01-03')")
+            new_code=conn.execute("SELECT shop_code FROM shops WHERE owner_id=703").fetchone()[0]
+            require(re.fullmatch(r"[0-9]{6}",str(new_code or "")) and new_code not in legacy_codes,
+                    f"New shop did not receive a unique random six-digit public ID: {new_code!r}")
+            require(conn.execute("SELECT COUNT(DISTINCT shop_code) FROM shops").fetchone()[0]==3,
+                    "Shop IDs are not unique")
+            require(not {"latitude","longitude","location_latitude","location_longitude"}.intersection(shop_cols),
+                    "Exact merchant GPS coordinates must not be stored in the shops table")
             cols = {r[1] for r in conn.execute("PRAGMA table_info(payment_requests)")}
             require({"transaction_hash", "tx_hash", "screenshot_file_id"}.issubset(cols),
                     "Fresh payment_requests schema is missing proof columns")
@@ -897,6 +1505,34 @@ def test_runtime_schema_bootstrap():
                     "Repeated schema bootstrap changed existing shop data")
             require(conn.execute("SELECT COUNT(*) FROM level_settings").fetchone()[0] == 5,
                     "Default shop levels were not initialized")
+            level2_settings=conn.execute(
+                "SELECT activation_usdt,product_target,profit_min,profit_max FROM level_settings WHERE level=2"
+            ).fetchone()
+            require(tuple(level2_settings)==(50.0,50,2.0,6.5),
+                    f"Level 2 defaults are wrong: {tuple(level2_settings)!r}")
+            level4_price=conn.execute(
+                "SELECT activation_usdt FROM level_settings WHERE level=4"
+            ).fetchone()
+            require(level4_price and float(level4_price[0])==250.0,
+                    f"Level 4 activation price must be 250 USDT: {level4_price!r}")
+            level1_price=conn.execute(
+                "SELECT activation_usdt FROM level_settings WHERE level=1"
+            ).fetchone()
+            require(level1_price and float(level1_price[0])==10.0,
+                    f"Level 1 activation price must be 10 USDT: {level1_price!r}")
+            level2_products=conn.execute(
+                "SELECT COUNT(*),MIN(stock),MAX(stock) FROM central_catalog WHERE level_required=2"
+            ).fetchone()
+            require(tuple(level2_products)==(80,50,50),
+                    f"Level 2 catalogue must contain the original 50 plus 30 staged mobile SKUs, each with 50 stock: {tuple(level2_products)!r}")
+            original_l2=int(conn.execute(
+                "SELECT COUNT(*) FROM central_catalog WHERE level_required=2 AND product_key LIKE 'level2_%'"
+            ).fetchone()[0])
+            mobile_l2=int(conn.execute(
+                "SELECT COUNT(*) FROM central_catalog WHERE level_required=2 AND product_key LIKE 'mobile_phone_%'"
+            ).fetchone()[0])
+            require((original_l2,mobile_l2)==(50,30),
+                    f"Original/mobile catalogue split must be 50/30: {(original_l2,mobile_l2)!r}")
             conn.close()
         finally:
             v4.DB = old_v4_db
@@ -990,9 +1626,603 @@ def test_admin_refund_safety():
     print("PASS: Refund revokes unused inventory, blocks sold-stock refunds, and protects resale orders")
 
 
+def test_referral_registration_and_bonuses():
+    # Existing merchants receive stable invitation codes.
+    c=v4.db()
+    invite_code=v5.ensure_referral_code(c,101)
+    c.commit()
+    require(bool(invite_code),"Existing approved merchant did not receive an invite code")
+    c.close()
+
+    signup_ctx=context()
+    signup_update,signup_message=message_update(505,"🏪 Register Shop")
+    signup_update.effective_user=SimpleNamespace(id=505,username="referral_child",first_name="Referral Child")
+    asyncio.run(v5.text_handler(signup_update,signup_ctx))
+    require("What would you like to name your shop?" in signup_message.replies[0]["text"],
+            "Register Shop did not ask for the shop name in English")
+    require(signup_ctx.user_data.get("state")=="shop_name",
+            "Registration did not enter the shop-name state")
+
+    name_update,name_message=message_update(505,"Referral Child Shop")
+    name_update.effective_user=signup_update.effective_user
+    asyncio.run(v5.text_handler(name_update,signup_ctx))
+    require(signup_ctx.user_data.get("state")=="referral_code",
+            "Registration did not require an invitation code after shop name")
+    require("invitation code" in name_message.replies[0]["text"].lower(),
+            "Registration did not explain the required invitation code")
+
+    bad_update,bad_message=message_update(505,"NOT-A-VALID-CODE")
+    bad_update.effective_user=signup_update.effective_user
+    asyncio.run(v5.text_handler(bad_update,signup_ctx))
+    require(signup_ctx.user_data.get("state")=="referral_code" and
+            "invalid" in bad_message.replies[0]["text"].lower(),
+            "Invalid referral code was not rejected")
+
+    code_update,code_message=message_update(505,invite_code)
+    code_update.effective_user=signup_update.effective_user
+    asyncio.run(v5.text_handler(code_update,signup_ctx))
+    require(signup_ctx.user_data.get("state")=="shop_location" and
+            signup_ctx.user_data.get("referrer_owner_id")==101,
+            "Valid invitation code did not require location sharing before password creation")
+    require("LOCATION" in code_message.replies[0]["text"].upper() and
+            code_message.replies[0]["kwargs"]["reply_markup"].keyboard[0][0].request_location,
+            "Registration did not request Telegram's location-sharing permission")
+    bypass_update,bypass_message=message_update(505,"StrongPassword123")
+    bypass_update.effective_user=signup_update.effective_user
+    asyncio.run(v5.text_handler(bypass_update,signup_ctx))
+    require(signup_ctx.user_data.get("state")=="shop_location" and
+            "required" in bypass_message.replies[0]["text"].lower(),
+            "Merchant could bypass mandatory location by sending a password as text")
+
+    async def fake_reverse_geocode(latitude,longitude):
+        require(latitude==33.6844 and longitude==73.0479,
+                "Shared Telegram coordinates were not forwarded for geocoding")
+        return {"country":"Pakistan","state":"Punjab","city":"Rawalpindi"}
+    old_geocoder=v5.reverse_geocode
+    v5.reverse_geocode=fake_reverse_geocode
+    try:
+        location_message=Message()
+        location_message.location=SimpleNamespace(latitude=33.6844,longitude=73.0479)
+        location_update=SimpleNamespace(message=location_message,effective_user=signup_update.effective_user)
+        asyncio.run(v5.location_handler(location_update,signup_ctx))
+    finally:
+        v5.reverse_geocode=old_geocoder
+    require(signup_ctx.user_data.get("state")=="shop_password" and
+            signup_ctx.user_data.get("location_country")=="Pakistan" and
+            signup_ctx.user_data.get("location_state")=="Punjab" and
+            signup_ctx.user_data.get("location_city")=="Rawalpindi",
+            "Shared location was not converted into country/state/city before password creation")
+
+    password_update,password_message=message_update(505,"StrongPassword123")
+    password_update.effective_user=signup_update.effective_user
+    asyncio.run(v5.text_handler(password_update,signup_ctx))
+    c=v4.db()
+    child=c.execute("SELECT id,status,level,referred_by_owner_id,location_country,location_state,location_city FROM shops WHERE owner_id=505").fetchone()
+    require(child is not None and child["referred_by_owner_id"]==101,
+            "New shop registration did not persist its inviter")
+    require((child["location_country"],child["location_state"],child["location_city"])==
+            ("Pakistan","Punjab","Rawalpindi"),
+            "New shop registration did not persist the detected merchant location")
+    require(any("Country: <b>Pakistan</b>" in x["args"][1] and "City: <b>Rawalpindi</b>" in x["args"][1]
+                for x in signup_ctx.bot.sent if x["args"] and x["args"][0]==999999),
+            "System shop application did not include merchant country/state/city")
+    child_shop_id=int(child["id"])
+    c.execute("UPDATE shops SET status='approved',level=1 WHERE id=?",(child_shop_id,))
+    c.commit()
+    c.close()
+
+    # A $10 verified wallet deposit must add $10 deposit + $2 bonus to the child
+    # and $0.20 referral bonus to the inviter, only after System approval.
+    c=v4.db()
+    cur=c.execute("""INSERT INTO payment_requests
+        (owner_id,shop_id,payment_type,level,amount,currency,network,screenshot_file_id,status,created_at)
+        VALUES(505,?,'wallet_deposit',0,10,'USDT','USDT TRC20','deposit-proof','pending',?)""",
+        (child_shop_id,v4.now()))
+    deposit_rid=int(cur.lastrowid)
+    c.commit()
+    before_pending=c.execute(
+        "SELECT COUNT(*) FROM ledger WHERE owner_id=505 AND entry_type='deposit_bonus_credit'"
+    ).fetchone()[0]
+    c.close()
+    require(before_pending==0,"Deposit bonus was credited before System approval")
+
+    admin_update,admin_message,_=callback_update(999999,f"pay:approve:{deposit_rid}")
+    asyncio.run(v4.payment_review(admin_update,context()))
+    c=v4.db()
+    base_credit=c.execute(
+        "SELECT COALESCE(SUM(amount),0) FROM ledger WHERE owner_id=505 AND entry_type='deposit_credit'"
+    ).fetchone()[0]
+    child_bonus=c.execute(
+        "SELECT COALESCE(SUM(amount),0) FROM ledger WHERE owner_id=505 AND entry_type='deposit_bonus_credit'"
+    ).fetchone()[0]
+    inviter_bonus=c.execute(
+        "SELECT COALESCE(SUM(amount),0) FROM ledger WHERE owner_id=101 AND entry_type='referral_bonus_credit'"
+    ).fetchone()[0]
+    require(abs(float(base_credit)-10.0)<1e-8 and abs(float(child_bonus)-2.0)<1e-8,
+            "Approved $10 deposit did not credit the base amount plus 20% bonus")
+    require(abs(float(inviter_bonus)-0.2)<1e-8,
+            "Inviter did not receive 2% of the referred merchant's verified deposit")
+    c.close()
+
+    # Repeated clicks on the same reviewed request must not duplicate any reward.
+    duplicate_update,duplicate_message,_=callback_update(999999,f"pay:approve:{deposit_rid}")
+    asyncio.run(v4.payment_review(duplicate_update,context()))
+    c=v4.db()
+    require(c.execute(
+        "SELECT COUNT(*) FROM ledger WHERE owner_id=505 AND entry_type='deposit_bonus_credit'"
+    ).fetchone()[0]==1,"Duplicate approval credited the deposit bonus twice")
+    require(c.execute(
+        "SELECT COUNT(*) FROM referral_rewards WHERE payment_request_id=?",(deposit_rid,)
+    ).fetchone()[0]==1,"Duplicate approval created a duplicate referral reward")
+    c.close()
+
+    # A Level 2 activation payment is also eligible for the 20% bonus and the
+    # inviter's 2% payment reward.
+    c=v4.db()
+    cur=c.execute("""INSERT INTO payment_requests
+        (owner_id,shop_id,payment_type,level,amount,currency,network,screenshot_file_id,status,created_at)
+        VALUES(505,?,'level_activation',2,10,'USDT','USDT BEP20','upgrade-proof','pending',?)""",
+        (child_shop_id,v4.now()))
+    level_rid=int(cur.lastrowid)
+    c.commit()
+    c.close()
+    level_update,level_message,_=callback_update(999999,f"pay:approve:{level_rid}")
+    asyncio.run(v4.payment_review(level_update,context()))
+    c=v4.db()
+    child_bonus_total=float(c.execute(
+        "SELECT COALESCE(SUM(amount),0) FROM ledger WHERE owner_id=505 AND entry_type='deposit_bonus_credit'"
+    ).fetchone()[0])
+    inviter_bonus_total=float(c.execute(
+        "SELECT COALESCE(SUM(amount),0) FROM ledger WHERE owner_id=101 AND entry_type='referral_bonus_credit'"
+    ).fetchone()[0])
+    child_level=int(c.execute("SELECT level FROM shops WHERE id=?",(child_shop_id,)).fetchone()[0])
+    rewards=c.execute(
+        "SELECT COUNT(*),COALESCE(SUM(bonus_amount),0) FROM referral_rewards WHERE referrer_owner_id=101"
+    ).fetchone()
+    require(child_level==2,"Approved Level 2 activation payment did not unlock Level 2")
+    require(abs(child_bonus_total-4.0)<1e-8,
+            "Two approved $10 payments did not award two 20% bonuses")
+    require(abs(inviter_bonus_total-0.4)<1e-8 and rewards[0]==2 and abs(float(rewards[1])-0.4)<1e-8,
+            "Inviter did not receive 2% on both verified deposit and level-payment transactions")
+    level_payment_credit=float(c.execute(
+        "SELECT COALESCE(SUM(amount),0) FROM ledger WHERE owner_id=505 AND entry_type='level_activation_wallet_credit'"
+    ).fetchone()[0])
+    require(abs(level_payment_credit-10.0)<1e-8,
+            "Approved level activation did not credit the full 10 USDT payment")
+    require(abs(cc.balance(c,505)-24.0)<1e-8,
+            "Wallet balance must include the base deposit, full level payment and both 20% bonuses")
+    c.close()
+
+    # The inviter dashboard must list the new merchant and show accumulated rewards.
+    referral_update,referral_message,_=callback_update(101,"m:referrals")
+    asyncio.run(v5.menu_callback(referral_update,context()))
+    screen=referral_message.replies[0]["text"]
+    require("Referral Child Shop" in screen and invite_code in screen,
+            "Invited Merchants screen does not show the invited shop and its code")
+    require("0.400000 USDT" in screen and "2% of each invited merchant" in screen,
+            "Invited Merchants screen does not show the earned 2% rewards")
+    buttons=referral_message.replies[0]["kwargs"]["reply_markup"].inline_keyboard
+    require(any(getattr(button,"copy_text",None) and button.copy_text.text==invite_code
+                for row in buttons for button in row),
+            "Invited Merchants screen is missing the copy invite-code button")
+    print("PASS: Merchant referral registration, invite list, 20% verified payment bonuses and 2% upline rewards")
+
+
+def test_admin_rejection_reasons():
+    # Payment rejection must pause for a reason and notify the merchant with it.
+    c=v4.db()
+    shop=c.execute("SELECT id FROM shops WHERE owner_id=101 ORDER BY id DESC LIMIT 1").fetchone()
+    cur=c.execute("""INSERT INTO payment_requests
+        (owner_id,shop_id,payment_type,level,amount,currency,network,status,created_at)
+        VALUES(101,?,'wallet_deposit',0,4,'USDT','USDT TRC20','pending',?)""",
+        (shop["id"],v4.now()))
+    payment_id=int(cur.lastrowid); c.commit(); c.close()
+    admin_ctx=context()
+    pu,pm,pq=callback_update(999999,f"pay:reject:{payment_id}")
+    asyncio.run(v4.payment_review(pu,admin_ctx))
+    require(admin_ctx.user_data.get("pending_admin_rejection")=={"kind":"payment","id":payment_id},
+            "Payment rejection did not request an System reason")
+    reason="Transaction screenshot is unclear."
+    ru,rm=message_update(999999,reason)
+    asyncio.run(v5.text_handler(ru,admin_ctx))
+    c=v4.db(); payment=c.execute("SELECT status,admin_note FROM payment_requests WHERE id=?",(payment_id,)).fetchone(); c.close()
+    require(payment["status"]=="rejected" and payment["admin_note"]==reason,
+            "Payment rejection reason was not saved")
+    require(any(x["args"] and x["args"][0]==101 and reason in (x["args"][1] if len(x["args"])>1 else x["kwargs"].get("text",""))
+                for x in admin_ctx.bot.sent),
+            "Merchant did not receive the payment rejection reason")
+
+    # Withdrawal rejection must preserve the reserved amount and send its reason.
+    c=v4.db()
+    cur=c.execute("""INSERT INTO withdrawals
+        (owner_id,shop_id,amount,currency,network,wallet_address,status,created_at)
+        VALUES(101,? ,1.25,'USDT','USDT TRC20','T111111111111111111111111111111111','pending',?)""",
+        (shop["id"],v4.now()))
+    withdrawal_id=int(cur.lastrowid); c.commit(); c.close()
+    wu,wm,wq=callback_update(999999,f"wd:reject:{withdrawal_id}")
+    asyncio.run(v4.withdrawal_review(wu,admin_ctx))
+    require(admin_ctx.user_data.get("pending_admin_rejection")=={"kind":"withdrawal","id":withdrawal_id},
+            "Withdrawal rejection did not request an System reason")
+    wreason="Payout address does not match the verified wallet."
+    wru,wrm=message_update(999999,wreason)
+    asyncio.run(v5.text_handler(wru,admin_ctx))
+    c=v4.db(); withdrawal=c.execute("SELECT status,admin_note FROM withdrawals WHERE id=?",(withdrawal_id,)).fetchone(); c.close()
+    require(withdrawal["status"]=="rejected" and withdrawal["admin_note"]==wreason,
+            "Withdrawal rejection reason was not saved")
+    require(any(x["args"] and x["args"][0]==101 and wreason in (x["args"][1] if len(x["args"])>1 else x["kwargs"].get("text",""))
+                for x in admin_ctx.bot.sent),
+            "Merchant did not receive the withdrawal rejection reason")
+
+    # Product suggestion rejection must also collect a reason and notify the owner.
+    v5.v3.ensure_catalog_schema()
+    c=v4.db()
+    cur=c.execute("""INSERT INTO product_suggestions
+        (owner_id,shop_id,title,description,suggested_price,status,created_at)
+        VALUES(101,?,'Test Listing','Test description',100,'pending',?)""",
+        (shop["id"],v4.now()))
+    suggestion_id=int(cur.lastrowid); c.commit(); c.close()
+    pu2,pm2,pq2=callback_update(999999,f"product:reject:{suggestion_id}")
+    asyncio.run(v5.v3.product_review(pu2,admin_ctx))
+    require(admin_ctx.user_data.get("pending_admin_rejection")=={"kind":"product_suggestion","id":suggestion_id},
+            "Product listing rejection did not request an System reason")
+    preason="Product photos or details need correction."
+    pru,prm=message_update(999999,preason)
+    asyncio.run(v5.text_handler(pru,admin_ctx))
+    c=v4.db(); product=c.execute("SELECT status FROM product_suggestions WHERE id=?",(suggestion_id,)).fetchone(); c.close()
+    require(product["status"]=="rejected","Product suggestion was not rejected after reason entry")
+    require(any(x["args"] and x["args"][0]==101 and preason in (x["args"][1] if len(x["args"])>1 else x["kwargs"].get("text",""))
+                for x in admin_ctx.bot.sent),
+            "Merchant did not receive the product listing rejection reason")
+    print("PASS: System rejection reasons saved and delivered for deposits, withdrawals and product listings")
+
+
+def test_50_pair_purchase_gate_and_admin_approval():
+    c=v4.db()
+    c.execute("""INSERT INTO shops(owner_id,shop_name,status,created_at,level)
+                 VALUES(707,'Allowance Test Shop','approved',?,2)""",(v4.now(),))
+    sid=int(c.execute("SELECT id FROM shops WHERE owner_id=707 ORDER BY id DESC LIMIT 1").fetchone()[0])
+    # Simulate all 50 legacy Level 2 catalogue products already purchased.
+    base_rows=c.execute(
+        "SELECT id FROM central_catalog WHERE active=1 AND level_required=2 AND product_key LIKE 'level2_%' ORDER BY id"
+    ).fetchall()
+    require(len(base_rows)==50,"Original Level 2 catalogue must remain exactly 50 products")
+    c.executemany("""INSERT INTO central_orders
+        (catalog_id,buyer_shop_id,buyer_owner_id,quantity,unit_price_usdt,total_usdt,status,created_at)
+        VALUES(?,?,?,1,1,1,'paid',?)""",
+        [(int(x["id"]),sid,707,v4.now()) for x in base_rows])
+    product=c.execute(
+        "SELECT id,price_usdt,stock FROM central_catalog WHERE active=1 AND level_required=2 AND product_key LIKE 'mobile_phone_%' ORDER BY id LIMIT 1"
+    ).fetchone()
+    pid=int(product["id"])
+    original_price=float(product["price_usdt"])
+    original_stock=int(product["stock"])
+    c.execute("UPDATE central_catalog SET price_usdt=1,stock=20 WHERE id=?",(pid,))
+    c.execute("""INSERT INTO merchant_pair_progress
+        (shop_id,owner_id,completed_count,cycle_started_at,updated_at)
+        VALUES(?,?,50,?,?)""",(sid,707,v4.now(),v4.now()))
+    c.commit()
+    c.close()
+    add_deposit(707,sid,100)
+
+    blocked=run_central_buy(707,pid,1)
+    require(blocked and "50/50" in blocked[0]["text"] and "System approval" in blocked[0]["text"],
+            "A merchant at 50/50 could purchase without System approval")
+
+    # First System approval grants 10 purchase units and 10 more Level 2 product slots.
+    update,_,_=callback_update(999999,f"admshop:approve10:{sid}")
+    admin_ctx=context()
+    asyncio.run(v5.admin_shop_callback(update,admin_ctx))
+    c=v4.db()
+    allowance=c.execute(
+        "SELECT remaining_units,total_approved_units FROM merchant_extra_item_allowances WHERE shop_id=?",
+        (sid,)).fetchone()
+    item_limit=c.execute(
+        "SELECT item_limit FROM merchant_level_item_limits WHERE shop_id=? AND level=2",
+        (sid,)).fetchone()[0]
+    c.close()
+    require(tuple(allowance)==(10,10),"System approval did not grant exactly 10 extra purchase units")
+    require(int(item_limit)==60,"System approval did not unlock the first 10 new mobile SKUs after the original 50")
+
+    # A second approval stacks, rather than overwriting, both allowances.
+    update,_,_=callback_update(999999,f"admshop:approve10:{sid}")
+    asyncio.run(v5.admin_shop_callback(update,context()))
+    c=v4.db()
+    allowance=c.execute(
+        "SELECT remaining_units,total_approved_units FROM merchant_extra_item_allowances WHERE shop_id=?",
+        (sid,)).fetchone()
+    item_limit=int(c.execute(
+        "SELECT item_limit FROM merchant_level_item_limits WHERE shop_id=? AND level=2",
+        (sid,)).fetchone()[0])
+    c.close()
+    require(tuple(allowance)==(20,20),"Repeated System approval did not stack the 10-unit allowance")
+    require(item_limit==70,"Repeated System approval did not add another 10 mobile SKU slots")
+
+    purchased=run_central_buy(707,pid,1)
+    require(purchased and "Purchase successful" in purchased[0]["text"],
+            "Merchant could not purchase after System approved extra units")
+    c=v4.db()
+    remaining=int(c.execute(
+        "SELECT remaining_units FROM merchant_extra_item_allowances WHERE shop_id=?",(sid,)).fetchone()[0])
+    audit_count=int(c.execute(
+        "SELECT COUNT(*) FROM admin_audit WHERE owner_id=707 AND action='merchant_extra_items_approved'"
+    ).fetchone()[0])
+    c.close()
+    require(remaining==19,"Successful post-limit purchase did not consume exactly one approved unit")
+    require(audit_count==2,"System approvals were not written to the audit log")
+    # Restore shared catalogue stock and price so later tests see the pristine 50-unit fixture.
+    c=v4.db()
+    c.execute("UPDATE central_catalog SET price_usdt=?,stock=? WHERE id=?",
+              (original_price,original_stock,pid))
+    c.commit()
+    c.close()
+    print("PASS: 50-pair purchase lock, repeated System +10 approvals, Level 2 slot expansion and allowance consumption")
+
+
+def test_level2_workflow_reminder_goes_to_merchant():
+    c=v4.db()
+    c.execute("""INSERT INTO shops(owner_id,shop_name,status,created_at,level)
+                 VALUES(909,'Level Two Reminder Shop','approved',?,2)""",(v4.now(),))
+    sid=int(c.execute("SELECT id FROM shops WHERE owner_id=909 ORDER BY id DESC LIMIT 1").fetchone()[0])
+    product=c.execute("SELECT id FROM central_catalog WHERE active=1 AND level_required=2 LIMIT 1").fetchone()
+    require(product is not None,"Level 2 catalogue fixture is missing")
+    c.execute("""INSERT INTO central_inventory
+        (owner_id,shop_id,catalog_id,order_id,quantity,remaining_quantity,unit_cost_usdt,status,created_at)
+        VALUES(?,?,?,?,1,1,1,'owned',?)""",
+        (909,sid,int(product["id"]),990909,v4.now()))
+    c.commit()
+    c.close()
+
+    bot=FakeBot()
+    start_at=v5._motivation_now()
+    scheduled=asyncio.run(v5.send_due_level2_workflow_reminders(bot,start_at))
+    require(scheduled==0 and len(bot.sent)==0,"Level 2 reminder should wait for its first scheduled interval")
+    due_at=start_at+v5.timedelta(hours=2)
+    sent=asyncio.run(v5.send_due_level2_workflow_reminders(bot,due_at))
+    require(sent==1 and len(bot.sent)==1,"Level 2 merchant did not receive the pending-order reminder")
+    msg=bot.sent[0]["kwargs"]["text"]
+    require(bot.sent[0]["kwargs"]["chat_id"]==909,
+            "Level 2 workflow reminder was sent to System instead of the merchant")
+    require("completing your current orders" in msg.lower() and "50" in msg,
+            "Level 2 workflow reminder is missing its completion motivation")
+    again=asyncio.run(v5.send_due_level2_workflow_reminders(bot,due_at))
+    require(again==0 and len(bot.sent)==1,"Level 2 merchant received duplicate reminder before the next daily interval")
+
+    c=v4.db()
+    c.execute("DELETE FROM merchant_l2_workflow_reminders WHERE shop_id=?",(sid,))
+    c.execute("DELETE FROM central_inventory WHERE shop_id=?",(sid,))
+    c.execute("DELETE FROM shops WHERE id=?",(sid,))
+    c.commit()
+    c.close()
+    print("PASS: Level 2 pending-order reminder is sent to merchant once per 24 hours")
+
+
+def test_admin_shop_controls_and_search():
+    c=v4.db()
+    shop=c.execute("SELECT id FROM shops WHERE owner_id=101 ORDER BY id DESC LIMIT 1").fetchone()
+    require(shop is not None,"Shop control fixture is missing")
+    sid=int(shop["id"])
+    c.close()
+
+    # System can freeze and the shared order gate blocks purchases.
+    update,message,_=callback_update(999999,f"admshop:freeze:{sid}")
+    asyncio.run(v5.admin_shop_callback(update,context()))
+    c=v4.db()
+    status=c.execute("SELECT control_status FROM shops WHERE id=?",(sid,)).fetchone()[0]
+    allowed,reason=v4.shop_order_gate(c,sid)
+    c.close()
+    require(status=="frozen" and not allowed and "frozen" in reason,
+            "Freeze did not persist or block new orders")
+
+    # Enable restores access.
+    update,message,_=callback_update(999999,f"admshop:enable:{sid}")
+    asyncio.run(v5.admin_shop_callback(update,context()))
+    c=v4.db()
+    require(c.execute("SELECT control_status FROM shops WHERE id=?",(sid,)).fetchone()[0]=="active",
+            "Enable did not restore the shop")
+    c.close()
+
+    # Warning requires an System-entered reason and is consumed once by next successful order.
+    admin_ctx=context()
+    update,message,_=callback_update(999999,f"admshop:warn:{sid}")
+    asyncio.run(v5.admin_shop_callback(update,admin_ctx))
+    require(admin_ctx.user_data.get("admin_shop_warning_id")==sid,
+            "Warn Next Order did not request a reason")
+    reason="Please verify product descriptions before accepting another order."
+    warning_update,warning_message=message_update(999999,reason)
+    asyncio.run(v5.text_handler(warning_update,admin_ctx))
+    c=v4.db()
+    warning=c.execute("SELECT next_order_warning,warning_reason FROM shops WHERE id=?",(sid,)).fetchone()
+    c.close()
+    require(warning["next_order_warning"]==1 and warning["warning_reason"]==reason,
+            "Mandatory next-order warning reason was not saved")
+    c=v4.db()
+    allowed,shown=v4.shop_order_gate(c,sid)
+    c.close()
+    require(not allowed and reason in shown and "NOT placed" in shown,
+            "Next-order warning did not stop the first attempt and show its reason")
+    c=v4.db()
+    allowed_again,shown_again=v4.shop_order_gate(c,sid)
+    c.close()
+    require(allowed_again and shown_again is None,
+            "Shop was not allowed to retry after the one-time warning was shown")
+
+    # Search accepts both the formatted unique ID and the underlying numeric ID.
+    search_ctx=context()
+    search_update,search_message,_=callback_update(999999,"admshop:search")
+    asyncio.run(v5.admin_shop_callback(search_update,search_ctx))
+    require(search_ctx.user_data.get("admin_shop_search") is True,
+            "Shop ID search did not enter search mode")
+    c=v4.db()
+    public_id=c.execute("SELECT shop_code FROM shops WHERE id=?",(sid,)).fetchone()[0]
+    c.close()
+    numeric_update,numeric_message=message_update(999999,str(public_id))
+    asyncio.run(v5.text_handler(numeric_update,search_ctx))
+    require(any(str(public_id) in x["text"] for x in numeric_message.replies),
+            "Random public Shop ID search did not return the exact matching shop")
+
+    # Disable and soft-delete also block orders without removing historical rows.
+    for action,expected in (("disable","disabled"),("delete","deleted")):
+        update,message,_=callback_update(999999,f"admshop:{action}:{sid}")
+        asyncio.run(v5.admin_shop_callback(update,context()))
+        c=v4.db()
+        row=c.execute("SELECT control_status FROM shops WHERE id=?",(sid,)).fetchone()
+        allowed,reason=v4.shop_order_gate(c,sid)
+        c.close()
+        require(row["control_status"]==expected and not allowed,
+                f"{action} did not block new orders")
+    c=v4.db()
+    require(c.execute("SELECT COUNT(*) FROM shops WHERE id=?",(sid,)).fetchone()[0]==1,
+            "Soft delete removed the shop record and historical links")
+    c.execute("UPDATE shops SET control_status='active',control_note=NULL WHERE id=?",(sid,))
+    c.commit(); c.close()
+    # The merchant profile must show the random public ID and allow old shops
+    # with missing historical location data to add it without re-registering.
+    profile_update,profile_message,_=callback_update(101,"m:profile")
+    profile_ctx=context()
+    asyncio.run(v5.menu_callback(profile_update,profile_ctx))
+    profile_cards=[x for x in profile_ctx.bot.sent if x.get("kwargs",{}).get("photo")=="latest-profile-photo"]
+    require(bool(profile_cards) and "MY ACCOUNT" in profile_cards[0]["kwargs"].get("caption",""),
+            "My Account did not display the owner's latest Telegram profile photo")
+    profile_text=profile_cards[0]["kwargs"]["caption"]
+    require(f"Shop ID: <code>{public_id}</code>" in profile_text,
+            "My Account does not display the public random Shop ID")
+    profile_kb=profile_cards[0]["kwargs"]["reply_markup"].inline_keyboard
+    require(any(button.callback_data=="m:location" for row in profile_kb for button in row),
+            "My Account is missing the Update Location action")
+    location_ctx=context()
+    location_update,location_message,_=callback_update(101,"m:location")
+    asyncio.run(v5.menu_callback(location_update,location_ctx))
+    require(location_ctx.user_data.get("state")=="shop_location_update",
+            "Update Location did not enter the location update state")
+    async def fake_existing_shop_geocode(latitude,longitude):
+        return {"country":"Pakistan","state":"Punjab","city":"Rawalpindi"}
+    previous_geocoder=v5.reverse_geocode
+    v5.reverse_geocode=fake_existing_shop_geocode
+    try:
+        loc_message=Message()
+        loc_message.location=SimpleNamespace(latitude=33.6844,longitude=73.0479)
+        loc_update=SimpleNamespace(message=loc_message,effective_user=SimpleNamespace(id=101))
+        asyncio.run(v5.location_handler(loc_update,location_ctx))
+    finally:
+        v5.reverse_geocode=previous_geocoder
+    c=v4.db()
+    updated_location=c.execute(
+        "SELECT location_city,location_state,location_country FROM shops WHERE id=?",(sid,)
+    ).fetchone()
+    c.close()
+    require(tuple(updated_location)==("Rawalpindi","Punjab","Pakistan"),
+            "Existing merchant location was not saved by Update Location")
+    print("PASS: Random public Shop IDs, System search, existing-shop location update, freeze/disable/enable/soft-delete controls and one-time warning")
+
+
+
+def test_legacy_product_purchase_gate_after_50_pairs():
+    c=v4.db()
+    seller=c.execute("SELECT id FROM shops WHERE owner_id=101 ORDER BY id DESC LIMIT 1").fetchone()
+    c.execute("""INSERT INTO shops(owner_id,shop_name,status,created_at,level)
+                 VALUES(808,'Legacy Gate Buyer','approved',?,2)""",(v4.now(),))
+    buyer_shop=int(c.execute("SELECT id FROM shops WHERE owner_id=808 ORDER BY id DESC LIMIT 1").fetchone()[0])
+    cur=c.execute("""INSERT INTO products
+        (shop_id,title,description,price,currency,active,stock,level_required,created_at,updated_at)
+        VALUES(?,?,? ,50,'INR',1,5,2,?,?)""",
+        (int(seller["id"]),"Legacy Gate Test Product","Temporary isolated test product",v4.now(),v4.now()))
+    product_id=int(cur.lastrowid)
+    c.execute("""INSERT INTO merchant_pair_progress
+        (shop_id,owner_id,completed_count,cycle_started_at,updated_at)
+        VALUES(?,?,50,?,?)""",(buyer_shop,808,v4.now(),v4.now()))
+    # This legacy-route test also satisfies the new mobile unlock prerequisite:
+    # all original 50 Level 2 catalogue items have already been purchased.
+    base_catalog=c.execute(
+        "SELECT id FROM central_catalog WHERE level_required=2 AND product_key LIKE 'level2_%' ORDER BY id"
+    ).fetchall()
+    c.executemany("""INSERT INTO central_orders
+        (catalog_id,buyer_shop_id,buyer_owner_id,quantity,unit_price_usdt,total_usdt,status,created_at)
+        VALUES(?,?,?,1,1,1,'paid',?)""",
+        [(int(x["id"]),buyer_shop,808,v4.now()) for x in base_catalog])
+    c.commit()
+    c.close()
+
+    def run_legacy_buy():
+        update,message=message_update(808,"")
+        ctx=context()
+        ctx.args=[str(product_id),"1"]
+        asyncio.run(v4.buy(update,ctx))
+        return message.replies
+
+    blocked=run_legacy_buy()
+    require(blocked and "50/50" in blocked[0]["text"],
+            "Legacy /buy route bypassed the 50-pair purchase lock")
+
+    update,_,_=callback_update(999999,f"admshop:approve10:{buyer_shop}")
+    asyncio.run(v5.admin_shop_callback(update,context()))
+    allowed=run_legacy_buy()
+    require(allowed and "Order #" in allowed[0]["text"],
+            "Legacy /buy route did not resume after System approval")
+    c=v4.db()
+    remaining=int(c.execute(
+        "SELECT remaining_units FROM merchant_extra_item_allowances WHERE shop_id=?",
+        (buyer_shop,)).fetchone()[0])
+    c.execute("DELETE FROM products WHERE id=?",(product_id,))
+    c.commit()
+    c.close()
+    require(remaining==9,"Legacy /buy did not consume one approved unit")
+    print("PASS: Legacy /buy route also enforces 50-pair System approval and consumes allowance")
+
+
+def test_automatic_excel_export():
+    import openpyxl
+    export_dir = Path(TMP.name) / "exports"
+    previous_export_dir = os.environ.get("EXCEL_EXPORT_DIR")
+    os.environ["EXCEL_EXPORT_DIR"] = str(export_dir)
+    try:
+        c = v4.db()
+        c.execute("INSERT INTO ledger(shop_id,owner_id,entry_type,amount,currency,note,created_at) VALUES(101,101,'excel_test',12.5,'USDT','export check',?)",(v4.now(),))
+        c.commit()
+        c.close()
+        workbook_path = export_dir / "shop_records.xlsx"
+        require(workbook_path.exists(),
+                "Excel workbook was not refreshed automatically after a database commit")
+        book = openpyxl.load_workbook(workbook_path, read_only=True, data_only=True)
+        try:
+            require("ledger" in book.sheetnames, "Ledger sheet is missing from Excel workbook")
+            sheet = book["ledger"]
+            headers = [cell.value for cell in next(sheet.iter_rows(min_row=1, max_row=1))]
+            require("entry_type" in headers and "amount" in headers,
+                    "Ledger export is missing expected columns")
+            entry_col = headers.index("entry_type") + 1
+            require(any(sheet.cell(row, entry_col).value == "excel_test"
+                        for row in range(2, sheet.max_row + 1)),
+                    "New committed ledger record was not exported")
+            require("shops" in book.sheetnames and "payment_requests" in book.sheetnames,
+                    "Shop or deposit records sheet is missing")
+            shop_headers = [cell.value for cell in next(book["shops"].iter_rows(min_row=1, max_row=1))]
+            require("password_hash" not in shop_headers,
+                    "Sensitive password hash column should not be exported")
+        finally:
+            book.close()
+    finally:
+        if previous_export_dir is None:
+            os.environ.pop("EXCEL_EXPORT_DIR", None)
+        else:
+            os.environ["EXCEL_EXPORT_DIR"] = previous_export_dir
+    print("PASS: Automatic Excel export includes committed records and separate database sheets")
+
+
 def main():
     test_runtime_schema_bootstrap()
     fixture()
+    test_automatic_excel_export()
+    test_admin_shop_controls_and_search()
+    test_50_pair_purchase_gate_and_admin_approval()
+    test_level2_workflow_reminder_goes_to_merchant()
+    # Each shop screen fetches the current profile image again rather than retaining an old photo ID.
+    avatar_bot=FakeBot()
+    asyncio.run(v5.send_shop_profile(avatar_bot,101,101,"Shop card"))
+    avatar_bot.profile_file_id="changed-telegram-dp"
+    asyncio.run(v5.send_shop_profile(avatar_bot,101,101,"Shop card"))
+    require([x["kwargs"].get("photo") for x in avatar_bot.sent]==["latest-profile-photo","changed-telegram-dp"],
+            "Shop profile photo was cached instead of refreshing from Telegram")
+    print("PASS: Merchant shop cards refresh the latest Telegram profile picture on each view")
     test_level1_catalogue_quantity_buttons()
     test_admin_catalogue_pagination()
     pid, listing_id, inventory_id = test_central_purchase_and_auto_listing()
@@ -1000,12 +2230,18 @@ def main():
     test_list_stock_profit_screen()
     test_seller_market_screen(listing_id)
     test_resale_buyer_guards_and_sale(listing_id, inventory_id)
+    test_merchant_level_upgrade_option()
+    test_level2_catalogue_and_purchase_flow()
     test_admin_resale_flow(listing_id, inventory_id)
     test_merchant_deposit_screenshot_and_admin_approval()
     test_usdt_trc20_withdrawal_flow()
+    test_existing_paid_withdrawal_enables_motivation_reminder()
     test_failed_central_purchases(pid)
     test_admin_refund_safety()
     test_usdt_balance_reconciliation()
+    test_referral_registration_and_bonuses()
+    test_admin_rejection_reasons()
+    test_legacy_product_purchase_gate_after_50_pairs()
     print("PASS: All isolated Telegram-handler end-to-end tests completed.")
 
 

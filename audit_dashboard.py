@@ -40,7 +40,7 @@ def _rows(c, category):
 
 async def show(update, category="all", page=0):
     uid=update.effective_user.id
-    if uid != v4.ADMIN_ID:
+    if not v4.admin(uid):
         await update.effective_message.reply_text("Admin only.")
         return
     c=v4.db()

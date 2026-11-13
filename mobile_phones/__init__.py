@@ -1,0 +1,1 @@
+"""Mobile phone catalogue package."""

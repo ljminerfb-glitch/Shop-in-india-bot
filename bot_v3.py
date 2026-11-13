@@ -5,6 +5,7 @@ import hmac
 import hashlib
 import secrets
 import sqlite3
+from excel_export import ExportConnection
 import logging
 from datetime import datetime, timezone
 
@@ -16,6 +17,18 @@ from telegram.ext import (
 
 TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+
+def is_admin(uid):
+    try:
+        uid=int(uid)
+    except (TypeError,ValueError):
+        return False
+    configured={ADMIN_ID} if ADMIN_ID else set()
+    for raw_id in os.getenv("ADMIN_IDS","").split(","):
+        raw_id=raw_id.strip()
+        if raw_id.isdigit() and int(raw_id)>0:
+            configured.add(int(raw_id))
+    return uid in configured
 DB = "shop_in_india.db"
 
 logging.basicConfig(level=logging.INFO)
@@ -32,7 +45,7 @@ def now():
     return datetime.now(timezone.utc).isoformat()
 
 def connect():
-    con = sqlite3.connect(DB)
+    con = sqlite3.connect(DB, factory=ExportConnection)
     con.row_factory = sqlite3.Row
     return con
 
@@ -90,6 +103,9 @@ def setup():
         cur.execute("ALTER TABLE shops ADD COLUMN password_hash TEXT")
     if "level" not in shop_columns:
         cur.execute("ALTER TABLE shops ADD COLUMN level INTEGER NOT NULL DEFAULT 0")
+    for name in ("location_country","location_state","location_city","location_timezone"):
+        if name not in shop_columns:
+            cur.execute(f"ALTER TABLE shops ADD COLUMN {name} TEXT")
 
     user_columns = [r["name"] for r in cur.execute(
         "PRAGMA table_info(users)"
@@ -216,6 +232,7 @@ async def save_shop_password(update, context):
         await update.message.reply_text("Please start registration again.")
         return
 
+    referrer_owner_id = context.user_data.get("referrer_owner_id")
     con = connect()
     cur = con.cursor()
 
@@ -231,9 +248,12 @@ async def save_shop_password(update, context):
 
         cur.execute("""
             INSERT INTO shops
-            (owner_id, shop_name, status, created_at, password_hash)
-            VALUES (?, ?, 'pending', ?, ?)
-        """, (user.id, name, now(), hash_password(password)))
+            (owner_id, shop_name, status, created_at, password_hash, referred_by_owner_id,
+             location_country, location_state, location_city, location_timezone)
+            VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)
+        """, (user.id, name, now(), hash_password(password), referrer_owner_id,
+              context.user_data.get("location_country"),context.user_data.get("location_state"),
+              context.user_data.get("location_city"),context.user_data.get("location_timezone")) )
 
         shop_id = cur.lastrowid
         con.commit()
@@ -248,6 +268,9 @@ async def save_shop_password(update, context):
         return
 
     con.close()
+    location_country=context.user_data.get("location_country")
+    location_state=context.user_data.get("location_state")
+    location_city=context.user_data.get("location_city")
     context.user_data.clear()
 
     keyboard = InlineKeyboardMarkup([[
@@ -262,16 +285,19 @@ async def save_shop_password(update, context):
             f"<b>🏪 NEW SHOP APPLICATION</b>\n━━━━━━━━━━━━━━━━━━\n"
             f"Shop: <b>{html.escape(str(name))}</b>\nOwner: {html.escape(str(user.first_name or ''))}\n"
             f"Username: @{html.escape(str(user.username or 'Not set'))}\n"
+            f"Country: <b>{html.escape(str(location_country or 'Not available'))}</b>\n"
+            f"State/Province: <b>{html.escape(str(location_state or 'Not available'))}</b>\n"
+            f"City: <b>{html.escape(str(location_city or 'Not available'))}</b>\n"
             f"Telegram ID: <code>{user.id}</code>\nShop ID: <code>{shop_id}</code>\n🟡 <b>STATUS: PENDING</b>",
             reply_markup=keyboard,parse_mode="HTML"
         )
         admin_sent = True
     except Exception:
-        log.exception("Admin notification failed")
+        log.exception("System notification failed")
 
-    message = "Your application is waiting for Admin approval."
+    message = "Your application is waiting for System approval."
     if not admin_sent:
-        message += "\nPlease contact support: Admin notification could not be delivered."
+        message += "\nPlease contact support: System notification could not be delivered."
 
     await update.message.reply_text(
         f"<b>✅ REGISTRATION SUBMITTED</b>\n━━━━━━━━━━━━━━━━━━\nShop ID: <code>{shop_id}</code>\n🟡 <b>STATUS: PENDING REVIEW</b>\n{html.escape(message)}",
@@ -322,8 +348,8 @@ async def approval(update, context):
     query = update.callback_query
     await query.answer()
 
-    if query.from_user.id != ADMIN_ID:
-        await query.edit_message_text("⛔ Admin access only.")
+    if not is_admin(query.from_user.id):
+        await query.edit_message_text("⛔ System access only.")
         return
 
     action, shop_id_text = query.data.split(":")
@@ -467,7 +493,7 @@ async def save_wallet_address(update, context):
     con.close()
     context.user_data.clear()
 
-    # Admin can see the saved address; owner sees only saved status.
+    # System can see the saved address; owner sees only saved status.
     try:
         await context.bot.send_message(
             ADMIN_ID,
@@ -478,7 +504,7 @@ async def save_wallet_address(update, context):
             "Status: Saved by owner; not independently verified."
         )
     except Exception:
-        log.exception("Admin wallet notification failed")
+        log.exception("System wallet notification failed")
 
     await update.message.reply_text(
         f"✅ Withdrawal wallet saved.\n"
@@ -518,8 +544,8 @@ async def profile(update, context):
     )
 
 async def verify_wallet(update, context):
-    if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("Admin access only.")
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("System access only.")
         return
 
     if len(context.args) != 1 or not context.args[0].isdigit():
@@ -555,7 +581,7 @@ async def verify_wallet(update, context):
     try:
         await context.bot.send_message(
             owner_id,
-            "✅ Your withdrawal wallet has been verified by Admin. "
+            "✅ Your withdrawal wallet has been verified by System. "
             "Your profile now shows: Verified."
         )
     except Exception:
@@ -566,8 +592,8 @@ async def verify_wallet(update, context):
 
 
 async def admin(update, context):
-    if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("Admin access only.")
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("System access only.")
         return
 
     con = connect()
@@ -580,7 +606,7 @@ async def admin(update, context):
     """).fetchall()
     con.close()
 
-    lines = ["🛡️ ADMIN DASHBOARD", ""]
+    lines = ["🛡️ SYSTEM DASHBOARD", ""]
 
     if not shops:
         lines.append("No shops registered.")
@@ -633,12 +659,12 @@ def ensure_catalog_schema():
 async def suggest_product_start(update, context):
     shop = get_shop(update.effective_user.id)
     if not shop or shop["status"] != "approved":
-        await update.message.reply_text("Admin-approved shop required.")
+        await update.message.reply_text("System-approved shop required.")
         return
     ensure_catalog_schema()
     context.user_data["state"] = "suggest_title"
     await update.message.reply_text(
-        "📝 Enter the product name for Admin approval. Type Cancel to stop."
+        "📝 Enter the product name for System approval. Type Cancel to stop."
     )
 
 
@@ -668,7 +694,7 @@ async def save_suggestion_description(update, context):
     context.user_data["suggest_description"] = value
     context.user_data["state"] = "suggest_price"
     await update.message.reply_text(
-        "Enter your suggested price in INR. Admin will decide the final price:"
+        "Enter your suggested price in INR. System will decide the final price:"
     )
 
 
@@ -716,7 +742,7 @@ async def save_suggestion_price(update, context):
         f"Suggestion ID: #{suggestion_id}\n"
         f"Product: {title}\n"
         f"Suggested price: ₹{price:,.2f}\n"
-        "Status: Pending Admin approval.",
+        "Status: Pending System approval.",
         reply_markup=main_keyboard()
     )
 
@@ -738,15 +764,15 @@ async def save_suggestion_price(update, context):
     except Exception:
         log.exception("Could not notify admin about product suggestion")
         await update.message.reply_text(
-            "Suggestion saved, but Admin notification failed. Please contact support."
+            "Suggestion saved, but System notification failed. Please contact support."
         )
 
 
 async def product_review(update, context):
     query = update.callback_query
     await query.answer()
-    if query.from_user.id != ADMIN_ID:
-        await query.edit_message_text("Admin access only.")
+    if not is_admin(query.from_user.id):
+        await query.edit_message_text("System access only.")
         return
 
     ensure_catalog_schema()
@@ -763,20 +789,11 @@ async def product_review(update, context):
         return
 
     if action == "reject":
-        con.execute(
-            "UPDATE product_suggestions SET status='rejected', reviewed_at=? WHERE id=?",
-            (now(), sid)
-        )
-        con.commit()
         con.close()
-        await query.edit_message_text(f"Suggestion #{sid} rejected.")
-        try:
-            await context.bot.send_message(
-                item["owner_id"],
-                f"❌ Your product suggestion #{sid} was rejected by Admin."
-            )
-        except Exception:
-            log.exception("Owner rejection notification failed")
+        context.user_data["pending_admin_rejection"]={"kind":"product_suggestion","id":sid}
+        await query.message.reply_text(
+            f"✍️ Enter the rejection reason for product suggestion #{sid}.\n"
+            "The merchant will receive this reason. Type CANCEL to stop.")
         return
 
     con.execute(
@@ -788,12 +805,39 @@ async def product_review(update, context):
     context.user_data["state"] = "admin_product_price"
     await query.edit_message_text(
         f"Suggestion #{sid} approved for listing.\n"
-        "Now enter the FINAL selling price in INR. This price will be controlled by Admin."
+        "Now enter the FINAL selling price in INR. This price will be controlled by System."
     )
 
 
+async def reject_product_suggestion_with_reason(update,context,reason):
+    data=context.user_data.pop("pending_admin_rejection",None)
+    if not data or data.get("kind")!="product_suggestion": return False
+    sid=int(data["id"]); reason=str(reason).strip()
+    ensure_catalog_schema()
+    con=connect()
+    try:
+        item=con.execute("SELECT * FROM product_suggestions WHERE id=?",(sid,)).fetchone()
+        if not item or item["status"]!="pending":
+            await update.message.reply_text("Product suggestion missing or already reviewed."); return True
+        con.execute("UPDATE product_suggestions SET status='rejected',reviewed_at=? WHERE id=? AND status='pending'",
+                    (now(),sid))
+        con.commit()
+    except Exception:
+        con.rollback(); log.exception("Product suggestion rejection failed")
+        await update.message.reply_text("Could not reject product suggestion."); return True
+    finally: con.close()
+    try:
+        await context.bot.send_message(
+            item["owner_id"],
+            f"❌ <b>PRODUCT LISTING REJECTED</b>\nSuggestion: <code>#{sid}</code>\n"
+            f"Reason: {html.escape(reason)}",parse_mode="HTML")
+    except Exception: log.exception("Product rejection notification failed")
+    await update.message.reply_text(f"Product suggestion #{sid} rejected. Reason sent to merchant.")
+    return True
+
+
 async def admin_product_price(update, context):
-    if update.effective_user.id != ADMIN_ID:
+    if not is_admin(update.effective_user.id):
         context.user_data.pop("state", None)
         return
     raw = update.message.text.strip()
@@ -810,7 +854,7 @@ async def admin_product_price(update, context):
 
 
 async def admin_product_stock(update, context):
-    if update.effective_user.id != ADMIN_ID:
+    if not is_admin(update.effective_user.id):
         context.user_data.pop("state", None)
         return
     try:
@@ -857,7 +901,7 @@ async def admin_product_stock(update, context):
             item["owner_id"],
             f"✅ Your product suggestion #{sid} was approved and listed.\n"
             f"Product: {item['title']}\n"
-            f"Admin final price: ₹{price:,.2f}\nStock: {stock}"
+            f"System final price: ₹{price:,.2f}\nStock: {stock}"
         )
     except Exception:
         log.exception("Owner approval notification failed")
@@ -893,7 +937,7 @@ async def handle_message(update, context):
 
     if state in ("suggest_title", "suggest_description", "suggest_price"):
         context.user_data.clear()
-        await update.message.reply_text("Product suggestions are disabled. Only Admin can add or edit marketplace products.")
+        await update.message.reply_text("Product suggestions are disabled. Only System can add or edit marketplace products.")
     elif state == "admin_product_price":
         await admin_product_price(update, context)
     elif state == "admin_product_stock":
@@ -940,9 +984,9 @@ async def handle_message(update, context):
                     )
                 await update.message.reply_text("\n".join(lines))
         else:
-            await update.message.reply_text("Admin-approved shop required.")
+            await update.message.reply_text("System-approved shop required.")
     elif msg == "💬 Support":
-        await update.message.reply_text("Please contact the administrator.")
+        await update.message.reply_text("Please contact the System.")
     else:
         await update.message.reply_text(
             "Please choose an option from the menu.",
@@ -951,7 +995,7 @@ async def handle_message(update, context):
 
 async def help_command(update, context):
     await update.message.reply_text(
-        "/start — Main menu\n/admin — Admin dashboard\n/help — Help"
+        "/start — Main menu\n/admin — System dashboard\n/help — Help"
     )
 
 def main():

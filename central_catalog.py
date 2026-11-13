@@ -181,43 +181,8 @@ def ensure_pair_progress(c, shop_id, owner_id, timezone_name=None, exclude_sold_
 
 
 def record_completed_pairs(c, shop_id, owner_id, quantity, source_type, source_order_id):
-    """Record successfully settled resale units once, inside the sale transaction."""
-    qty=max(0,int(quantity))
-    if qty<1:
-        return
-    now=_pair_utc_now()
-    event=c.execute("""INSERT OR IGNORE INTO merchant_pair_events
-        (source_type,source_order_id,shop_id,owner_id,quantity,created_at)
-        VALUES(?,?,?,?,?,?)""",
-        (str(source_type),int(source_order_id),int(shop_id),int(owner_id),qty,now))
-    if event.rowcount!=1:
-        return
-    shop=c.execute("SELECT location_timezone FROM shops WHERE id=? AND owner_id=?",
-                    (int(shop_id),int(owner_id))).fetchone()
-    timezone_name=shop["location_timezone"] if shop else None
-    ensure_pair_progress(c,int(shop_id),int(owner_id),timezone_name,exclude_sold_quantity=qty)
-    row=c.execute("SELECT completed_count,reached_at FROM merchant_pair_progress WHERE shop_id=?",
-                  (int(shop_id),)).fetchone()
-    if row and int(row["completed_count"] or 0)>=50:
-        return
-    current=int(row["completed_count"] or 0) if row else 0
-    new_count=min(50,current+qty)
-    reached_at=now if new_count>=50 else None
-    reset_at=None
-    if reached_at and timezone_name:
-        try:
-            reset_at=_pair_reset_timestamp(reached_at,timezone_name)
-        except Exception:
-            log.exception("Could not calculate merchant pair reset time for shop %s",shop_id)
-    if row:        c.execute("""UPDATE merchant_pair_progress
-            SET completed_count=?,reached_at=CASE WHEN ?=50 THEN ? ELSE reached_at END,
-                reset_at=CASE WHEN ?=50 THEN ? ELSE reset_at END,updated_at=?
-            WHERE shop_id=?""",(new_count,new_count,reached_at,new_count,reset_at,now,int(shop_id)))
-    else:
-        c.execute("""INSERT INTO merchant_pair_progress
-            (shop_id,owner_id,completed_count,reached_at,reset_at,cycle_started_at,updated_at)
-            VALUES(?,?,?,?,?,?,?)""",
-            (int(shop_id),int(owner_id),new_count,reached_at,reset_at,now,now))
+    """Legacy no-op: completed-pair tracking is no longer part of merchant workflow."""
+    return
 
 
 def balance(c, owner_id):
@@ -551,28 +516,7 @@ def balance_after_text(total, before):
     return f"{max(0.0, before-total):.6f}".rstrip("0").rstrip(".")
 
 def consume_extra_purchase_units(c, shop_id, owner_id, quantity):
-    """At 50 completed resale pairs, require and consume System-approved units atomically."""
-    qty=max(1,int(quantity))
-    progress=c.execute(
-        "SELECT completed_count FROM merchant_pair_progress WHERE shop_id=? AND owner_id=?",
-        (int(shop_id),int(owner_id))).fetchone()
-    completed=int(progress["completed_count"] or 0) if progress else 0
-    if completed<50:
-        return True, None
-    allowance=c.execute(
-        "SELECT remaining_units FROM merchant_extra_item_allowances WHERE shop_id=?",
-        (int(shop_id),)).fetchone()
-    remaining=int(allowance["remaining_units"] or 0) if allowance else 0
-    if remaining<qty:
-        return False, (
-            "🔒 Your 50/50 completed-pair limit has been reached. "
-            f"System approval is required for more purchases. Approved units remaining: {remaining}.")
-    changed=c.execute(
-        "UPDATE merchant_extra_item_allowances SET remaining_units=remaining_units-?,updated_at=? "
-        "WHERE shop_id=? AND remaining_units>=?",
-        (qty,v4.now(),int(shop_id),qty))
-    if changed.rowcount!=1:
-        return False, "🔒 Approved purchase units changed. Please try again."
+    """Legacy compatibility: no 50-pair purchase cap or allowance deduction."""
     return True, None
 
 async def orders(update,ctx,view="menu"):

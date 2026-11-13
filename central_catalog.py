@@ -285,34 +285,19 @@ async def _send_admin_level_page(update,ctx,level=1,page=0):
     start=page*CATALOGUE_PAGE_SIZE
     page_rows=rows[start:start+CATALOGUE_PAGE_SIZE]
     q=update.callback_query
+    product_buttons=[
+        [InlineKeyboardButton(f"🛍 #{p['id']} — {str(p['title'])[:45]}",callback_data=f"cc:view:{p['id']}")]
+        for p in page_rows
+    ]
+    product_buttons.append([
+        InlineKeyboardButton("⬅️ Back to Levels",callback_data="adm:central"),
+        InlineKeyboardButton("🏠 Dashboard",callback_data="adm:home")
+    ])
     await q.message.reply_text(
-        f"<b>🛍 LEVEL {level} PRODUCTS</b>\n━━━━━━━━━━━━━━━━━━\n"
-        f"Showing {start+1 if total else 0}–{min(start+CATALOGUE_PAGE_SIZE,total)} of {total} products. Manage each product below.",
-        reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("⬅️ Back to Levels",callback_data="adm:central"),
-            InlineKeyboardButton("🏠 Dashboard",callback_data="adm:home")
-        ]]),parse_mode="HTML")
-    for p in page_rows:
-        caption=(f"<b>#{p['id']} {html.escape(str(p['title']))}</b>\n{html.escape(str(p['description'] or ''))}\n\n"
-                 f"💰 <b>{float(p['price_usdt']):g} USDT</b> / item\n📦 Stock: <b>{int(p['stock'])}</b>\n"
-                 f"{'🟢 ACTIVE' if p['active'] else '🔴 OFF'}")
-        kb=InlineKeyboardMarkup([
-            [InlineKeyboardButton("💲 Price",callback_data=f"cc:price:{p['id']}"),InlineKeyboardButton("📦 Stock",callback_data=f"cc:stock:{p['id']}")],
-            [InlineKeyboardButton("🖼 Change Picture",callback_data=f"cc:photo:{p['id']}")],
-            [InlineKeyboardButton("🔴 Turn Off" if p['active'] else "🟢 Turn On",callback_data=f"cc:toggle:{p['id']}")],
-            [InlineKeyboardButton("⬅️ Levels",callback_data="adm:central"),InlineKeyboardButton("🏠 Dashboard",callback_data="adm:home")]])
-        image_path=Path(__file__).resolve().parent/(p["image_path"] or "")
-        try:
-            if p["image_file_id"]:
-                await ctx.bot.send_photo(q.message.chat_id,photo=p["image_file_id"],caption=caption[:1024],reply_markup=kb,parse_mode="HTML")
-            elif image_path.is_file():
-                with image_path.open("rb") as photo:
-                    await ctx.bot.send_photo(q.message.chat_id,photo=photo,caption=caption[:1024],reply_markup=kb,parse_mode="HTML")
-            else:
-                await ctx.bot.send_message(q.message.chat_id,caption+"\n⚠️ Product photo unavailable.",reply_markup=kb,parse_mode="HTML")
-        except Exception:
-            log.exception("Could not send admin catalogue card")
-            await ctx.bot.send_message(q.message.chat_id,caption,reply_markup=kb,parse_mode="HTML")
+        f"<b>🛠 LEVEL {level} PRODUCT MANAGEMENT</b>\n━━━━━━━━━━━━━━━━━━\n"
+        f"Select any product to open its full edit screen.\n"
+        f"Showing {start+1 if total else 0}–{min(start+CATALOGUE_PAGE_SIZE,total)} of {total} products.",
+        reply_markup=InlineKeyboardMarkup(product_buttons),parse_mode="HTML")
     await ctx.bot.send_message(
         q.message.chat_id,
         f"<b>PAGE {page+1}/{last_page+1}</b> • Products {start+1 if total else 0}–{min(start+CATALOGUE_PAGE_SIZE,total)} of {total}",
@@ -691,19 +676,50 @@ async def admin_callback(update,ctx):
         row=c.execute("SELECT * FROM central_catalog WHERE id=?",(pid,)).fetchone(); c.close()
         if not row:
             await q.message.reply_text("Product not found."); return
-        from telegram import InlineKeyboardMarkup, InlineKeyboardButton
         kb=InlineKeyboardMarkup([
-          [InlineKeyboardButton("💲 Edit USDT Price",callback_data=f"cc:price:{pid}"),
-           InlineKeyboardButton("📦 Edit Shared Stock",callback_data=f"cc:stock:{pid}")],
+          [InlineKeyboardButton("💲 Edit Price",callback_data=f"cc:price:{pid}"),
+           InlineKeyboardButton("📦 Edit Stock",callback_data=f"cc:stock:{pid}")],
+          [InlineKeyboardButton("📝 Edit Description",callback_data=f"cc:description:{pid}")],
+          [InlineKeyboardButton("🖼 Upload New Picture",callback_data=f"cc:photo:{pid}")],
+          [InlineKeyboardButton("♻️ Use Updated Folder Picture",callback_data=f"cc:resetphoto:{pid}")],
           [InlineKeyboardButton("🔴 Turn Off" if row["active"] else "🟢 Turn On",callback_data=f"cc:toggle:{pid}")],
-          [InlineKeyboardButton("⬅️ Catalogue List",callback_data="adm:central"),
+          [InlineKeyboardButton("⬅️ Product List",callback_data=f"ccadminlevel:{row['level_required']}"),
            InlineKeyboardButton("🏠 System Panel",callback_data="adm:home")]
         ])
-        active_label="🟢 ACTIVE" if row["active"] else "🔴 OFF"
-        await q.message.reply_text(
-          f"<b>🛍 {html.escape(str(row['title']))}</b>\n━━━━━━━━━━━━━━━━━━\n"
-          f"Price: <b>{float(row['price_usdt']):g} USDT</b>\nShared stock: <b>{row['stock']}</b>\nStatus: <b>{active_label}</b>",
-          reply_markup=kb,parse_mode="HTML"); return
+        caption=(f"<b>🛍 {html.escape(str(row['title']))}</b>\n━━━━━━━━━━━━━━━━━━\n"
+                 f"{html.escape(str(row['description'] or 'No description'))}\n\n"
+                 f"Price: <b>{float(row['price_usdt']):g} USDT</b>\n"
+                 f"Stock: <b>{int(row['stock'])}</b>\n"
+                 f"Level: <b>{int(row['level_required'])}</b>\n"
+                 f"Status: <b>{'🟢 ACTIVE' if row['active'] else '🔴 OFF'}</b>")
+        image_path=Path(__file__).resolve().parent/(row["image_path"] or "")
+        try:
+            if image_path.is_file():
+                with image_path.open("rb") as photo:
+                    await q.message.reply_photo(photo=photo,caption=caption[:1024],reply_markup=kb,parse_mode="HTML")
+            elif row["image_file_id"]:
+                await q.message.reply_photo(photo=row["image_file_id"],caption=caption[:1024],reply_markup=kb,parse_mode="HTML")
+            else:
+                await q.message.reply_text(caption+"\n⚠️ Product photo unavailable.",reply_markup=kb,parse_mode="HTML")
+        except Exception:
+            log.exception("Could not send product management screen")
+            await q.message.reply_text(caption,reply_markup=kb,parse_mode="HTML")
+        return
+    if action=="resetphoto":
+        pid=int(parts[2]); conn=v4.db()
+        try:
+            row=conn.execute("SELECT title,image_path FROM central_catalog WHERE id=?",(pid,)).fetchone()
+            if row:
+                conn.execute("UPDATE central_catalog SET image_file_id=NULL,updated_at=? WHERE id=?",(v4.now(),pid))
+                conn.execute("INSERT INTO admin_audit(admin_id,owner_id,action,details,created_at) VALUES(?,?,?,?,?)",
+                    (v4.ADMIN_ID,None,"central_product_photo_reset",f"Product #{pid} {row['title']}: reverted to repository image {row['image_path']}",v4.now()))
+                conn.commit()
+        finally: conn.close()
+        if not row:
+            await q.message.reply_text("Product not found."); return
+        await q.message.reply_text(f"✅ {row['title']}: catalogue will now use the latest image from its product folder.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Open Product",callback_data=f"cc:view:{pid}")]]))
+        return
     if action=="photo":
         pid=int(parts[2]); conn=v4.db()
         try: row=conn.execute("SELECT title FROM central_catalog WHERE id=?",(pid,)).fetchone()
@@ -711,12 +727,12 @@ async def admin_callback(update,ctx):
         if not row:
             await q.message.reply_text("Product not found."); return
         ctx.user_data["central_admin_photo"]={"product_id":pid}
-        await q.message.reply_text(f"🖼 Send the new Telegram photo for product #{pid} — {row['title']}. The new photo will replace the catalogue image. Type CANCEL to keep the current picture.")
+        await q.message.reply_text(f"🖼 Send the new Telegram photo for product #{pid} — {row['title']}. Type CANCEL to keep the current picture.")
         return
-    if action in ("price","stock"):
+    if action in ("price","stock","description"):
         pid=int(parts[2]); ctx.user_data["central_admin_edit"]={"field":action,"product_id":pid}
-        prompt="new price in USDT" if action=="price" else "new shared stock quantity"
-        await q.message.reply_text(f"Product #{pid}: send the {prompt} as a number. Type CANCEL to stop.")
+        prompt=("new price in USDT" if action=="price" else "new shared stock quantity" if action=="stock" else "new product description")
+        await q.message.reply_text(f"Product #{pid}: send the {prompt}. Type CANCEL to stop.")
         return
     if action=="toggle":
         pid=int(parts[2]); c=v4.db()

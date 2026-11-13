@@ -48,6 +48,10 @@ def is_admin(user_id):
     except (TypeError,ValueError):
         return False
 
+# Keep legacy V3 admin handlers on the exact same authorization policy as V5.
+# This preserves configured-admin restrictions without granting public access.
+v3.is_admin = is_admin
+
 async def notify_admins(bot,*args,**kwargs):
     """Send the same operational notification to every configured admin."""
     results=[]

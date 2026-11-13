@@ -1110,9 +1110,6 @@ async def menu_callback(update,ctx):
                 FROM central_inventory i
                 WHERE i.owner_id=? AND COALESCE(i.status,'owned')<>'refunded'""",
                 (q.from_user.id,)).fetchone()
-            central.ensure_pair_progress(c,int(s["id"]),int(q.from_user.id),s["location_timezone"] if "location_timezone" in s.keys() else None)
-            pair_row=c.execute("""SELECT completed_count FROM merchant_pair_progress WHERE shop_id=?""",
-                               (int(s["id"]),)).fetchone()
             profit_row=c.execute("""SELECT COALESCE(SUM(amount),0) profit
                 FROM ledger WHERE owner_id=? AND currency='USDT'
                   AND entry_type IN ('resale_profit_credit','central_sale_profit')""",(q.from_user.id,)).fetchone()
@@ -1120,8 +1117,6 @@ async def menu_callback(update,ctx):
             c.close()
         reserve=float(reserve_row["reserve_usdt"] or 0)
         reserve_items=int(reserve_row["reserve_items"] or 0)
-        pair_target=50
-        pair_progress=min(pair_target,max(0,int(pair_row["completed_count"] or 0))) if pair_row else 0
         profit=float(profit_row["profit"] or 0)
         # Sale proceeds are recorded gross. Split the wallet into:
         # unused funds, the historical cost reserve (sold or unsold), and
@@ -1143,7 +1138,6 @@ async def menu_callback(update,ctx):
             f"🔒 Reserve (all purchased items, sold + unsold): <b>{format_usdt(reserve)} USDT</b>\n"
             f"Total items in reserve: <b>{reserve_items}</b>\n"
             f"Total items purchased: <b>{int(bought_row['bought_items'] or 0)}</b>\n"
-            f"🔄 Completed buy/sell pairs: <b>{pair_progress}/{pair_target}</b>\n"
             f"💚 Total realized profit earned: <b>+{format_usdt(profit)} USDT</b>\n"
             f"Profit not yet withdrawn: <b>{format_usdt(profit_remaining)} USDT</b>\n\n"
             "Withdrawal network: <b>USDT TRC20 only</b>\n"
@@ -1276,133 +1270,6 @@ async def send_due_motivation_reminders(bot, now_dt=None):
 
 _motivation_reminder_task=None
 
-async def merchant_pair_reset_worker(app):
-    """Reset a full 50-pair cycle at 07:00 the following local calendar day."""
-    while True:
-        c=None
-        try:
-            c=v4.db()
-            now=datetime.now(timezone.utc)
-            now_text=now.isoformat(timespec="seconds")
-            rows=c.execute("""SELECT p.shop_id,p.completed_count,p.reached_at,p.reset_at,s.location_timezone
-                FROM merchant_pair_progress p JOIN shops s ON s.id=p.shop_id
-                WHERE p.completed_count>=50""").fetchall()
-            for row in rows:
-                timezone_name=row["location_timezone"]
-                if not timezone_name:
-                    continue
-                try:
-                    zone=ZoneInfo(str(timezone_name))
-                    reset_at=row["reset_at"]
-                    if not reset_at:
-                        if not row["reached_at"]:
-                            continue
-                        reached=datetime.fromisoformat(str(row["reached_at"]))
-                        if reached.tzinfo is None:
-                            reached=reached.replace(tzinfo=timezone.utc)
-                        local_day=reached.astimezone(zone).date()
-                        local_reset=datetime.combine(local_day+timedelta(days=1),datetime_time(7,0),tzinfo=zone)
-                        reset_at=local_reset.astimezone(timezone.utc).isoformat(timespec="seconds")
-                        c.execute("UPDATE merchant_pair_progress SET reset_at=?,updated_at=? WHERE shop_id=? AND completed_count>=50 AND reset_at IS NULL",
-                                  (reset_at,now_text,int(row["shop_id"])))
-                    due=datetime.fromisoformat(str(reset_at))
-                    if due.tzinfo is None:
-                        due=due.replace(tzinfo=timezone.utc)
-                    if due<=now:
-                        c.execute("""UPDATE merchant_pair_progress
-                            SET completed_count=0,reached_at=NULL,reset_at=NULL,
-                                cycle_started_at=?,updated_at=?
-                            WHERE shop_id=? AND completed_count>=50 AND reset_at<=?""",
-                            (now_text,now_text,int(row["shop_id"]),now_text))
-                except Exception:
-                    log.exception("Merchant pair reset processing failed for shop %s",row["shop_id"])
-            c.commit()
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            log.exception("Merchant pair reset worker failed")
-            if c:
-                try: c.rollback()
-                except Exception: pass
-        finally:
-            if c:
-                c.close()
-        await asyncio.sleep(30)
-
-
-_pair_reset_task=None
-
-
-async def send_due_level2_workflow_reminders(bot, now_dt=None):
-    """Send daily workflow encouragement to Level 2+ merchants with unfinished inventory."""
-    current=now_dt or _motivation_now()
-    current_stamp=_motivation_stamp(current)
-    next_stamp=_motivation_stamp(current+timedelta(hours=24))
-    c=v4.db()
-    try:
-        # Schedule only merchants who still have unsold inventory and have not
-        # completed the 50-pair Level 2 cycle. This reminder goes to merchants,
-        # unlike the separate System-only shop-growth notification.
-        c.execute("""INSERT OR IGNORE INTO merchant_l2_workflow_reminders(shop_id,next_at)
-            SELECT s.id,? FROM shops s
-            LEFT JOIN merchant_pair_progress p ON p.shop_id=s.id
-            WHERE s.level=2 AND COALESCE(p.completed_count,0)<50
-              AND EXISTS (SELECT 1 FROM central_inventory i
-                          WHERE i.shop_id=s.id AND i.remaining_quantity>0)""",
-            (_motivation_stamp(current+timedelta(hours=1)),))
-        c.commit()
-        due=c.execute("""SELECT s.id,s.owner_id,s.shop_name,p.completed_count
-            FROM merchant_l2_workflow_reminders r
-            JOIN shops s ON s.id=r.shop_id
-            LEFT JOIN merchant_pair_progress p ON p.shop_id=s.id
-            WHERE r.next_at<=? AND s.level=2 AND COALESCE(p.completed_count,0)<50
-              AND EXISTS (SELECT 1 FROM central_inventory i
-                          WHERE i.shop_id=s.id AND i.remaining_quantity>0)
-            ORDER BY r.next_at LIMIT 100""",(current_stamp,)).fetchall()
-    finally:
-        c.close()
-    sent=0
-    for shop in due:
-        body=(
-            "<b>🌟 YOUR NEXT GROWTH OPPORTUNITY</b>\n"
-            "━━━━━━━━━━━━━━━━━━\n"
-            f"🏪 <b>{html.escape(str(shop['shop_name']))}</b>\n\n"
-            "Congratulations on your progress! The company is preparing more order opportunities for active merchants. "
-            "Please focus on completing your current orders and reselling your pending items so you can continue the workflow "
-            "and be ready for the next opportunities.\n\n"
-            f"📊 Completed pairs: <b>{int(shop['completed_count'] or 0)}/50</b>\n\n"
-            "Stay consistent—your hard work can open the door to more opportunities. Keep going! 💪"
-        )
-        try:
-            await bot.send_message(chat_id=int(shop["owner_id"]),text=body,parse_mode="HTML")
-        except Exception:
-            log.info("Level 2 workflow reminder delivery failed for shop %s",shop["id"],exc_info=True)
-            continue
-        c=v4.db()
-        try:
-            cur=c.execute("""UPDATE merchant_l2_workflow_reminders
-                SET last_sent_at=?,next_at=? WHERE shop_id=? AND next_at<=?""",
-                (current_stamp,next_stamp,int(shop["id"]),current_stamp))
-            c.commit()
-            if cur.rowcount==1:
-                sent+=1
-        finally:
-            c.close()
-    return sent
-
-
-async def level2_workflow_reminder_worker(app):
-    while True:
-        try:
-            await send_due_level2_workflow_reminders(app.bot)
-        except Exception:
-            log.exception("Level 2 workflow reminder worker failed")
-        await asyncio.sleep(300)
-
-
-_l2_workflow_reminder_task=None
-
-
 async def motivation_reminder_worker(app):
     """Poll once per minute; each shop receives no more than one reminder per due hour."""
     while True:
@@ -1413,7 +1280,7 @@ async def motivation_reminder_worker(app):
         await asyncio.sleep(60)
 
 async def start_motivation_reminder_worker(app):
-    global _motivation_reminder_task, _pair_reset_task, _l2_workflow_reminder_task
+    global _motivation_reminder_task
     # Backfill merchants whose first withdrawal was already paid before this
     # feature was deployed. Preserve System-stopped shops permanently.
     c=v4.db()
@@ -1433,18 +1300,12 @@ async def start_motivation_reminder_worker(app):
         c.close()
     _motivation_reminder_task=app.create_task(
         motivation_reminder_worker(app),name="shop-motivation-reminders")
-    _pair_reset_task=app.create_task(
-        merchant_pair_reset_worker(app),name="merchant-pair-resets")
-    _l2_workflow_reminder_task=app.create_task(
-        level2_workflow_reminder_worker(app),name="level2-workflow-reminders")
 
 
 async def stop_motivation_reminder_worker(app):
-    global _motivation_reminder_task, _pair_reset_task, _l2_workflow_reminder_task
-    tasks=[_motivation_reminder_task,_pair_reset_task,_l2_workflow_reminder_task]
+    global _motivation_reminder_task
+    tasks=[_motivation_reminder_task]
     _motivation_reminder_task=None
-    _pair_reset_task=None
-    _l2_workflow_reminder_task=None
     for task in tasks:
         if task and not task.done():
             task.cancel()
@@ -2134,8 +1995,6 @@ async def show_admin_shop(update,ctx,shop_id,edit=False):
         row=c.execute("SELECT * FROM shops WHERE id=?",(int(shop_id),)).fetchone()
         item_limits={int(x["level"]):int(x["item_limit"]) for x in c.execute(
             "SELECT level,item_limit FROM merchant_level_item_limits WHERE shop_id=?",(int(shop_id),)).fetchall()}
-        pair_row=c.execute(
-            "SELECT completed_count FROM merchant_pair_progress WHERE shop_id=?",(int(shop_id),)).fetchone()
         allowance_row=c.execute(
             "SELECT remaining_units,total_approved_units FROM merchant_extra_item_allowances WHERE shop_id=?",
             (int(shop_id),)).fetchone()
@@ -2158,7 +2017,6 @@ async def show_admin_shop(update,ctx,shop_id,edit=False):
           f"Motivation reminder: <b>{html.escape(reminder_status.upper())}</b>\n"
           f"Control note: {html.escape(str(row['control_note'] or 'None'))}\n"
           f"Warning reason: {html.escape(str(row['warning_reason'] or 'None'))}\n"
-          f"Completed pairs: <b>{int(pair_row['completed_count'] or 0) if pair_row else 0}/50</b>\n"
           f"Extra approved purchase units: <b>{int(allowance_row['remaining_units'] or 0) if allowance_row else 0}</b> remaining "
           f"(total approved: {int(allowance_row['total_approved_units'] or 0) if allowance_row else 0})\n"
           f"Level 2 product slots: <b>{item_limits.get(2, active_l2_count)}</b>\n"
@@ -2213,14 +2071,6 @@ async def admin_shop_callback(update,ctx):
                 c.rollback()
                 await q.message.reply_text("Shop ID not found. No approval was applied.")
                 return
-            pair_progress=c.execute(
-                "SELECT completed_count FROM merchant_pair_progress WHERE shop_id=?",(sid,)).fetchone()
-            completed_pairs=int(pair_progress["completed_count"] or 0) if pair_progress else 0
-            if completed_pairs<50:
-                c.rollback()
-                await q.message.reply_text(
-                    f"Approval is available only after the merchant completes 50/50 buy-and-resell pairs. Current progress: {completed_pairs}/50.")
-                return
             base_products=int(c.execute(
                 "SELECT COUNT(*) FROM central_catalog WHERE active=1 AND level_required=2 AND product_key LIKE 'level2_%'").fetchone()[0])
             purchased_base=int(c.execute("""SELECT COUNT(DISTINCT o.catalog_id)
@@ -2230,7 +2080,7 @@ async def admin_shop_callback(update,ctx):
             if purchased_base<base_products:
                 c.rollback()
                 await q.message.reply_text(
-                    f"Finish all original Level 2 products first ({purchased_base}/{base_products} purchased). New mobile products unlock only after the original 50 are used and 50/50 pairs are completed.")
+                    f"Finish all original Level 2 products first ({purchased_base}/{base_products} purchased). New mobile products unlock after all original Level 2 products have been purchased.")
                 return
             current_limit=c.execute(
                 "SELECT item_limit FROM merchant_level_item_limits WHERE shop_id=? AND level=2",
